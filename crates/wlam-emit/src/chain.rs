@@ -424,8 +424,15 @@ fn emit_function_body(
     body.extend_from_slice(&leb_u32(id));
     body.push(op::BR_TABLE);
     body.extend_from_slice(&leb_u32(n));
-    for d in 0..n {
-        body.extend_from_slice(&leb_u32(d));
+    // Entry `id` must run the body for func.blocks[id]. Bodies were emitted in
+    // reverse (innermost case first), so entry `id` targets depth `n-1-id`:
+    // depth 0 is the innermost case block (whose body is func.blocks[n-1]),
+    // depth n-1 is the outermost (whose body is func.blocks[0]).
+    //
+    // Emitting `depth = id` inverted the mapping, so the initial dispatch
+    // (id 0) ran the LAST block and every branch landed on the wrong case.
+    for i in 0..n {
+        body.extend_from_slice(&leb_u32(n - 1 - i));
     }
     body.extend_from_slice(&leb_u32(n)); // default: out of range
     for i in (0..n).rev() {
@@ -543,5 +550,136 @@ mod tests {
             }),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod dispatcher_tests {
+    use super::*;
+
+    /// Build a two-block program by hand: block 0 writes `flag` to memory and
+    /// branches on a condition; block 1 (taken) writes 0xA; block 2 (not taken)
+    /// writes 0xB. The condition is a *constant* chosen per test, so the
+    /// expected path is known by construction — no lifter, no encodings, no
+    /// fixture arithmetic can be wrong here.
+    fn conditional_program(cond: u64) -> (Program, BTreeMap<u64, Block>) {
+        let regs = vec!["EAX".to_string()];
+        let mut blocks = BTreeMap::new();
+        // Block 0: store 0 at 0x100, set temp 1 = cond, CBranch on it.
+        blocks.insert(
+            0x1000u64,
+            Block {
+                start: 0x1000,
+                end: 0x1008,
+                ops: vec![
+                    crate::ir::IR::Store {
+                        addr: crate::ir::Operand::Const { value: 0x100, size: 4 },
+                        value: crate::ir::Operand::Const { value: 0, size: 4 },
+                        size: 4,
+                    },
+                    crate::ir::IR::Copy {
+                        dst: crate::ir::Operand::Temp { offset: 1, size: 4 },
+                        src: crate::ir::Operand::Const { value: cond, size: 4 },
+                    },
+                    crate::ir::IR::CBranch {
+                        cond: crate::ir::Operand::Temp { offset: 1, size: 4 },
+                        target: crate::ir::Operand::Ram { offset: 0x1010, size: 4 },
+                    },
+                ],
+                terminator: Terminator::Conditional { taken: Some(0x1010), not_taken: 0x1014 },
+            },
+        );
+        let leaf = |addr: u64, value: u64| Block {
+            start: addr,
+            end: addr + 8,
+            ops: vec![crate::ir::IR::Store {
+                addr: crate::ir::Operand::Const { value: 0x104, size: 4 },
+                value: crate::ir::Operand::Const { value, size: 4 },
+                size: 4,
+            }],
+            terminator: Terminator::Return,
+        };
+        blocks.insert(0x1010, leaf(0x1010, 0xA));
+        blocks.insert(0x1014, leaf(0x1014, 0xB));
+        (partition(&[0x1000], &blocks, &regs), blocks)
+    }
+
+    fn run_module(module: &[u8]) -> (u32, u32, String) {
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("wlam-disp-{}-{n}.wasm", std::process::id()));
+        std::fs::write(&path, module).unwrap();
+        let out = std::process::Command::new("timeout")
+            .arg("10")
+            .arg("node")
+            .arg("-e")
+            .arg(format!(
+                "const fs=require('fs');const m=new WebAssembly.Module(fs.readFileSync({path:?}));\
+                 const i=new WebAssembly.Instance(m,{{}});\
+                 try{{i.exports.entry();}}catch(e){{console.log('TRAP '+e.message);process.exit(0)}}\
+                 const d=new DataView(i.exports.memory.buffer);\
+                 console.log(d.getUint32(0x100,true)+' '+d.getUint32(0x104,true));"
+            ))
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let mut it = text.split_whitespace();
+        (
+            it.next().and_then(|v| v.parse().ok()).unwrap_or(u32::MAX),
+            it.next().and_then(|v| v.parse().ok()).unwrap_or(u32::MAX),
+            text,
+        )
+    }
+
+    #[test]
+    fn constant_condition_taken() {
+        let (prog, blocks) = conditional_program(1);
+        let m = build_module(&prog, &blocks).expect("module");
+        let (at100, at104, log) = run_module(&m);
+        assert_eq!(at100, 0, "block 0 must run: {log}");
+        assert_eq!(at104, 0xA, "condition 1 must take the 'taken' leaf: {log}");
+    }
+
+    #[test]
+    fn constant_condition_not_taken() {
+        let (prog, blocks) = conditional_program(0);
+        let m = build_module(&prog, &blocks).expect("module");
+        let (at100, at104, log) = run_module(&m);
+        assert_eq!(at100, 0, "block 0 must run: {log}");
+        assert_eq!(at104, 0xB, "condition 0 must take the 'not_taken' leaf: {log}");
+    }
+}
+
+#[cfg(test)]
+mod dump_tmp {
+    use super::*;
+    #[test]
+    fn dump_conditional_module() {
+        // Rebuild the same constructed program and write it for inspection.
+        let regs = vec!["EAX".to_string()];
+        let mut blocks = BTreeMap::new();
+        blocks.insert(0x1000u64, Block {
+            start: 0x1000, end: 0x1008,
+            ops: vec![
+                crate::ir::IR::Copy { dst: crate::ir::Operand::Temp { offset: 1, size: 4 }, src: crate::ir::Operand::Const { value: 0, size: 4 } },
+                crate::ir::IR::CBranch { cond: crate::ir::Operand::Temp { offset: 1, size: 4 }, target: crate::ir::Operand::Ram { offset: 0x1010, size: 4 } },
+            ],
+            terminator: Terminator::Conditional { taken: Some(0x1010), not_taken: 0x1014 },
+        });
+        for (a, v) in [(0x1010u64, 0xAu64), (0x1014, 0xB)] {
+            blocks.insert(a, Block {
+                start: a, end: a + 8,
+                ops: vec![crate::ir::IR::Store {
+                    addr: crate::ir::Operand::Const { value: 0x104, size: 4 },
+                    value: crate::ir::Operand::Const { value: v, size: 4 },
+                    size: 4,
+                }],
+                terminator: Terminator::Return,
+            });
+        }
+        let prog = partition(&[0x1000], &blocks, &regs);
+        let m = build_module(&prog, &blocks).unwrap();
+        let _ = m;
     }
 }
