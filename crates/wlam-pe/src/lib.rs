@@ -213,6 +213,7 @@ impl<'a> Reader<'a> {
     fn at(data: &'a [u8], base: usize) -> Self {
         Reader { data, base }
     }
+    #[cfg(test)]
     fn u8(&self, off: u32) -> Result<u8, PeError> {
         let b = self.bytes(off, 1)?;
         Ok(b[0])
@@ -227,15 +228,22 @@ impl<'a> Reader<'a> {
     }
     fn u64(&self, off: u32) -> Result<u64, PeError> {
         let lo = self.u32(off)? as u64;
-        let hi = self.u32(off.checked_add(4).ok_or(PeError::OutOfBounds { offset: off })?)?;
+        let hi = self.u32(
+            off.checked_add(4)
+                .ok_or(PeError::OutOfBounds { offset: off })?,
+        )?;
         Ok(lo | (hi as u64) << 32)
     }
     fn bytes(&self, off: u32, len: u32) -> Result<&'a [u8], PeError> {
         let start = (self.base as u64)
             .checked_add(off as u64)
             .ok_or(PeError::OutOfBounds { offset: off })? as usize;
-        let end = start.checked_add(len as usize).ok_or(PeError::OutOfBounds { offset: off })?;
-        self.data.get(start..end).ok_or(PeError::OutOfBounds { offset: off })
+        let end = start
+            .checked_add(len as usize)
+            .ok_or(PeError::OutOfBounds { offset: off })?;
+        self.data
+            .get(start..end)
+            .ok_or(PeError::OutOfBounds { offset: off })
     }
     /// Read a NUL-terminated string starting at `off`.
     ///
@@ -243,8 +251,11 @@ impl<'a> Reader<'a> {
     /// accepted for its full length; only a *non-UTF8* sequence is an error.
     /// This matters for debug directories, whose paths are sometimes not
     /// NUL-terminated at EOF.
+    #[cfg(test)]
     fn cstr(&self, off: u32) -> Result<String, PeError> {
-        let start = (self.base as u64).checked_add(off as u64).unwrap_or(u64::MAX) as usize;
+        let start = (self.base as u64)
+            .checked_add(off as u64)
+            .unwrap_or(u64::MAX) as usize;
         let tail = self.data.get(start..).unwrap_or(&[]);
         let end = tail.iter().position(|&c| c == 0).unwrap_or(tail.len());
         if end > 4096 {
@@ -278,7 +289,11 @@ impl Pe {
         };
         let is64 = kind == PeKind::Pe32Plus;
         let entry_point_rva = opt.u32(16)?;
-        let image_base = if is64 { opt.u64(24)? } else { opt.u32(28)? as u64 };
+        let image_base = if is64 {
+            opt.u64(24)?
+        } else {
+            opt.u32(28)? as u64
+        };
         let section_alignment = opt.u32(32)?;
         let file_alignment = opt.u32(36)?;
         let size_of_image = opt.u32(56)?;
@@ -290,10 +305,17 @@ impl Pe {
         let mut directories = Vec::new();
         for i in 0..n_dirs.min(16) {
             let off = dir_base + (i as u32) * 8;
-            directories.push(Directory { index: i, rva: opt.u32(off)?, size: opt.u32(off + 4)? });
+            directories.push(Directory {
+                index: i,
+                rva: opt.u32(off)?,
+                size: opt.u32(off + 4)?,
+            });
         }
         let dir = |i: usize| -> Option<Directory> {
-            directories.iter().copied().find(|d| d.index == i && d.rva != 0)
+            directories
+                .iter()
+                .copied()
+                .find(|d| d.index == i && d.rva != 0)
         };
 
         // Section table follows the optional header.
@@ -304,7 +326,9 @@ impl Pe {
             let s = Reader::at(raw, sec_base + (i as usize) * 40);
             let mut name = [0u8; 8];
             name.copy_from_slice(s.bytes(0, 8)?);
-            let name = String::from_utf8_lossy(&name).trim_end_matches('\0').to_string();
+            let name = String::from_utf8_lossy(&name)
+                .trim_end_matches('\0')
+                .to_string();
             let virtual_size = s.u32(8)?;
             let virtual_address = s.u32(12)?;
             let file_size = s.u32(16)?;
@@ -327,13 +351,18 @@ impl Pe {
             });
         }
 
-        let image = ImageView { raw, sections: &sections, image_base };
+        let image = ImageView {
+            raw,
+            sections: &sections,
+            image_base,
+        };
         let imports = image.read_imports(dir(Directory::IMPORT), dir(Directory::DELAY_IMPORT))?;
         let exports = image.read_exports(dir(Directory::EXPORT))?;
         let relocations = image.read_relocations(dir(Directory::BASERELOC))?;
         let resources = resource::parse_resources(&image, dir(Directory::RESOURCE))?;
-        let (unwind_info_rva, unwind_info_size) =
-            dir(Directory::EXCEPTION).map(|d| (d.rva, d.size)).unwrap_or((0, 0));
+        let (unwind_info_rva, unwind_info_size) = dir(Directory::EXCEPTION)
+            .map(|d| (d.rva, d.size))
+            .unwrap_or((0, 0));
 
         Ok(Pe {
             kind,
@@ -376,7 +405,9 @@ impl Pe {
 
     /// Index of the section containing `rva`.
     pub fn section_of(&self, rva: u32) -> Option<usize> {
-        self.sections.iter().position(|s| rva >= s.virtual_address && rva < s.virtual_end())
+        self.sections
+            .iter()
+            .position(|s| rva >= s.virtual_address && rva < s.virtual_end())
     }
 
     /// Executable sections as flat `(rva, bytes)` views.
@@ -384,7 +415,11 @@ impl Pe {
         self.sections
             .iter()
             .filter(|s| s.is_executable())
-            .map(|s| CodeSection { name: s.name.clone(), rva: s.virtual_address, data: s.data.clone() })
+            .map(|s| CodeSection {
+                name: s.name.clone(),
+                rva: s.virtual_address,
+                data: s.data.clone(),
+            })
             .collect()
     }
 }
@@ -418,7 +453,9 @@ impl<'a> ImageView<'a> {
             if off >= mapped_len {
                 continue;
             }
-            let end = off.checked_add(len as usize).ok_or(PeError::BadRva { rva })?;
+            let end = off
+                .checked_add(len as usize)
+                .ok_or(PeError::BadRva { rva })?;
             if end <= s.data.len() {
                 return Ok(&s.data[off..end]);
             }
@@ -430,7 +467,9 @@ impl<'a> ImageView<'a> {
         }
         // Data directories may point into the headers themselves.
         let start = rva as usize;
-        let end = start.checked_add(len as usize).ok_or(PeError::BadRva { rva })?;
+        let end = start
+            .checked_add(len as usize)
+            .ok_or(PeError::BadRva { rva })?;
         self.raw.get(start..end).ok_or(PeError::BadRva { rva })
     }
 
@@ -526,7 +565,11 @@ impl<'a> ImageView<'a> {
                 let (name_rva, int_rva, iat_rva) = if attrs & 1 != 0 {
                     (name_field, int, iat)
                 } else {
-                    (name_field.wrapping_sub(base), int.wrapping_sub(base), iat.wrapping_sub(base))
+                    (
+                        name_field.wrapping_sub(base),
+                        int.wrapping_sub(base),
+                        iat.wrapping_sub(base),
+                    )
                 };
                 let library = self.cstr(name_rva)?;
                 self.read_thunks(&library, int_rva, iat_rva, true, &mut out)?;
@@ -594,9 +637,16 @@ impl<'a> ImageView<'a> {
             if rva == 0 {
                 continue;
             }
-            let section =
-                self.sections.iter().position(|s| rva >= s.virtual_address && rva < s.virtual_end());
-            out.push(Export { name: name_by_ordinal.get(&i).cloned(), ordinal: i + 1, rva, section });
+            let section = self
+                .sections
+                .iter()
+                .position(|s| rva >= s.virtual_address && rva < s.virtual_end());
+            out.push(Export {
+                name: name_by_ordinal.get(&i).cloned(),
+                ordinal: i + 1,
+                rva,
+                section,
+            });
         }
         Ok(out)
     }
@@ -626,7 +676,10 @@ impl<'a> ImageView<'a> {
                 if kind == RelocKind::Absolute32 {
                     continue;
                 }
-                out.push(Relocation { rva: page.wrapping_add((entry & 0x0fff) as u32), kind });
+                out.push(Relocation {
+                    rva: page.wrapping_add((entry & 0x0fff) as u32),
+                    kind,
+                });
             }
             rva += block_size;
         }

@@ -44,7 +44,9 @@ fn parses_real_windows_images_without_panicking() {
     let mut total_imports = 0usize;
     let mut total_exports = 0usize;
     for dir in &dirs {
-        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             let is_dll = path
@@ -118,5 +120,8 @@ fn kernel32_imports_resolve_to_known_symbols() {
             "kernel32 should export {expected}"
         );
     }
-    assert!(pe.imports.iter().any(|i| i.library.eq_ignore_ascii_case("ntdll.dll")));
+    assert!(pe
+        .imports
+        .iter()
+        .any(|i| i.library.eq_ignore_ascii_case("ntdll.dll")));
 }

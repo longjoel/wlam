@@ -19,11 +19,15 @@ fn real_dll_resources_resolve() {
     let mut entries = 0usize;
     for e in std::fs::read_dir(&dir).unwrap().flatten() {
         let p = e.path();
-        if !p.extension().map(|x| x.to_string_lossy().to_lowercase() == "dll").unwrap_or(false) {
+        if !p
+            .extension()
+            .map(|x| x.to_string_lossy().to_lowercase() == "dll")
+            .unwrap_or(false)
+        {
             continue;
         }
-        let pe = Pe::parse(&std::fs::read(&p).unwrap())
-            .unwrap_or_else(|err| panic!("{p:?}: {err}"));
+        let pe =
+            Pe::parse(&std::fs::read(&p).unwrap()).unwrap_or_else(|err| panic!("{p:?}: {err}"));
         if pe.resources.entries.is_empty() {
             continue;
         }
@@ -35,7 +39,11 @@ fn real_dll_resources_resolve() {
                 "{p:?}: resource data rva {:#x} unmapped",
                 r.data_rva
             );
-            assert!(r.size < 0x1000_0000, "{p:?}: implausible resource size {}", r.size);
+            assert!(
+                r.size < 0x1000_0000,
+                "{p:?}: implausible resource size {}",
+                r.size
+            );
         }
         // Icon-bearing DLLs should expose RT_ICON (3) leaves.
         if p.file_name().unwrap().to_string_lossy() == "user32.dll" {
@@ -46,5 +54,8 @@ fn real_dll_resources_resolve() {
         }
     }
     println!("{with_resources} DLLs with resources, {entries} leaf entries");
-    assert!(with_resources > 200, "expected resources in many DLLs, got {with_resources}");
+    assert!(
+        with_resources > 200,
+        "expected resources in many DLLs, got {with_resources}"
+    );
 }

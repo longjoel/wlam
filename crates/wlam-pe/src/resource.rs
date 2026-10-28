@@ -55,7 +55,9 @@ impl ResourceTable {
 
     /// All entries with the given numeric name.
     pub fn by_name(&self, name: u16) -> impl Iterator<Item = &ResourceEntry> {
-        self.entries.iter().filter(move |e| e.name.as_id() == Some(name))
+        self.entries
+            .iter()
+            .filter(move |e| e.name.as_id() == Some(name))
     }
 }
 
@@ -69,7 +71,14 @@ pub(crate) fn parse_resources(
     let mut table = ResourceTable::default();
     let Some(dir) = dir else { return Ok(table) };
     let root = dir.rva;
-    walk(image, root, root, 0, &mut (0, ResourceName::Id(0), 0), &mut table)?;
+    walk(
+        image,
+        root,
+        root,
+        0,
+        &mut (0, ResourceName::Id(0), 0),
+        &mut table,
+    )?;
     Ok(table)
 }
 
@@ -86,7 +95,9 @@ fn walk(
     // Bound the nesting depth to keep a malformed image from recursing
     // forever.
     if depth > 3 {
-        return Err(PeError::BadResources { reason: "resource tree deeper than 3 levels".into() });
+        return Err(PeError::BadResources {
+            reason: "resource tree deeper than 3 levels".into(),
+        });
     }
     let named = image.u16(dir_rva + 12)? as u32;
     let id_entries = image.u16(dir_rva + 14)? as u32;
@@ -202,8 +213,16 @@ mod tests {
         };
         let raw: Vec<u8> = vec![0u8; 0x200];
         let sections = vec![section];
-        let image = ImageView { raw: &raw, sections: &sections, image_base: 0 };
-        let dir = Directory { index: Directory::RESOURCE, rva: 0x100, size: 0x100 };
+        let image = ImageView {
+            raw: &raw,
+            sections: &sections,
+            image_base: 0,
+        };
+        let dir = Directory {
+            index: Directory::RESOURCE,
+            rva: 0x100,
+            size: 0x100,
+        };
         let table = parse_resources(&image, Some(dir)).expect("tree parses");
         assert_eq!(table.entries.len(), 1);
         let e = &table.entries[0];
