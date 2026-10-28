@@ -340,6 +340,49 @@ fn scan_iat_references(pe: &Pe) -> Vec<u64> {
     out
 }
 
+/// Recover jump tables for an explicit set of sites.
+///
+/// Exposed so tests can pin the result on known tables without running full
+/// discovery: this is the regression guard for the VA/RVA bug that made entry
+/// reads silently return `None`.
+pub fn recover_tables_at(pe: &Pe, sites: &[u64]) -> Vec<(u64, Vec<u64>)> {
+    let mut prog = Program {
+        blocks: BTreeMap::new(),
+        functions: BTreeSet::new(),
+        jump_table_targets: BTreeSet::new(),
+        resolved_indirect: BTreeSet::new(),
+        unresolved: sites.iter().copied().collect(),
+        userops: BTreeMap::new(),
+        passes: 0,
+    };
+    // The recovery needs the site's block, so lift just that block.
+    let base = pe.image_base as u64;
+    for &site in sites {
+        let Ok(rva) = u32::try_from(site.saturating_sub(base)) else { continue };
+        let Some(idx) = pe.section_of(rva) else { continue };
+        let sec = &pe.sections[idx];
+        let off = (rva - sec.virtual_address) as usize;
+        let bytes = sec.data[off.min(sec.data.len())..].to_vec();
+        let block = crate::with_big_stack(move || lift_block(&bytes, site));
+        if !matches!(block.terminator, Terminator::IndirectJump) {
+            continue;
+        }
+        let lifted = block;
+        prog.blocks.insert(
+            site,
+            DiscoveredBlock {
+                start: site,
+                end: lifted.end,
+                edge: Edge::IndirectJump { site },
+                op_count: lifted.op_count(),
+                native_count: lifted.native_instruction_count(),
+                reason: "test",
+            },
+        );
+    }
+    recover_jump_tables(pe, &prog)
+}
+
 /// Diagnostic: why each unresolved indirect site did or did not recover.
 ///
 /// Returns `(site, bound_found, has_indexed_load)` per unresolved site. A site
@@ -377,7 +420,7 @@ pub fn recovery_report(pe: &Pe, prog: &Program) -> Vec<(u64, Option<u64>, bool)>
 /// length comes from that bound, never from scanning until the data ends, and
 /// every entry must point at an executable, aligned instruction start —
 /// Uxn32's table has 7 valid entries and a data word as entry 8.
-fn recover_jump_tables(pe: &Pe, prog: &Program) -> Vec<(u64, Vec<u64>)> {
+pub(crate) fn recover_jump_tables(pe: &Pe, prog: &Program) -> Vec<(u64, Vec<u64>)> {
     let base = pe.image_base as u64;
     let mut out = Vec::new();
     for &site in &prog.unresolved {
@@ -385,75 +428,80 @@ fn recover_jump_tables(pe: &Pe, prog: &Program) -> Vec<(u64, Vec<u64>)> {
         if !matches!(block.edge, Edge::IndirectJump { .. }) {
             continue;
         }
-        // The jump's effective address is a computed temp; the table is the
-        // immediate addend of the `Add` that produces it
-        // (`jmp [ecx*4 + 0x402938]` -> `Add(0x402938, Mul(ECX, 4))`).
-        // The jump's effective address is a computed temp. Two shapes occur:
-        //   jmp [ebx*4 + 0x406054]  -> Add(0x406054, Mul(EBX, 4)) into a temp
-        //   jmp [0x411124]          -> the indirect target *is* a constant slot
-        //                               reached straight from memory
         let ops = block_ops(pe, block);
-        // The block's P-code tells us the shape:
-        //   jmp [ebx*4 + 0x406054]  -> Mul, Add(0x406054, tidx) -> goto *taddr
-        //   jmp [0x411124]          -> goto *ram:0x411124       (import thunk slot)
-        //   jmp eax                 -> goto *EAX                (no static target)
-        let jump_target = ops.iter().find_map(|o| match o {
+        let Some(jump_target) = ops.iter().find_map(|o| match o {
             IR::IndirectJump { target } => Some(target.clone()),
             _ => None,
-        });
-        let Some(jump_target) = jump_target else { continue };
-        let table = match &jump_target {
-            // The value the jump computes lives in a temp whose address Sleigh
-            // reports in the *register* space. A RAM-space destination instead
-            // means the encoding baked in a fixed slot address (an import
-            // thunk), which has no guest targets.
-            Operand::Ram { .. } => None,
-            Operand::Const { value, .. } => Some(*value),
-            Operand::Reg { name, .. } if name.starts_with("t") => {
-                let t: u64 = u64::from_str_radix(&name[1..], 16).unwrap_or(u64::MAX);
-                // The displacement of the indexed load is the Add's constant
-                // addend; the *index* reaches the jump through the Mul.
-                let add = ops.iter().find_map(|o| match o {
-                    IR::Bin { op: BinOp::Add, dst: Operand::Temp { offset: d, .. }, operands }
-                        if *d == t =>
-                    {
-                        Some(operands)
-                    }
-                    _ => None,
-                });
-                add.and_then(|ops2| ops2.0.const_or_ram().or_else(|| ops2.1.const_or_ram()))
-                    // Require the other operand to be a computed index, not
-                    // another constant (that would be a plain address).
-                    .filter(|_| {
-                        add.map(|ops2| !(ops2.0.const_or_ram().is_some() && ops2.1.const_or_ram().is_some()))
-                            .unwrap_or(false)
-                    })
+        }) else {
+            continue;
+        };
+        // Sleigh destinations come in two shapes, and only these two:
+        //   computed: the destination is a Unique (offsets encode
+        //             `inst_start << 16 | slot`, far above 4 GiB), produced by
+        //             `Add(disp, index*4)` — a switch table.
+        //   encoded:  `jmp [slot]` where the destination *is* the slot address.
+        let value_of = |o: &Operand| -> Option<u64> {
+            match o {
+                Operand::Reg { name, .. } if name.starts_with('t') => {
+                    u64::from_str_radix(&name[1..], 16).ok()
+                }
+                Operand::Temp { offset, .. } | Operand::Ram { offset, .. } => Some(*offset),
+                Operand::Const { value, .. } => Some(*value),
+                _ => None,
+            }
+        };
+        let Some(target) = value_of(&jump_target) else { continue };
+        // Prefer the indexed-table shape whenever an Add produces the
+        // destination: `jmp [ecx*4 + 0x40e300]` yields
+        // `Add(0x40e300, Mul(ECX, 4))` regardless of the temp's width, so
+        // classifying by value magnitude alone missed real tables whose
+        // temporaries are 4-byte (wrapped) rather than far above 4 GiB.
+        let indexed = ops.iter().find_map(|o| match o {
+            IR::Bin { op: BinOp::Add, dst, operands } if value_of(dst) == Some(target) => {
+                operands.0.const_or_ram().or_else(|| operands.1.const_or_ram())
             }
             _ => None,
+        });
+        let table = match indexed {
+            Some(t) => {
+                // The addend must be a mapped, non-negative address.
+                u32::try_from(t.saturating_sub(base)).ok().filter(|rva| pe.section_of(*rva).is_some()).map(|_| t)
+            }
+            None => {
+                // `jmp [slot]`: a table starts with pointers into code; an IAT
+                // thunk slot holds a small non-code value (0x411124 -> 0x125da).
+                let Ok(rva) = u32::try_from(target.saturating_sub(base)) else { continue };
+                let first = pe
+                    .read_rva(rva, 4)
+                    .map(|b| u64::from(u32::from_le_bytes([b[0], b[1], b[2], b[3]])))
+                    .unwrap_or(0);
+                if points_into_code(pe, base, first) {
+                    Some(target)
+                } else {
+                    None
+                }
+            }
         };
         let Some(table) = table else { continue };
-        // A table must live in a read-only data section.
         let Ok(table_rva) = u32::try_from(table.saturating_sub(base)) else { continue };
-        match pe.section_of(table_rva) {
-            Some(i) if !pe.sections[i].is_executable() => {}
-            _ => continue,
-        }
-        // The bound check lives earlier in the *same function's* straight-line
-        // code, not in a predecessor block: discovery splits blocks at every
-        // taken jump, so the `cmp` and the switch can be separated by a block
-        // boundary (verified: at 0x405ebc the `cmp` is ~40 bytes back, after an
-        // unrelated `ja`). Scan backwards in the enclosing text window.
-        let bound = scan_back_for_bound(pe, site, 96);
-        let Some(bound) = bound else { continue };
-        let count = (bound as usize + 1).min(256);
+        // Tables may live in writable data OR in .text: MSVC places jump tables
+        // in .text right after the function (verified: Uxn32's .text has
+        // rawsize 0x10000 with .rdata starting at VA 0x11000, so RVA 0x2938 is
+        // inside .text and holds the table). Only require the RVA to be mapped.
+        let Some(_) = pe.section_of(table_rva) else { continue };
+        let cap = scan_back_for_bound(pe, site, 96)
+            .map(|b| b as usize + 1)
+            .unwrap_or(256)
+            .min(256);
+        // `table` is a virtual address; `read_rva` takes RVAs. Passing the VA
+        // silently yielded None for every entry — one full round of debugging,
+        // because probe code used RVAs while discovery passed VAs.
         let mut targets = Vec::new();
-        for i in 0..count {
-            let Ok(slot) = u32::try_from(table).map(|t| t + (i as u32) * 4) else { break };
-            let Some(raw) = pe.read_rva(slot, 4) else { break };
+        for i in 0..cap {
+            let Some(slot_rva) = table_rva.checked_add((i as u32) * 4) else { break };
+            let Some(raw) = pe.read_rva(slot_rva, 4) else { break };
             let v = u64::from(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]));
-            let Ok(rva) = u32::try_from(v.saturating_sub(base)) else { break };
-            let Some(idx) = pe.section_of(rva) else { break };
-            if !pe.sections[idx].is_executable() || rva % 4 != 0 && v % 4 != 0 {
+            if !points_into_code(pe, base, v) {
                 break;
             }
             targets.push(v);
@@ -465,23 +513,18 @@ fn recover_jump_tables(pe: &Pe, prog: &Program) -> Vec<(u64, Vec<u64>)> {
     out
 }
 
-/// Scan backwards from `site` for the nearest `cmp <8-bit temp>, imm` that
-/// feeds a `ja`, within `limit` bytes. Returns the immediate (bound).
+/// Upper bound on a switch's index, from the `cmp <reg>, imm` encoding.
 ///
-/// Decoding a window and walking instructions forward from a plausible start is
-/// unreliable mid-function, so this decodes forward from `site - limit` and
-/// keeps the last matching comparison before `site`.
-pub(crate) fn scan_back_for_bound(pe: &Pe, site: u64, limit: u64) -> Option<u64> {
-    // Do NOT decode forward from `site - limit`: x86 is variable-length, so an
-    // arbitrary start often desynchronises and the comparison never appears
-    // (measured at 0x405ebc, where a 96-byte window decoded into garbage).
-    // Instead, pattern-match the encoding of `cmp <reg>, imm` in a bounded
-    // byte window and take the *last* occurrence. The encodings used by both
-    // clang and MSVC for switch bound checks are:
-    //   3C ib            cmp al, imm8
-    //   80 /7 ib         cmp r/m8, imm8
-    //   3D id            cmp eax, imm32
-    //   83 /7 ib         cmp r/m32, imm8  (sign-extended)
+/// x86 is variable-length, so decoding forward from `site - N` desynchronises
+/// and misses the comparison (verified at 0x405ebc). The comparison's P-code is
+/// also unreliable: `cmp eax, 0x1f` compiles to a `LessU` with **no consumer**
+/// because the hardware flags suffice. Pattern-matching the encodings is what
+/// actually works:
+///   3C ib     cmp al, imm8
+///   80 /7 ib  cmp r/m8, imm8
+///   3D id     cmp eax, imm32
+///   83 /7 ib  cmp r/m32, imm8
+fn scan_back_for_bound(pe: &Pe, site: u64, limit: u64) -> Option<u64> {
     let base = pe.image_base as u64;
     let start = site.saturating_sub(limit);
     let rva = u32::try_from(start.saturating_sub(base)).ok()?;
@@ -496,7 +539,9 @@ pub(crate) fn scan_back_for_bound(pe: &Pe, site: u64, limit: u64) -> Option<u64>
             0x80 if window.get(i + 1).map(|b| (b >> 3) & 7 == 7).unwrap_or(false) => {
                 window.get(i + 2).map(|b| *b as u64)
             }
-            0x3d => window.get(i + 1..i + 5).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u64),
+            0x3d => window
+                .get(i + 1..i + 5)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u64),
             0x83 if window.get(i + 1).map(|b| (b >> 3) & 7 == 7).unwrap_or(false) => {
                 window.get(i + 2).map(|b| *b as i8 as i64 as u64)
             }
@@ -509,10 +554,14 @@ pub(crate) fn scan_back_for_bound(pe: &Pe, site: u64, limit: u64) -> Option<u64>
     best
 }
 
-/// The trailing immediate of an disassembly line such as `CMP EAX,0x2b`.
-fn last_imm(text: &str) -> Option<u64> {
-    text.rsplit(|c: char| c == ',' || c == ' ')
-        .find_map(|tok| tok.strip_prefix("0x").and_then(|h| u64::from_str_radix(h, 16).ok()))
+
+/// Whether `addr` lands in an executable section of the image.
+fn points_into_code(pe: &Pe, base: u64, addr: u64) -> bool {
+    u32::try_from(addr.saturating_sub(base))
+        .ok()
+        .and_then(|rva| pe.section_of(rva))
+        .map(|i| pe.sections[i].is_executable())
+        .unwrap_or(false)
 }
 
 /// Re-lift a discovered block/// Re-lift a discovered block to inspect its P-code (discovery stores only
@@ -646,5 +695,67 @@ mod tests {
         let prog = crate::with_big_stack(move || discover(&pe, 8));
         let ratio = prog.pcode_ratio();
         assert!(ratio > 1.0 && ratio < 20.0, "pcode/native ratio {ratio}");
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+
+    fn uxn32() -> Option<Pe> {
+        let bytes = std::fs::read("../../north-star/bin/Uxn32.exe").ok()?;
+        Pe::parse(&bytes).ok()
+    }
+
+    /// Pinned against the raw bytes of Uxn32.exe: each table is followed
+    /// immediately by data (0x6060100, 0x7070700, machine code), so the exact
+    /// entry counts are 7, 8 and 11. This is the regression guard for the
+    /// VA/RVA bug where `read_rva` was handed a virtual address and silently
+    /// returned `None`, producing zero targets for a whole round.
+    #[test]
+    fn recovers_known_tables_with_exact_entry_counts() {
+        let Some(pe) = uxn32() else {
+            eprintln!("skipping: north-star binary not present");
+            return;
+        };
+        // (jump site VA, table VA, expected entries)
+        let cases = [
+            (0x40172au64, 0x402938u64, 7usize),
+            (0x40222fu64, 0x402984u64, 8),
+            (0x405ebcu64, 0x406054u64, 11),
+        ];
+        let sites: Vec<u64> = cases.iter().map(|(s, _, _)| *s).collect();
+        let recovered = crate::with_big_stack(move || recover_tables_at(&pe, &sites));
+        for (site, table, want) in cases {
+            let (_, targets) = recovered
+                .iter()
+                .find(|(s, _)| *s == site)
+                .unwrap_or_else(|| panic!("no table recovered for site {site:#x}"));
+            assert_eq!(
+                targets.len(),
+                want,
+                "site {site:#x} table {table:#x}: got {:X?}",
+                targets
+            );
+            // Entries are the table's contents, in order.
+            let base = 0x40_0000u64;
+            let bytes = std::fs::read("../../north-star/bin/Uxn32.exe").unwrap();
+            let pe = Pe::parse(&bytes).unwrap();
+            let table_rva = (table - base) as u32;
+            for (i, t) in targets.iter().enumerate() {
+                let raw = pe.read_rva(table_rva + i as u32 * 4, 4).unwrap();
+                let dword = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as u64;
+                assert_eq!(*t, dword, "entry {i} of {table:#x}");
+            }
+        }
+    }
+
+    #[test]
+    fn thunk_slots_are_not_treated_as_tables() {
+        let Some(pe) = uxn32() else { return };
+        // `jmp [0x411124]` is an IAT thunk: the slot holds 0x125da, not code.
+        let sites = vec![0x40dde0u64, 0x40ddcbu64];
+        let recovered = crate::with_big_stack(move || recover_tables_at(&pe, &sites));
+        assert!(recovered.is_empty(), "thunks must not yield tables: {recovered:?}");
     }
 }

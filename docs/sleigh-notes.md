@@ -115,3 +115,46 @@ not appear in the jump's own block, and validating table entries whose
 alignment is not 4. Until that lands, discovery reports every indirect site in
 `unresolved_indirect()` — never silently guessed — and the emitter will refuse
 those blocks rather than miscompile them.
+
+## Jump-table recovery: what worked, and one bug worth remembering
+
+### The bug: virtual address passed where an RVA was required
+
+`Pe::read_rva` takes an **RVA**. The table start computed from the jump's
+`Add` operand is a **virtual address**. Passing the VA made every entry read
+return `None`, so recovery silently produced zero targets.
+
+It survived a full debugging round because every probe I wrote used RVAs
+(`0x2938`) while the code used VAs (`0x402938`), and *both* "worked" — the
+probe honestly, the code by finding nothing. The lesson: when a primitive is
+verified in isolation but fails in situ, check the **units of the argument**,
+not the logic around it.
+
+### Verified facts now pinned by tests
+
+| site | table | entries |
+|---|---|---|
+| `0x40172a` | `0x402938` | 7 (`401739 4019c2 … 402913`) |
+| `0x40222f` | `0x402984` | 8 |
+| `0x405ebc` | `0x406054` | 11 |
+
+Each table is immediately followed by data (`0x6060100`, `0x7070700`, or
+machine code), so these counts are the real ends, not guesses. MSVC places the
+tables **inside `.text`** (`.text` raw size `0x10000`; `.rdata` starts at VA
+`0x11000`), so a "tables live in `.rdata`" rule is wrong for this toolchain.
+
+Recovery currently resolves **16 of 18** indirect sites in Uxn32 (55 targets,
+block count 1,639 → 1,687).
+
+### The 2 unrefined cases (plus 6 beyond the scope of the rule)
+
+| site | shape | why unresolved |
+|---|---|---|
+| `0x4016c9` | `jmp eax` | register destination; no static table |
+| `0x40ddcb`, `0x40dde0` | `jmp [0x411124]` | IAT thunk slots hold `0x125da`/`0x125e4`, not code |
+| `0x40e2e8`, `0x40ff08`, `0x410018`, … | `jmp [reg*4 + 0x40e300]` | the `Add` addend is **not** the table: entries there decode as instructions (`0x900040e3`, `0x5e08458b`), i.e. the guessed address lands in code. The real table is elsewhere. |
+
+The last group is the one tempting shortcut: "the addend is the table". It is
+not, at least not for MSVC's `jmp [reg*4 + X]` form with these functions. A
+correct rule will need to locate the table from the *load* that feeds the jump
+rather than from the jump's address arithmetic alone.
