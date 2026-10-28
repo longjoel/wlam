@@ -707,8 +707,8 @@ pub fn module_with_snapshot(
     let _ = initial;
     let mut body = block.body.clone();
     body.pop(); // drop the trailing `end`
-    // Prologue: load the initial register values from the snapshot area into
-    // the locals, so the function starts from a known machine state.
+                // Prologue: load the initial register values from the snapshot area into
+                // the locals, so the function starts from a known machine state.
     for (i, name) in registers.iter().enumerate() {
         let Some(idx) = locals.reg(name) else {
             continue;

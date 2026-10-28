@@ -140,7 +140,14 @@ pub fn chain(
         .enumerate()
         .map(|(i, a)| (*a, i as u32 + import_count))
         .collect();
-    Ok(ChainedFunction { order, indices, locals, registers: registers.to_vec(), requires, problems })
+    Ok(ChainedFunction {
+        order,
+        indices,
+        locals,
+        registers: registers.to_vec(),
+        requires,
+        problems,
+    })
 }
 
 /// Emit one block as a wasm function body (without the size prefix).
@@ -191,7 +198,10 @@ fn emit_block_body(
     match &block.terminator {
         Terminator::FallsThrough => call(target_index(f, block.end)?, &mut body),
         Terminator::Jump(t) => call(target_index(f, *t)?, &mut body),
-        Terminator::Conditional { taken: Some(t), not_taken } => {
+        Terminator::Conditional {
+            taken: Some(t),
+            not_taken,
+        } => {
             let cond = condition_local(block, &translated.map)?;
             body.push(op::LOCAL_GET);
             body.extend_from_slice(&leb_u32(cond));
@@ -221,7 +231,9 @@ fn target_index(f: &ChainedFunction, addr: u64) -> Result<u32, TranslateError> {
     f.indices
         .get(&addr)
         .copied()
-        .ok_or(TranslateError::Unsupported("branch target outside the chained function"))
+        .ok_or(TranslateError::Unsupported(
+            "branch target outside the chained function",
+        ))
 }
 
 /// The local holding the `CBranch` condition, found from the block's IR.
@@ -237,18 +249,79 @@ fn condition_local(block: &Block, locals: &LocalMap) -> Result<u32, TranslateErr
             crate::ir::IR::CBranch { cond, .. } => Some(cond.clone()),
             _ => None,
         })
-        .ok_or(TranslateError::Unsupported("conditional block without a CBranch"))?;
+        .ok_or(TranslateError::Unsupported(
+            "conditional block without a CBranch",
+        ))?;
     match &cond {
         crate::ir::Operand::Temp { offset, .. } => locals
             .temp_index(*offset)
             .ok_or(TranslateError::Unsupported("condition temp has no local")),
-        crate::ir::Operand::Reg { name, .. } => locals
-            .reg(name.as_ref())
-            .ok_or(TranslateError::Unsupported("condition register has no local")),
+        crate::ir::Operand::Reg { name, .. } => locals.reg(name.as_ref()).ok_or(
+            TranslateError::Unsupported("condition register has no local"),
+        ),
         crate::ir::Operand::Const { .. } | crate::ir::Operand::Ram { .. } => {
             Err(TranslateError::Unsupported("constant condition"))
         }
     }
+}
+
+/// Insert a register-seeding prologue into a block body.
+///
+/// The body layout is `[locals][ops...][end]`; the prologue goes immediately
+/// after the locals declaration so the block's own ops see the seeded values.
+fn seed_registers(body: Vec<u8>, f: &ChainedFunction) -> Vec<u8> {
+    // Decode the locals declaration length to find where ops begin.
+    let mut i = 0usize;
+    let groups = read_leb(&body, &mut i);
+    for _ in 0..groups {
+        let _count = read_leb(&body, &mut i);
+        i += 1; // value type
+    }
+    let mut out = Vec::with_capacity(body.len() + f.registers.len() * 12);
+    out.extend_from_slice(&body[..i]);
+    for (idx, name) in f.registers.iter().enumerate() {
+        let Some(local) = f.locals.reg(name) else {
+            continue;
+        };
+        out.push(0x41); // i32.const
+        out.extend_from_slice(&leb_u32((crate::REG_SNAPSHOT_BASE + idx as u64 * 4) as u32));
+        out.push(0x28); // i32.load
+        out.push(0x00);
+        out.push(0x00);
+        out.push(0x21); // local.set
+        out.extend_from_slice(&leb_u32(local));
+    }
+    out.extend_from_slice(&body[i..]);
+    out
+}
+
+/// Read an unsigned LEB128 at `*i`, advancing it.
+fn read_leb(bytes: &[u8], i: &mut usize) -> u32 {
+    let mut result = 0u32;
+    let mut shift = 0;
+    loop {
+        let b = bytes[*i];
+        *i += 1;
+        result |= ((b & 0x7f) as u32) << shift;
+        if b & 0x80 == 0 {
+            return result;
+        }
+        shift += 7;
+    }
+}
+
+/// A body that declares the shared locals and traps.
+///
+/// Used when a block in the chain has no bytes (a target outside the image):
+/// its wasm function must still exist so function indices stay valid.
+fn trapping_body(locals: &LocalMap) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&leb_u32(1));
+    body.push(locals.len() as u8); // count (LEB for small values)
+    body.push(0x7f);
+    body.push(op::UNREACHABLE);
+    body.push(op::END);
+    body
 }
 
 /// Build a wasm module exporting `entry()` that chains the function's blocks.
@@ -258,10 +331,26 @@ pub fn module_for_function(
     entry: u64,
 ) -> Result<Vec<u8>, TranslateError> {
     let problems: BTreeMap<u64, String> = f.problems.iter().cloned().collect();
+    // Emit one body per entry in `order`, including a trapping stub for a block
+    // whose bytes are unavailable. The function and code sections MUST agree on
+    // this count: skipping a body here produced "function and code section have
+    // inconsistent lengths", which is exactly what the validator caught.
     let mut bodies = Vec::new();
     for addr in &f.order {
-        let Some(block) = blocks.get(addr) else { continue };
-        bodies.push(emit_block_body(block, f, problems.get(addr).map(|s| s.as_str()))?);
+        match blocks.get(addr) {
+            Some(block) => {
+                let mut body = emit_block_body(block, f, problems.get(addr).map(|s| s.as_str()))?;
+                if *addr == entry {
+                    // The entry function seeds registers from the snapshot area.
+                    // Without this every local starts at 0, so a lifted
+                    // comparison always compares against zero (a real bug: a
+                    // `jl` with EAX=7 still branched as if EAX were 0).
+                    body = seed_registers(body, f);
+                }
+                bodies.push(body);
+            }
+            None => bodies.push(trapping_body(&f.locals)),
+        }
     }
     let mut e = Encoder::new();
     module_header(&mut e);

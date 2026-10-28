@@ -16,14 +16,22 @@ optimistic narration. Update it whenever a claim would otherwise be stale.
 - `wlam-emit` translator: IR → wasm for straight-line code. Differential gate
   passes 7/7 on registers and flags.
 
-## Not working
+## Working (chaining, added this round)
 
-- **Control-flow chaining does not execute correctly yet.** Block chaining
-  emits a validated module for a four-block counting loop, but running it does
-  not terminate — the loop's exit condition is not taking effect. This is the
-  current top blocker; the single-instruction differential gate passes, so the
-  defect is in the chaining epilogue (how a block's `CBranch` condition reaches
-  the `if`), not in instruction translation.
+- **Control-flow chaining executes correctly.** Direct jumps chain into the
+  next block, and conditional branches take the right path in both directions,
+  verified by executing modules and reading guest memory
+  (`tests/chain.rs`, 3 tests).
+
+Two real bugs were fixed to get there:
+- The function section declared `order.len()` functions while the code section
+  emitted one fewer when a target block was absent — caught by `wasm-tools
+  validate` as "function and code section have inconsistent lengths".
+- The chained entry function did not seed registers, so every local started at
+  zero: a `jl` with `EAX=7` still branched as if `EAX` were 0. The entry now
+  loads its registers from the snapshot area before running.
+
+## Not working
 - Guest calls/returns across functions are not chained; a `Call` needs a
   function table, a `Ret` needs a return stack.
 - The 13 failing tests in `wlam-lift-x86` are the retired hand-written lifter
