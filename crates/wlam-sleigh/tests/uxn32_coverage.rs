@@ -127,7 +127,10 @@ fn collect_regs(ir: &IR, out: &mut std::collections::BTreeSet<String>) {
             visit(dst, out);
             visit(src, out);
         }
-        IR::Branch { target } | IR::Call { target } | IR::CallInd { target } => visit(target, out),
+        IR::Branch { target }
+        | IR::IndirectJump { target }
+        | IR::Call { target }
+        | IR::CallInd { target } => visit(target, out),
         IR::CBranch { cond, target } => {
             visit(cond, out);
             visit(target, out);

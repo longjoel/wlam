@@ -81,3 +81,37 @@ and tested rather than hidden behind a build-profile change.
 - P-code ops per native instruction (**P-U / P-T**): **4.0** (77,059 ops for
   19,093 instructions). A low, linear ratio is what makes emitting one wasm
   function per basic block legitimate instead of trace interpretation.
+
+## Indirect jumps: what arrives, and what still blocks recovery
+
+`Operand`/`IR` classify Sleigh varnodes. **A computed jump destination arrives in
+the *register* space**, not as a `Ram` varnode:
+
+```
+jmp [ebx*4 + 0x406054]  ->  Mul(EBX, 4) into temp A
+                            Add(0x406054, A) into temp B      # B is Reg-space
+                            IndirectJump(target = B)
+```
+
+With `Operand::Reg { name: "t<hex>" }` this follows directly. A destination that
+really is in `Ram` means the encoding baked in a fixed slot address — an import
+thunk (`jmp [0x411124]`), which has no guest targets.
+
+### Open problem: switch table length
+
+Recovery of the *bound* works: `cmp <reg>, imm` encodings (`3C ib`, `80 /7 ib`,
+`3D id`, `83 /7 ib`) are matched in a byte window before the site and yield the
+right bound at every switch in Uxn32 (15, 16, 17, 20, ...). Two traps found on
+the way, both of which cost real debugging time:
+
+- **Never decode forward from `site - N`.** x86 is variable-length; at
+  `0x405ebc` a 96-byte window decoded into garbage (starting mid-instruction).
+- **Do not look for the comparison in P-code.** The bound `cmp eax, 0x1f` at
+  `0x405eb9` compiles to `t = LessU(...)` **without a consumer**; reading the
+  *encoding* is what works.
+
+What is still unresolved is linking the bound to the table start when both do
+not appear in the jump's own block, and validating table entries whose
+alignment is not 4. Until that lands, discovery reports every indirect site in
+`unresolved_indirect()` — never silently guessed — and the emitter will refuse
+those blocks rather than miscompile them.

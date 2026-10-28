@@ -11,5 +11,6 @@ description = "x86-32 lifter backed by Ghidra's Sleigh specification (via rsleig
 [workspace]
 
 [dependencies]
+wlam-pe = { path = "../wlam-pe" }
 rsleigh-api = { path = "../../toolchain/rsleigh/rsleigh-api" }
 pcode-ir = { path = "../../toolchain/rsleigh/pcode-ir" }

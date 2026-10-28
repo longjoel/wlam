@@ -31,6 +31,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod discover;
 pub mod registers;
 
 pub use registers::X86_32_REGISTERS;
@@ -185,8 +186,11 @@ pub enum IR {
     Un { op: UnOp, dst: Operand, src: Operand },
     /// Extract bytes `[lsb, lsb+sizeof(dst))` of `src`.
     Subpiece { dst: Operand, src: Operand, lsb: u32 },
-    /// Unconditional branch to a constant or computed destination.
+    /// Unconditional branch to a destination fixed by the encoding.
     Branch { target: Operand },
+    /// Branch through a register or memory cell: a jump table, a computed
+    /// goto, or an IAT-resolved thunk tail. Requires target resolution.
+    IndirectJump { target: Operand },
     /// Conditional branch.
     CBranch { cond: Operand, target: Operand },
     /// Call to a constant address (a known guest function).
@@ -264,7 +268,10 @@ pub fn lower(op: &PcodeOp) -> IR {
         }
         P::Branch { dest } => IR::Branch { target: operand(dest) },
         P::CBranch { dest, cond } => IR::CBranch { cond: operand(cond), target: operand(dest) },
-        P::BranchInd { dest } => IR::Branch { target: operand(dest) },
+        // An *indirect* branch takes its destination from a register or
+        // memory, which is a jump table or a computed goto. Lowering it as a
+        // plain Branch would silently drop the indirection.
+        P::BranchInd { dest } => IR::IndirectJump { target: operand(dest) },
         P::Call { dest } => IR::Call { target: operand(dest) },
         P::CallInd { dest } => IR::CallInd { target: operand(dest) },
         P::Return { dest } => IR::Ret { target: Some(operand(dest)) },
@@ -463,6 +470,51 @@ pub fn lift_block(bytes: &[u8], start: u64) -> Block {
         }
     }
     Block { start, end: ip, instructions, terminator }
+}
+
+impl IR {
+    /// Human-readable form, e.g. `EAX = EAX + 0x5` or `CF = Carry(EAX, 0x5)`.
+    ///
+    /// Used by discovery (surface syntax is far more robust to read than
+    /// re-parsing it from operand fields) and by diagnostics.
+    pub fn text(&self) -> String {
+        fn o(op: &Operand) -> String {
+            match op {
+                Operand::Const { value, .. } => format!("{value:#x}"),
+                Operand::Reg { name, .. } => name.to_string(),
+                Operand::Temp { offset, .. } => format!("t{offset:x}"),
+                Operand::Ram { offset, .. } => format!("ram:{offset:#x}"),
+            }
+        }
+        match self {
+            IR::Copy { dst, src } => format!("{} = {}", o(dst), o(src)),
+            IR::Load { dst, addr, size } => format!("{} = *{}{{{size}}}", o(dst), o(addr)),
+            IR::Store { addr, value, size } => format!("*{}{{{size}}} = {}", o(addr), o(value)),
+            IR::Bin { op, dst, operands } => {
+                format!("{} = {op:?}({}, {})", o(dst), o(&operands.0), o(&operands.1))
+            }
+            IR::Un { op, dst, src } => format!("{} = {op:?}({})", o(dst), o(src)),
+            IR::Subpiece { dst, src, lsb } => format!("{} = {}.{lsb}", o(dst), o(src)),
+            IR::Branch { target } => format!("goto {}", o(target)),
+            IR::IndirectJump { target } => format!("goto *{}", o(target)),
+            IR::CBranch { cond, target } => format!("if {} goto {}", o(cond), o(target)),
+            IR::Call { target } => format!("call {}", o(target)),
+            IR::CallInd { target } => format!("call *{}", o(target)),
+            IR::Ret { target } => match target {
+                Some(t) => format!("return {}", o(t)),
+                None => "return".to_string(),
+            },
+            IR::Userop { kind, args, dst, id } => {
+                let a: Vec<String> = args.iter().map(o).collect();
+                let call = format!("{kind:?}({})", a.join(", "));
+                match dst {
+                    Some(d) => format!("{} = {call}  ; userop {id}", o(d)),
+                    None => format!("{call}  ; userop {id}"),
+                }
+            }
+            IR::Nop => "nop".to_string(),
+        }
+    }
 }
 
 /// Statistics over a lifted image: which userops and which Sleigh ops appear.
