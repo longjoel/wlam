@@ -1,0 +1,11 @@
+[package]
+name = "sleigh-probe"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+rsleigh = { path = "../rsleigh" }
+rsleigh-api = { path = "../rsleigh/rsleigh-api" }
+pcode-ir = { path = "../rsleigh/pcode-ir" }

@@ -1,6 +1,10 @@
 /target
+**/target
 /toolchain/cargo
 /toolchain/rustup
 /toolchain/wabt-src
 /toolchain/tools
 /toolchain/smoke
+/toolchain/ghidra
+/toolchain/rsleigh
+/toolchain/probe
