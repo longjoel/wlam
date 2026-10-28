@@ -27,6 +27,7 @@ wlam-host = { path = "crates/wlam-host" }
 
 thiserror = "2"
 libm = "0.2"
+iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "std", "instr_info"] }
 wasmi = "0.40"
 
 [profile.release]
