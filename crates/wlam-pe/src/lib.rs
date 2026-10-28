@@ -10,195 +10,14 @@
 
 mod error;
 mod resource;
+mod types;
 
 pub use error::PeError;
 pub use resource::{ResourceEntry, ResourceTable};
 
+pub use types::*;
+
 use std::collections::BTreeMap;
-
-/// PE image magic: PE32 (`0x10b`) or PE32+ (`0x20b`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PeKind {
-    /// 32-bit image. Addressing uses 4-byte fields.
-    Pe32,
-    /// 64-bit image. Address fields are 8 bytes.
-    Pe32Plus,
-}
-
-/// COFF file machine type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Machine {
-    I386,
-    Amd64,
-    Arm64,
-    Other(u16),
-}
-
-impl Machine {
-    fn from_raw(v: u16) -> Self {
-        match v {
-            0x014c => Machine::I386,
-            0x8664 => Machine::Amd64,
-            0xaa64 => Machine::Arm64,
-            other => Machine::Other(other),
-        }
-    }
-}
-
-/// One section header plus the file range backing it.
-#[derive(Debug, Clone)]
-pub struct Section {
-    pub name: String,
-    pub virtual_address: u32,
-    pub virtual_size: u32,
-    pub file_offset: u32,
-    pub file_size: u32,
-    pub characteristics: u32,
-    /// Bytes as laid out in the file (may be shorter than `virtual_size`;
-    /// the remainder is zero-filled at load time).
-    pub data: Vec<u8>,
-}
-
-impl Section {
-    /// Whether the section is mapped readable.
-    pub fn is_readable(&self) -> bool {
-        self.characteristics & 0x4000_0000 != 0
-    }
-    /// Whether the section is mapped writable.
-    pub fn is_writable(&self) -> bool {
-        self.characteristics & 0x8000_0000 != 0
-    }
-    /// Whether the section holds executable code.
-    pub fn is_executable(&self) -> bool {
-        self.characteristics & 0x2000_0000 != 0
-    }
-    /// Virtual end address, excluding 32-bit wrap.
-    pub fn virtual_end(&self) -> u32 {
-        self.virtual_address.wrapping_add(self.virtual_size)
-    }
-    /// Slice of the section's *file* bytes starting at RVA `rva`, if in range.
-    pub fn slice_at_rva(&self, rva: u32, len: u32) -> Option<&[u8]> {
-        let off = rva.checked_sub(self.virtual_address)?;
-        let start = off as usize;
-        let end = start.checked_add(len as usize)?;
-        self.data.get(start..end)
-    }
-}
-
-/// A section that holds executable code.
-#[derive(Debug, Clone)]
-pub struct CodeSection {
-    pub name: String,
-    pub rva: u32,
-    pub data: Vec<u8>,
-}
-
-/// One imported symbol and the IAT slot that receives its address.
-#[derive(Debug, Clone)]
-pub struct Import {
-    /// The DLL name, as written in the image (e.g. `KERNEL32.dll`).
-    pub library: String,
-    /// One-based ordinal for ordinal imports.
-    pub ordinal: Option<u16>,
-    /// Symbol name for name-based imports.
-    pub name: Option<String>,
-    /// RVA of the IAT slot the loader writes the resolved address into.
-    pub iat_rva: u32,
-    /// Whether this entry came from a delay-load descriptor.
-    pub delayed: bool,
-}
-
-impl Import {
-    /// A stable, human readable identifier: `LIBRARY!Name` or `LIBRARY!#Ordinal`.
-    pub fn symbol(&self) -> String {
-        match (&self.name, self.ordinal) {
-            (Some(n), _) => format!("{}!{}", self.library, n),
-            (None, Some(o)) => format!("{}!#{}", self.library, o),
-            (None, None) => format!("{}!<invalid>", self.library),
-        }
-    }
-}
-
-/// An exported symbol.
-#[derive(Debug, Clone)]
-pub struct Export {
-    pub name: Option<String>,
-    pub ordinal: u32,
-    /// RVA of the exported code.
-    pub rva: u32,
-    /// Index of the defining section, if in range.
-    pub section: Option<usize>,
-}
-
-/// A base relocation applied by the loader.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Relocation {
-    /// RVA where the fixup is applied.
-    pub rva: u32,
-    pub kind: RelocKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RelocKind {
-    /// 32-bit absolute address (`IMAGE_REL_BASED_HIGHLOW`).
-    Absolute,
-    /// 64-bit absolute address.
-    Dir64,
-    /// No-op padding (`IMAGE_REL_BASED_ABSOLUTE`).
-    Absolute32,
-    /// High 16 bits only.
-    High,
-    /// Low 16 bits only.
-    Low,
-    /// Something we do not interpret yet.
-    Other(u16),
-}
-
-/// A data directory from the optional header.
-#[derive(Debug, Clone, Copy)]
-pub struct Directory {
-    pub index: usize,
-    pub rva: u32,
-    pub size: u32,
-}
-
-impl Directory {
-    pub const EXPORT: usize = 0;
-    pub const IMPORT: usize = 1;
-    pub const RESOURCE: usize = 2;
-    pub const EXCEPTION: usize = 3;
-    pub const BASERELOC: usize = 5;
-    pub const DEBUG: usize = 6;
-    pub const TLS: usize = 9;
-    pub const LOAD_CONFIG: usize = 10;
-    pub const DELAY_IMPORT: usize = 13;
-}
-
-/// The complete, parsed image.
-#[derive(Debug)]
-pub struct Pe {
-    pub kind: PeKind,
-    pub machine: Machine,
-    pub image_base: u64,
-    pub entry_point_rva: u32,
-    pub section_alignment: u32,
-    pub file_alignment: u32,
-    pub subsystem: u16,
-    pub dll_characteristics: u16,
-    pub size_of_image: u32,
-    pub size_of_headers: u32,
-    pub sections: Vec<Section>,
-    pub directories: Vec<Directory>,
-    pub imports: Vec<Import>,
-    pub exports: Vec<Export>,
-    pub relocations: Vec<Relocation>,
-    pub resources: ResourceTable,
-    /// RVA of the exception directory (`UNWIND_INFO` array), 64-bit images.
-    pub unwind_info_rva: u32,
-    pub unwind_info_size: u32,
-    /// Whole file, retained for diagnostics.
-    pub raw: Vec<u8>,
-}
 
 /// Read helpers over a byte slice with bounds checks.
 struct Reader<'a> {
@@ -300,10 +119,17 @@ impl Pe {
         let size_of_headers = opt.u32(60)?;
         let subsystem = opt.u16(68)?;
         let dll_characteristics = opt.u16(70)?;
-        let n_dirs = opt.u32(92)? as usize;
+        let declared_dirs = opt.u32(92)? as usize;
         let dir_base = if is64 { 112 } else { 96 };
+        // `NumberOfRvaAndSizes` is not always trustworthy: bins produced by
+        // some linkers leave it at 0 while still emitting a full header. Trust
+        // the *header size* to bound what could be present, but only read
+        // entries the declared count admits, then recover structural
+        // directories afterwards.
+        let capacity = ((opt_size as usize).saturating_sub(dir_base as usize) / 8).min(16);
+        let n_dirs = declared_dirs.min(capacity);
         let mut directories = Vec::new();
-        for i in 0..n_dirs.min(16) {
+        for i in 0..n_dirs {
             let off = dir_base + (i as u32) * 8;
             directories.push(Directory {
                 index: i,
@@ -311,12 +137,9 @@ impl Pe {
                 size: opt.u32(off + 4)?,
             });
         }
-        let dir = |i: usize| -> Option<Directory> {
-            directories
-                .iter()
-                .copied()
-                .find(|d| d.index == i && d.rva != 0)
-        };
+        fn dir_of(dirs: &[Directory], i: usize) -> Option<Directory> {
+            dirs.iter().copied().find(|d| d.index == i && d.rva != 0)
+        }
 
         // Section table follows the optional header.
         let sec_base = e_lfanew + 24 + opt_size as usize;
@@ -355,12 +178,32 @@ impl Pe {
             raw,
             sections: &sections,
             image_base,
+            is64,
         };
-        let imports = image.read_imports(dir(Directory::IMPORT), dir(Directory::DELAY_IMPORT))?;
-        let exports = image.read_exports(dir(Directory::EXPORT))?;
-        let relocations = image.read_relocations(dir(Directory::BASERELOC))?;
-        let resources = resource::parse_resources(&image, dir(Directory::RESOURCE))?;
-        let (unwind_info_rva, unwind_info_size) = dir(Directory::EXCEPTION)
+        // Some linkers emit an intact import table with `NumberOfRvaAndSizes`
+        // = 0. Trusting the header alone would report a GUI program with no
+        // imports, which never reflects reality; recover it structurally.
+        let recovered_imports = if dir_of(&directories, Directory::IMPORT).is_none() {
+            image.find_import_directory()
+        } else {
+            None
+        };
+        if let Some(rva) = recovered_imports {
+            directories.push(Directory {
+                index: Directory::IMPORT,
+                rva,
+                size: 0,
+            });
+        }
+        let imports = image.read_imports(
+            dir_of(&directories, Directory::IMPORT),
+            dir_of(&directories, Directory::DELAY_IMPORT),
+        )?;
+        let exports = image.read_exports(dir_of(&directories, Directory::EXPORT))?;
+        let relocations = image.read_relocations(dir_of(&directories, Directory::BASERELOC))?;
+        let resources =
+            resource::parse_resources(&image, dir_of(&directories, Directory::RESOURCE))?;
+        let (unwind_info_rva, unwind_info_size) = dir_of(&directories, Directory::EXCEPTION)
             .map(|d| (d.rva, d.size))
             .unwrap_or((0, 0));
 
@@ -430,9 +273,99 @@ pub(crate) struct ImageView<'a> {
     pub sections: &'a [Section],
     /// Image base, used only to normalize legacy VA-style delay imports.
     pub image_base: u64,
+    /// Whether this is a PE32+ image (8-byte thunks and pointers).
+    pub is64: bool,
 }
 
 impl<'a> ImageView<'a> {
+    /// Read a NUL-terminated ASCII string at `rva`, if it is printable.
+    fn ascii_at(&self, rva: u32) -> Option<String> {
+        let mut out = Vec::new();
+        for i in 0..=260u32 {
+            let c = *self.bytes(rva + i, 1).ok()?.first()?;
+            if c == 0 {
+                return Some(String::from_utf8_lossy(&out).into_owned());
+            }
+            if !c.is_ascii_graphic() || out.len() > 255 {
+                return None;
+            }
+            out.push(c);
+        }
+        None
+    }
+
+    /// Validate `cand` as the start of an `IMAGE_IMPORT_DESCRIPTOR` list.
+    ///
+    /// Structural signature: a plausible module name ending in `.dll`, a thunk
+    /// array with at least one well-formed entry and a terminator, and a list
+    /// terminated by an all-zero descriptor. This is intentionally strict so
+    /// that the scan cannot invent imports out of unrelated data.
+    fn import_table_at(&self, cand: u32) -> bool {
+        let u32_at = |rva: u32| {
+            self.bytes(rva, 4)
+                .ok()
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        let (Some(oft), Some(name_rva), Some(first_thunk)) =
+            (u32_at(cand), u32_at(cand + 12), u32_at(cand + 16))
+        else {
+            return false;
+        };
+        if name_rva == 0 || (oft == 0 && first_thunk == 0) {
+            return false;
+        }
+        match self.ascii_at(name_rva) {
+            Some(n) if n.to_ascii_lowercase().ends_with(".dll") => {}
+            _ => return false,
+        }
+        let lookup = if oft != 0 { oft } else { first_thunk };
+        let mut entries = 0u32;
+        for i in 0..64u32 {
+            let Some(entry) = u32_at(lookup + i * 4) else {
+                return false;
+            };
+            if entry == 0 {
+                break;
+            }
+            if entry & 0x8000_0000 == 0 && self.bytes(entry + 2, 1).is_err() {
+                return false;
+            }
+            entries += 1;
+        }
+        if entries == 0 {
+            return false;
+        }
+        for i in 1..=64u32 {
+            let d = cand + i * 20;
+            match (u32_at(d), u32_at(d + 12), u32_at(d + 16)) {
+                (Some(0), Some(0), Some(0)) => return true,
+                (Some(_), Some(_), Some(_)) => continue,
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Locate an import descriptor list by scanning sections that contain a
+    /// `.dll` string, when the header does not declare one.
+    pub fn find_import_directory(&self) -> Option<u32> {
+        for sec in self.sections {
+            if !sec.is_readable() {
+                continue;
+            }
+            if !sec.data.windows(4).any(|w| w.eq_ignore_ascii_case(b".dll")) {
+                continue;
+            }
+            for off in (0..sec.data.len().saturating_sub(20)).step_by(4) {
+                let cand = sec.virtual_address + off as u32;
+                if self.import_table_at(cand) {
+                    return Some(cand);
+                }
+            }
+        }
+        None
+    }
+
     /// Read `len` bytes at `rva`, treating the image as the Windows loader
     /// would.
     ///
@@ -459,11 +392,13 @@ impl<'a> ImageView<'a> {
             if end <= s.data.len() {
                 return Ok(&s.data[off..end]);
             }
-            // Mapped but not file-backed: an uninitialised section or a read
-            // into the raw-size padding. We cannot borrow zeroes from a
-            // temporary, so this only matters for fixed-size reads; callers
-            // that hit it get a zero buffer through `read_exact`.
-            return Err(PeError::BadRva { rva });
+            // The RVA is inside this section but the read runs past its
+            // file-backed bytes (uninitialised tail or raw-size padding).
+            // Another section may own the target bytes: real mingw images can
+            // write `.idata` *after* `.rdata` in the section table even when
+            // `.rdata` sits above it, so returning an error here would hide
+            // valid data. Keep scanning other sections instead.
+            continue;
         }
         // Data directories may point into the headers themselves.
         let start = rva as usize;
@@ -543,9 +478,13 @@ impl<'a> ImageView<'a> {
                 if name_rva == 0 && first_thunk == 0 && oft == 0 {
                     break;
                 }
-                let library = self.cstr(name_rva)?;
+                // A descriptor whose module name is not a plausible DLL name
+                // ends the chain: it is not an import descriptor.
+                let Some(library) = self.plausible_module(name_rva) else {
+                    break;
+                };
                 let lookup = if oft != 0 { oft } else { first_thunk };
-                self.read_thunks(&library, lookup, first_thunk, false, &mut out)?;
+                self.read_thunks(&library, lookup, first_thunk, false, 4096, &mut out)?;
                 rva += 20;
             }
         }
@@ -571,12 +510,103 @@ impl<'a> ImageView<'a> {
                         iat.wrapping_sub(base),
                     )
                 };
-                let library = self.cstr(name_rva)?;
-                self.read_thunks(&library, int_rva, iat_rva, true, &mut out)?;
+                let Some(library) = self.plausible_module(name_rva) else {
+                    break;
+                };
+                self.read_thunks(&library, int_rva, iat_rva, true, 4096, &mut out)?;
                 rva += 32;
             }
         }
         Ok(out)
+    }
+
+    /// Read a thunk array into `out`.
+    ///
+    /// The distance between thunk arrays is not fixed: some linkers emit a
+    /// compact table made only of name/ordinal entries, while others (mingw
+    /// with a delay-load style layout) interleave the *bound* address values
+    /// in the IAT right after the name entries, making the name table longer
+    /// than the import count. Walking to the first NULL is therefore correct
+    /// only when the NULL is part of the table; when the array runs straight
+    /// into the next library's thunks the walk must not invent imports.
+    ///
+    /// Termination and validity rules:
+    ///  * a NULL entry ends the array;
+    ///  * an ordinal entry (high bit set) is accepted;
+    ///  * a name entry is accepted only when the hint/name record it points at
+    ///    is readable and its name is printable ASCII;
+    ///  * anything else ends the array instead of being misread as an import.
+    /// Thunk width: 4 bytes in a PE32 image, 8 in a PE32+ image.
+    fn thunk_width(&self) -> u32 {
+        if self.is64 {
+            8
+        } else {
+            4
+        }
+    }
+
+    fn read_thunk(&self, rva: u32) -> Result<u32, PeError> {
+        // Names and ordinals only ever use the low 32 bits of a thunk.
+        self.u32(rva)
+    }
+
+    /// Length of the name/ordinal array at `lookup_rva` (entries before the
+    /// first terminator).
+    fn thunk_count(&self, lookup_rva: u32, limit: u32) -> Result<u32, PeError> {
+        let width = self.thunk_width();
+        for i in 0..limit {
+            if self.read_thunk(lookup_rva + i * width)? == 0 {
+                return Ok(i);
+            }
+        }
+        Ok(limit)
+    }
+
+    /// Whether an IAT *slot* plausibly holds a loader-resolved address, judged
+    /// from the file image.
+    ///
+    /// On disk an unbound IAT usually mirrors the name table, but linkers may
+    /// rebase the two independently (mingw does), so a slot in another
+    /// section holds an arbitrary RVA. A slot is trusted when either its low
+    /// half points inside the image, or — for a 64-bit image — it reads as a
+    /// full pointer into the image.
+    fn slot_points_inside_image(&self, rva: u32) -> bool {
+        let inside = |v: u32| {
+            self.sections.iter().any(|s| {
+                v >= s.virtual_address
+                    && v < s
+                        .virtual_address
+                        .saturating_add(s.virtual_size.max(s.data.len() as u32))
+            })
+        };
+        if self
+            .bytes(rva, 4)
+            .map(|b| inside(u32::from_le_bytes([b[0], b[1], b[2], b[3]])))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        self.is64
+            && self
+                .bytes(rva, 8)
+                .map(|b| {
+                    let lo = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                    inside(lo)
+                })
+                .unwrap_or(false)
+    }
+
+    /// Count consecutive IAT slots that pass [`Self::slot_points_inside_image`].
+    fn address_count(&self, iat_rva: u32, limit: u32) -> u32 {
+        let width = self.thunk_width();
+        let mut n = 0;
+        for i in 0..limit.min(4096) {
+            if !self.slot_points_inside_image(iat_rva + i * width) {
+                break;
+            }
+            n += 1;
+        }
+        n
     }
 
     fn read_thunks(
@@ -585,35 +615,93 @@ impl<'a> ImageView<'a> {
         lookup_rva: u32,
         iat_rva: u32,
         delayed: bool,
+        limit: u32,
         out: &mut Vec<Import>,
     ) -> Result<(), PeError> {
-        for i in 0..4096u32 {
-            let entry = self.u32(lookup_rva + i * 4)?;
-            if entry == 0 {
-                break;
-            }
-            let iat_slot = iat_rva + i * 4;
+        let width = self.thunk_width();
+        let names = self.thunk_count(lookup_rva, limit)?;
+        // Bind IAT slots only where the two arrays are demonstrably parallel.
+        // mingw can place the IAT in a different section from the name table
+        // and leave stale values in it, so misaligned slots must be flagged
+        // rather than trusted.
+        let slots = self.address_count(iat_rva, names);
+        let aligned = slots >= names;
+        for i in 0..names {
+            let entry = self.read_thunk(lookup_rva + i * width)?;
+            let iat_slot = if aligned {
+                iat_rva + i * width
+            } else {
+                // Unaligned: address the IAT by the index we can justify, and
+                // callers see `iat_slot_verified == false`.
+                iat_rva + i.min(slots.saturating_sub(1)) * width
+            };
             if entry & 0x8000_0000 != 0 {
                 out.push(Import {
                     library: library.to_string(),
                     ordinal: Some((entry & 0xffff) as u16),
                     name: None,
                     iat_rva: iat_slot,
+                    iat_slot_verified: aligned,
                     delayed,
                 });
-            } else {
-                // IMAGE_IMPORT_BY_NAME: Hint (u16) then NUL-terminated name.
-                let name = self.cstr(entry + 2)?;
-                out.push(Import {
-                    library: library.to_string(),
-                    ordinal: None,
-                    name: Some(name),
-                    iat_rva: iat_slot,
-                    delayed,
-                });
+                continue;
             }
+            let Some(name) = self.plausible_name(entry + 2) else {
+                // A malformed entry ends the array; never misread the rest as
+                // imports.
+                break;
+            };
+            out.push(Import {
+                library: library.to_string(),
+                ordinal: None,
+                name: Some(name),
+                iat_rva: iat_slot,
+                iat_slot_verified: aligned,
+                delayed,
+            });
         }
         Ok(())
+    }
+
+    /// Read a library name at `rva`, accepting only plausible module names
+    /// (`name.dll`, printable). Descriptors are validated with this before
+    /// being trusted, because a zeroed or stale 16-entry directory table can
+    /// point the delay-import index at unrelated data (as mingw's PE32+
+    /// images do), and following it produces garbage names.
+    fn plausible_module(&self, rva: u32) -> Option<String> {
+        let name = self.cstr(rva).ok()?;
+        if name.is_empty() || name.len() > 255 {
+            return None;
+        }
+        if !name.bytes().all(|c| c.is_ascii_graphic()) {
+            return None;
+        }
+        if name.to_ascii_lowercase().ends_with(".dll") {
+            Some(name)
+        } else {
+            None
+        }
+    }
+
+    /// Read a symbol name at `rva` only if it looks like one: non-empty,
+    /// bounded, and printable ASCII.
+    fn plausible_name(&self, rva: u32) -> Option<String> {
+        // The 16-bit hint must be readable for the record to be well-formed.
+        let mut out = Vec::new();
+        for i in 0..=256u32 {
+            let c = *self.bytes(rva + i, 1).ok()?.first()?;
+            if c == 0 {
+                break;
+            }
+            if !c.is_ascii_graphic() || out.len() > 255 {
+                return None;
+            }
+            out.push(c);
+        }
+        if out.is_empty() {
+            return None;
+        }
+        String::from_utf8(out).ok()
     }
 
     fn read_exports(&self, dir: Option<Directory>) -> Result<Vec<Export>, PeError> {

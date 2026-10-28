@@ -1,0 +1,105 @@
+{
+  "total_count": 29,
+  "artifacts": [
+    {
+      "id": 9213035708,
+      "node_id": "MDg6QXJ0aWZhY3Q5MjEzMDM1NzA4",
+      "name": "windows-x86_64",
+      "size_in_bytes": 7713768,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/actions/artifacts/9213035708",
+      "archive_download_url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/actions/artifacts/9213035708/zip",
+      "expired": false,
+      "digest": "sha256:74be0f48806e3d971c03deaaf28ea8eec5c8211e038230995b882f5781498421",
+      "created_at": "2026-08-14T08:38:31Z",
+      "updated_at": "2026-08-14T08:38:31Z",
+      "expires_at": "2026-11-12T08:32:46Z",
+      "workflow_run": {
+        "id": 31784334666,
+        "repository_id": 1331220264,
+        "head_repository_id": 1331220264,
+        "head_branch": "main",
+        "head_sha": "65edd808382f36e69fe335eba6e4a90c089d7aeb"
+      }
+    },
+    {
+      "id": 9212999698,
+      "node_id": "MDg6QXJ0aWZhY3Q5MjEyOTk5Njk4",
+      "name": "linux-x86_64",
+      "size_in_bytes": 11336281,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/actions/artifacts/9212999698",
+      "archive_download_url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/actions/artifacts/9212999698/zip",
+      "expired": false,
+      "digest": "sha256:e8cd68dff5138b82c13127d05e1810389e9856063b0afab68921b8dc44289db7",
+      "created_at": "2026-08-14T08:37:08Z",
+      "updated_at": "2026-08-14T08:37:08Z",
+      "expires_at": "2026-11-12T08:32:46Z",
+      "workflow_run": {
+        "id": 31784334666,
+        "repository_id": 1331220264,
+        "head_repository_id": 1331220264,
+        "head_branch": "main",
+        "head_sha": "65edd808382f36e69fe335eba6e4a90c089d7aeb"
+      }
+    },
+    {
+      "id": 9212951378,
+      "node_id": "MDg6QXJ0aWZhY3Q5MjEyOTUxMzc4",
+      "name": "macos-aarch64",
+      "size_in_bytes": 8153957,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/actions/artifacts/9212951378",
+      "archive_download_url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/actions/artifacts/9212951378/zip",
+      "expired": false,
+      "digest": "sha256:5b4eaaf4c2d9006ea43cfe1e70e59db50f5e1e10a1b05dc91209e56b637c5ae2",
+      "created_at": "2026-08-14T08:35:19Z",
+      "updated_at": "2026-08-14T08:35:19Z",
+      "expires_at": "2026-11-12T08:32:46Z",
+      "workflow_run": {
+        "id": 31784334666,
+        "repository_id": 1331220264,
+        "head_repository_id": 1331220264,
+        "head_branch": "main",
+        "head_sha": "65edd808382f36e69fe335eba6e4a90c089d7aeb"
+      }
+    },
+    {
+      "id": 9203303684,
+      "node_id": "MDg6QXJ0aWZhY3Q5MjAzMzAzNjg0",
+      "name": "windows-x86_64",
+      "size_in_bytes": 7713759,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/actions/artifacts/9203303684",
+      "archive_download_url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/actions/artifacts/9203303684/zip",
+      "expired": false,
+      "digest": "sha256:919c9ae1b7c6bb1912a829a322d0f424dd8c160dc15a1709053ac06d9d8249f2",
+      "created_at": "2026-08-14T00:30:15Z",
+      "updated_at": "2026-08-14T00:30:15Z",
+      "expires_at": "2026-11-12T00:25:02Z",
+      "workflow_run": {
+        "id": 31757264748,
+        "repository_id": 1331220264,
+        "head_repository_id": 1331220264,
+        "head_branch": "main",
+        "head_sha": "ef3797e02baf6a3ff66648ae0bf61f7eb543dca1"
+      }
+    },
+    {
+      "id": 9203288487,
+      "node_id": "MDg6QXJ0aWZhY3Q5MjAzMjg4NDg3",
+      "name": "linux-x86_64",
+      "size_in_bytes": 11336281,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/actions/artifacts/9203288487",
+      "archive_download_url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/actions/artifacts/9203288487/zip",
+      "expired": false,
+      "digest": "sha256:1b549ab8d9e058ff38d55160fbbecd0996dca2cf54e935dd3552d2cf10be5ed3",
+      "created_at": "2026-08-14T00:29:33Z",
+      "updated_at": "2026-08-14T00:29:33Z",
+      "expires_at": "2026-11-12T00:25:02Z",
+      "workflow_run": {
+        "id": 31757264748,
+        "repository_id": 1331220264,
+        "head_repository_id": 1331220264,
+        "head_branch": "main",
+        "head_sha": "ef3797e02baf6a3ff66648ae0bf61f7eb543dca1"
+      }
+    }
+  ]
+}

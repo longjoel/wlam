@@ -1,0 +1,1437 @@
+{
+  "sha": "65edd808382f36e69fe335eba6e4a90c089d7aeb",
+  "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/65edd808382f36e69fe335eba6e4a90c089d7aeb",
+  "tree": [
+    {
+      "path": ".github",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "d101f0bf7567ad6cc25c976931d957b57a1420e6",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/d101f0bf7567ad6cc25c976931d957b57a1420e6"
+    },
+    {
+      "path": ".github/workflows",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "934e13e30507cbf377408c9723fa184e2320c1be",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/934e13e30507cbf377408c9723fa184e2320c1be"
+    },
+    {
+      "path": ".github/workflows/build-all.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "aa73cabafe7e0f337f4a12cb0e93cb10f215262b",
+      "size": 4466,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/aa73cabafe7e0f337f4a12cb0e93cb10f215262b"
+    },
+    {
+      "path": ".github/workflows/rust-build-release.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7d80faf5a8e3fdec6192433e758145d2f0b568af",
+      "size": 5260,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/7d80faf5a8e3fdec6192433e758145d2f0b568af"
+    },
+    {
+      "path": ".gitignore",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e7e27593d718959401b90beb64cd7e597dc2860a",
+      "size": 927,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/e7e27593d718959401b90beb64cd7e597dc2860a"
+    },
+    {
+      "path": "DEPLOYMENT.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8a61f1e93757f795765238396526764a47e5ff1b",
+      "size": 13814,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/8a61f1e93757f795765238396526764a47e5ff1b"
+    },
+    {
+      "path": "LICENSE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6de06b124e2599264ae6f8e57f409ea84822731f",
+      "size": 1067,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/6de06b124e2599264ae6f8e57f409ea84822731f"
+    },
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8574c9e7e681bcf8d470252f17c571dc3826f614",
+      "size": 26083,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/8574c9e7e681bcf8d470252f17c571dc3826f614"
+    },
+    {
+      "path": "SECURITY.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "903fd217c66a52091eff1ef2e11cffa3176240df",
+      "size": 6686,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/903fd217c66a52091eff1ef2e11cffa3176240df"
+    },
+    {
+      "path": "archive",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "3c9f72bb5cbdefdf452ca9de8bdcdd67195f244d",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/3c9f72bb5cbdefdf452ca9de8bdcdd67195f244d"
+    },
+    {
+      "path": "archive/minesweeper_bot",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "c3939d9f03850597a76bfed18e537c4852cba8a0",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/c3939d9f03850597a76bfed18e537c4852cba8a0"
+    },
+    {
+      "path": "archive/minesweeper_bot/ms_bench.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "83e432c99c0bf27219b117b2829601eb4b1d6988",
+      "size": 4328,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/83e432c99c0bf27219b117b2829601eb4b1d6988"
+    },
+    {
+      "path": "archive/minesweeper_bot/ms_client.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cad733caee982a1df09c575c2cd8270e6cb7221c",
+      "size": 3793,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/cad733caee982a1df09c575c2cd8270e6cb7221c"
+    },
+    {
+      "path": "archive/minesweeper_bot/ms_fastest.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0121abd9c131257f85bac1313aef04739f020cf0",
+      "size": 2027,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/0121abd9c131257f85bac1313aef04739f020cf0"
+    },
+    {
+      "path": "archive/minesweeper_bot/ms_profile.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6cd5495a0f0fc190037cb2779b896b4c2c8b03f3",
+      "size": 500,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/6cd5495a0f0fc190037cb2779b896b4c2c8b03f3"
+    },
+    {
+      "path": "archive/minesweeper_bot/ms_smoke.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "927538a88f8d04bea342de0c8d3c17d7780d0fba",
+      "size": 1028,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/927538a88f8d04bea342de0c8d3c17d7780d0fba"
+    },
+    {
+      "path": "archive/minesweeper_bot/ms_solver.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8d72246db59c65670983a2a86d5c4ef5bd951c07",
+      "size": 17772,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/8d72246db59c65670983a2a86d5c4ef5bd951c07"
+    },
+    {
+      "path": "archive/ms",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "c9a616b2fa1ff9e22f2eb684957f751386c0d7ee",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/c9a616b2fa1ff9e22f2eb684957f751386c0d7ee"
+    },
+    {
+      "path": "archive/ms/admin",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "d581e6297ce6632ec11975faea42f15e89194283",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/d581e6297ce6632ec11975faea42f15e89194283"
+    },
+    {
+      "path": "archive/ms/admin/admin.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a8d2afb6d3d357df22e829677328f2e72282d7a1",
+      "size": 8071,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/a8d2afb6d3d357df22e829677328f2e72282d7a1"
+    },
+    {
+      "path": "archive/ms/admin/crypt.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b504f02dfe69347177420c8fe1149bac6ad9f0a9",
+      "size": 3332,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/b504f02dfe69347177420c8fe1149bac6ad9f0a9"
+    },
+    {
+      "path": "archive/ms/admin/server.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5958ab30b6e7d0e770e31b3cc1ceeb66dced60c1",
+      "size": 12502,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/5958ab30b6e7d0e770e31b3cc1ceeb66dced60c1"
+    },
+    {
+      "path": "archive/ms/admin/store.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "66c1335018f34cbabf5cfe3019cb32f8e2454ada",
+      "size": 4285,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/66c1335018f34cbabf5cfe3019cb32f8e2454ada"
+    },
+    {
+      "path": "archive/ms/admin/totp.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ec50192aa00442940d8d0961883bc71c9bce24c9",
+      "size": 2193,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/ec50192aa00442940d8d0961883bc71c9bce24c9"
+    },
+    {
+      "path": "archive/ms/analyze",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "e5088a12f9efa32626d0c56f8559487e170173f1",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/e5088a12f9efa32626d0c56f8559487e170173f1"
+    },
+    {
+      "path": "archive/ms/analyze/analyze-diff.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a609d5b1af101dbf439910979619dfc03f37729a",
+      "size": 7199,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/a609d5b1af101dbf439910979619dfc03f37729a"
+    },
+    {
+      "path": "archive/ms/analyze/analyze-ref.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f1c2d70b21bf34108a01bad7aa34c2947a929ae0",
+      "size": 3716,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/f1c2d70b21bf34108a01bad7aa34c2947a929ae0"
+    },
+    {
+      "path": "archive/ms/bot",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "1f310fd150802e712fa727080ee23042ac547b07",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/1f310fd150802e712fa727080ee23042ac547b07"
+    },
+    {
+      "path": "archive/ms/bot/bench.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "29d83a5a6e32f884f945f6f0e36e837e77dcd5a7",
+      "size": 5961,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/29d83a5a6e32f884f945f6f0e36e837e77dcd5a7"
+    },
+    {
+      "path": "archive/ms/bot/fastest.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "58e578f43937147559081605a14388f3e29a32e9",
+      "size": 2960,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/58e578f43937147559081605a14388f3e29a32e9"
+    },
+    {
+      "path": "archive/ms/bot/profile.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a65e4f0d1fe41108baa4232af160a9874fed9e6f",
+      "size": 1460,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/a65e4f0d1fe41108baa4232af160a9874fed9e6f"
+    },
+    {
+      "path": "archive/ms/bot/smoke.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bdd5177d0272ed523a41edb83dc3fbd70977165e",
+      "size": 2100,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/bdd5177d0272ed523a41edb83dc3fbd70977165e"
+    },
+    {
+      "path": "archive/ms/cli",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "ae215dec0f0583b03b1aa1efcf222884d687f7a7",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/ae215dec0f0583b03b1aa1efcf222884d687f7a7"
+    },
+    {
+      "path": "archive/ms/cli/ms_analyze.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f043ae1ddeb00e94091156962635ec1249d6724b",
+      "size": 14119,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/f043ae1ddeb00e94091156962635ec1249d6724b"
+    },
+    {
+      "path": "archive/ms/cli/verify-parity.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d35831d95a21d21cd9f9ee832912d66fddf06286",
+      "size": 6900,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/d35831d95a21d21cd9f9ee832912d66fddf06286"
+    },
+    {
+      "path": "archive/ms/core",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "ef1f714c7cd075e81cb787717a8f6790590a223c",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/ef1f714c7cd075e81cb787717a8f6790590a223c"
+    },
+    {
+      "path": "archive/ms/core/client.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bb27c35fe8145951d25e515b6e577f0bbb3f8b73",
+      "size": 4378,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/bb27c35fe8145951d25e515b6e577f0bbb3f8b73"
+    },
+    {
+      "path": "archive/ms/core/mt19937.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "be93f0671b8e6a90a51cbfa9ad00f7301da9962e",
+      "size": 7500,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/be93f0671b8e6a90a51cbfa9ad00f7301da9962e"
+    },
+    {
+      "path": "archive/ms/core/sim-engine.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "248faec3beb5e92b0571a9af1bd4f7dee3ca0ed8",
+      "size": 13257,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/248faec3beb5e92b0571a9af1bd4f7dee3ca0ed8"
+    },
+    {
+      "path": "archive/ms/core/solver.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c47511c30699a470fe148cc79a05b3cfb4899f98",
+      "size": 17743,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/c47511c30699a470fe148cc79a05b3cfb4899f98"
+    },
+    {
+      "path": "archive/ms/package.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ec9c47e67774f16c82f00d38e941b6fe010d979a",
+      "size": 1528,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/ec9c47e67774f16c82f00d38e941b6fe010d979a"
+    },
+    {
+      "path": "archive/ms/sim-server",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "c39c53ec5c9809d6b423ed3f59ec707939b24cff",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/c39c53ec5c9809d6b423ed3f59ec707939b24cff"
+    },
+    {
+      "path": "archive/ms/sim-server/config.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bd8ba4bc2732fd7789a178bdb290293a32871f4a",
+      "size": 824,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/bd8ba4bc2732fd7789a178bdb290293a32871f4a"
+    },
+    {
+      "path": "archive/ms/sim-server/database.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "eab73932e4054aebaeb0a10726c620591f049a6d",
+      "size": 7110,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/eab73932e4054aebaeb0a10726c620591f049a6d"
+    },
+    {
+      "path": "archive/ms/sim-server/deploy.sh",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ce3fbcc09afd5ae3983aaca718acc2d18aec959d",
+      "size": 5735,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/ce3fbcc09afd5ae3983aaca718acc2d18aec959d"
+    },
+    {
+      "path": "archive/ms/sim-server/hub.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e4b14eb6c67c3f71aa6f0e5d5e204fcc19fa9407",
+      "size": 5091,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/e4b14eb6c67c3f71aa6f0e5d5e204fcc19fa9407"
+    },
+    {
+      "path": "archive/ms/sim-server/protocol.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0ac326419f246f7293364d6e9de1c528cec34db5",
+      "size": 11525,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/0ac326419f246f7293364d6e9de1c528cec34db5"
+    },
+    {
+      "path": "archive/ms/sim-server/selfcheck.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bd3abfc7ef28b12bc752bffa25100a721ea1dfd0",
+      "size": 1527,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/bd3abfc7ef28b12bc752bffa25100a721ea1dfd0"
+    },
+    {
+      "path": "archive/ms/sim-server/server.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "797b5ddd3a17732eae82836c00f084f3f4d48a95",
+      "size": 7108,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/797b5ddd3a17732eae82836c00f084f3f4d48a95"
+    },
+    {
+      "path": "archive/ms/sim-server/worker-pool.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d9dbd88bad9e3e11d2aad7c6427925b8386ce48f",
+      "size": 1773,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/d9dbd88bad9e3e11d2aad7c6427925b8386ce48f"
+    },
+    {
+      "path": "archive/ms/sim-server/worker.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d727ac0c71e0d4642478a95a8583dabdecda72bd",
+      "size": 1888,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/d727ac0c71e0d4642478a95a8583dabdecda72bd"
+    },
+    {
+      "path": "archive/ms/test",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "ac4b989e69c5acd1d94677225a4a6f1c500137c4",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/ac4b989e69c5acd1d94677225a4a6f1c500137c4"
+    },
+    {
+      "path": "archive/ms/test/admin.test.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "77de72d72080b7c51ed2018f9f28c42e3f243494",
+      "size": 9587,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/77de72d72080b7c51ed2018f9f28c42e3f243494"
+    },
+    {
+      "path": "archive/ms/test/analyze.test.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9de2906a363fb5e53298cb38208abc4a3e93a617",
+      "size": 2358,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/9de2906a363fb5e53298cb38208abc4a3e93a617"
+    },
+    {
+      "path": "archive/ms/test/bot.test.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b35df5ab3d88dfc87951ddde0a3a815c71d2fcf6",
+      "size": 1775,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/b35df5ab3d88dfc87951ddde0a3a815c71d2fcf6"
+    },
+    {
+      "path": "archive/ms/test/crypt.test.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bfada2eafa882812fc452af4d6da56cfb8f6e29b",
+      "size": 1328,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/bfada2eafa882812fc452af4d6da56cfb8f6e29b"
+    },
+    {
+      "path": "archive/ms/test/fixtures",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "61d8b8506a0dd53dadef7a2feb55876f94be4a08",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/61d8b8506a0dd53dadef7a2feb55876f94be4a08"
+    },
+    {
+      "path": "archive/ms/test/fixtures/golden-boards.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6528dab37a0c9d523491c50dd03f36ccc38675aa",
+      "size": 20075,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/6528dab37a0c9d523491c50dd03f36ccc38675aa"
+    },
+    {
+      "path": "archive/ms/test/fixtures/golden-probs.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cc54bed339a3d02dacc702a81563577c4d790177",
+      "size": 921,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/cc54bed339a3d02dacc702a81563577c4d790177"
+    },
+    {
+      "path": "archive/ms/test/fixtures/golden-rng.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c39029e5b368b84975721f965eae56400d2ebd3b",
+      "size": 4983,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/c39029e5b368b84975721f965eae56400d2ebd3b"
+    },
+    {
+      "path": "archive/ms/test/helpers",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "7eb03629a933229405299713ac2368b87725d649",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/7eb03629a933229405299713ac2368b87725d649"
+    },
+    {
+      "path": "archive/ms/test/helpers/e2e.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "679554c445973b94adfa67bcb0d7eab64d1be406",
+      "size": 6049,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/679554c445973b94adfa67bcb0d7eab64d1be406"
+    },
+    {
+      "path": "archive/ms/test/ms_analyze.test.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b00a7aefc1e01e607488f0761493894e4c1d891d",
+      "size": 5007,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/b00a7aefc1e01e607488f0761493894e4c1d891d"
+    },
+    {
+      "path": "archive/ms/test/mt19937.test.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6821f746090978515fe50a895abfd51d8f8d89c3",
+      "size": 1504,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/6821f746090978515fe50a895abfd51d8f8d89c3"
+    },
+    {
+      "path": "archive/ms/test/parity-python.test.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a7963f697d6b9177666f21c552c550766fb65ee8",
+      "size": 1463,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/a7963f697d6b9177666f21c552c550766fb65ee8"
+    },
+    {
+      "path": "archive/ms/test/server-e2e.test.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "131c1df8ffae8b2d67ca4eb84d705b2e02af02f3",
+      "size": 12822,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/131c1df8ffae8b2d67ca4eb84d705b2e02af02f3"
+    },
+    {
+      "path": "archive/ms/test/sim-engine.test.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4888d3ad967d94c85c2d3dafc458e078ac71ce0b",
+      "size": 2990,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/4888d3ad967d94c85c2d3dafc458e078ac71ce0b"
+    },
+    {
+      "path": "archive/ms/test/solver.test.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3a7b9b23af4c726d380cb901db34ba0ff58e7ef7",
+      "size": 2065,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/3a7b9b23af4c726d380cb901db34ba0ff58e7ef7"
+    },
+    {
+      "path": "archive/ms/test/totp.test.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b280dc0875ec35385194c878b3f86fe377d8153e",
+      "size": 1481,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/b280dc0875ec35385194c878b3f86fe377d8153e"
+    },
+    {
+      "path": "archive/ms/tools",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "612062697bed782369b69b4fc4d2c9032d31de14",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/612062697bed782369b69b4fc4d2c9032d31de14"
+    },
+    {
+      "path": "archive/ms/tools/backpressure-parity.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b248e23a59ffe781d3d28eed08beec938f3acb30",
+      "size": 18542,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/b248e23a59ffe781d3d28eed08beec938f3acb30"
+    },
+    {
+      "path": "archive/ms/tools/backup-db.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f883904c867de7d936442cecbc0366038c21ec9e",
+      "size": 2091,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/f883904c867de7d936442cecbc0366038c21ec9e"
+    },
+    {
+      "path": "archive/ms/tools/bench-host.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "946bb66f15cc22b832357033e0275bf21b67f19c",
+      "size": 6989,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/946bb66f15cc22b832357033e0275bf21b67f19c"
+    },
+    {
+      "path": "archive/ms/tools/cli_int.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4f6cc50a50c9df03b22daa9a5d43bff32a4cb3f5",
+      "size": 1373,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/4f6cc50a50c9df03b22daa9a5d43bff32a4cb3f5"
+    },
+    {
+      "path": "archive/ms/tools/cli_smoke.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cac750e96c32e896dd56178af52c723afffc5787",
+      "size": 878,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/cac750e96c32e896dd56178af52c723afffc5787"
+    },
+    {
+      "path": "archive/ms/tools/healthcheck.sh",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "56b9e61297542ca5eaf49a6d000bca71078912c7",
+      "size": 578,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/56b9e61297542ca5eaf49a6d000bca71078912c7"
+    },
+    {
+      "path": "archive/ms/tools/parity-all.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f799b777a3355e8f762fec1ce2b94f92acc1c607",
+      "size": 11640,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/f799b777a3355e8f762fec1ce2b94f92acc1c607"
+    },
+    {
+      "path": "archive/ms/tools/py_ref.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c4ffa4010c6a21f56c31b497d26fa22799a0afca",
+      "size": 6269,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/c4ffa4010c6a21f56c31b497d26fa22799a0afca"
+    },
+    {
+      "path": "archive/ms/tools/remote-wire.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f5687d1de6bdf3077eb92707beeeab39c11cca81",
+      "size": 6757,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/f5687d1de6bdf3077eb92707beeeab39c11cca81"
+    },
+    {
+      "path": "archive/ms/tools/seed_gate_test.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "386725caf4223606bd818c0f0baab86d3995f09c",
+      "size": 3604,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/386725caf4223606bd818c0f0baab86d3995f09c"
+    },
+    {
+      "path": "archive/server",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "e2c10ae7dcc84b3438cc5fc1803a2c354323d383",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/e2c10ae7dcc84b3438cc5fc1803a2c354323d383"
+    },
+    {
+      "path": "archive/server/admin.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "00b47b98ebd2eaa06076ad7d14745f3e7805e0d9",
+      "size": 31702,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/00b47b98ebd2eaa06076ad7d14745f3e7805e0d9"
+    },
+    {
+      "path": "archive/server/deploy.sh",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "54a214232fe98bf214441a85d335a24208b1a660",
+      "size": 3475,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/54a214232fe98bf214441a85d335a24208b1a660"
+    },
+    {
+      "path": "archive/server/ms_analyze.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5cacff5cbeb8777e3d017df93431c42d44c02346",
+      "size": 11738,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/5cacff5cbeb8777e3d017df93431c42d44c02346"
+    },
+    {
+      "path": "archive/server/ms_server.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "353764a51fb3d3e777bfea3e2db0277dc82d4741",
+      "size": 44739,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/353764a51fb3d3e777bfea3e2db0277dc82d4741"
+    },
+    {
+      "path": "archive/server/selfcheck.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0af2a901d7c799763da8cd65f29bbfce89a62133",
+      "size": 14429,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/0af2a901d7c799763da8cd65f29bbfce89a62133"
+    },
+    {
+      "path": "archive/server/sim_engine.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c2d4213c40cf295f08dd87c72b0e08115fbcb0a1",
+      "size": 13575,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/c2d4213c40cf295f08dd87c72b0e08115fbcb0a1"
+    },
+    {
+      "path": "archive/server/verify_parity.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1bcfbbbff08ddf6541f271af5f904e4cdf3a0734",
+      "size": 5227,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/1bcfbbbff08ddf6541f271af5f904e4cdf3a0734"
+    },
+    {
+      "path": "build.cmd",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d67d2c97866e7053c9bf3402c0ba9e6bb13dff85",
+      "size": 1690,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/d67d2c97866e7053c9bf3402c0ba9e6bb13dff85"
+    },
+    {
+      "path": "linux",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "68aa4f79934cb0c9dd991a595ce8174d288054fc",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/68aa4f79934cb0c9dd991a595ce8174d288054fc"
+    },
+    {
+      "path": "linux/Makefile",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "00461ce460261d095ddd0e8a12d75367aab2986c",
+      "size": 2239,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/00461ce460261d095ddd0e8a12d75367aab2986c"
+    },
+    {
+      "path": "linux/ms_core.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2b6dc9db2bb42d51410e7c6379441f36184fdac5",
+      "size": 44328,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/2b6dc9db2bb42d51410e7c6379441f36184fdac5"
+    },
+    {
+      "path": "linux/ms_core.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c5ad5bdfcf7309e6d004c530853e80b46f96d58c",
+      "size": 6928,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/c5ad5bdfcf7309e6d004c530853e80b46f96d58c"
+    },
+    {
+      "path": "linux/ms_endpoint.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "20f0ddfdf1fe6386ad8b57990052451e8973f625",
+      "size": 2488,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/20f0ddfdf1fe6386ad8b57990052451e8973f625"
+    },
+    {
+      "path": "linux/ms_ini.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "25cdc1653bad551b29c82cda0fcd598a3de825c7",
+      "size": 10796,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/25cdc1653bad551b29c82cda0fcd598a3de825c7"
+    },
+    {
+      "path": "linux/ms_ini.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "74030c10529e98ec40529a8c0e9daa667f71974e",
+      "size": 1120,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/74030c10529e98ec40529a8c0e9daa667f71974e"
+    },
+    {
+      "path": "linux/ms_main.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8d923a51ed6bf1c05f5c6af82cf7dda5743c2a9b",
+      "size": 6681,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/8d923a51ed6bf1c05f5c6af82cf7dda5743c2a9b"
+    },
+    {
+      "path": "linux/ms_net.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2da11b11ea72d8a12de8e97ae9271b0cbfc134fa",
+      "size": 50857,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/2da11b11ea72d8a12de8e97ae9271b0cbfc134fa"
+    },
+    {
+      "path": "linux/ms_net.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "29790dc95ad3ae9ded9a164658c00359310bf4ad",
+      "size": 3666,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/29790dc95ad3ae9ded9a164658c00359310bf4ad"
+    },
+    {
+      "path": "linux/ms_sha256.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f064dabc1216127ecb9f1e5c8ec3af9874dc8f56",
+      "size": 5003,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/f064dabc1216127ecb9f1e5c8ec3af9874dc8f56"
+    },
+    {
+      "path": "linux/ms_sha256.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6e92c1decb3d9fde81568da051de12f20ce70009",
+      "size": 678,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/6e92c1decb3d9fde81568da051de12f20ce70009"
+    },
+    {
+      "path": "linux/ms_term.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2c4263ba34c3fbd4b6ade3e6d90e343eea60b7f6",
+      "size": 15435,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/2c4263ba34c3fbd4b6ade3e6d90e343eea60b7f6"
+    },
+    {
+      "path": "linux/ms_x11.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "61139dbedaaecdbaba41bb2d18391f551b0e13be",
+      "size": 17505,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/61139dbedaaecdbaba41bb2d18391f551b0e13be"
+    },
+    {
+      "path": "linux/test",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "60cd3241ae6eb57e870550db3a9a1e14f0ad54a3",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/60cd3241ae6eb57e870550db3a9a1e14f0ad54a3"
+    },
+    {
+      "path": "linux/test/ms_ini_shell.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dbeb75da2e63f1a1993d1eb0e0caa4f0630b54aa",
+      "size": 3233,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/dbeb75da2e63f1a1993d1eb0e0caa4f0630b54aa"
+    },
+    {
+      "path": "ms-rs",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "1b53fa74730bc7e572743bae61f555b18524466e",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/1b53fa74730bc7e572743bae61f555b18524466e"
+    },
+    {
+      "path": "ms-rs/.gitignore",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d6b5b7b4180d9e216360506510e2d96e15b880bd",
+      "size": 16,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/d6b5b7b4180d9e216360506510e2d96e15b880bd"
+    },
+    {
+      "path": "ms-rs/Cargo.lock",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1b5c389a587ca8b20b25983cf3fce725d100eccf",
+      "size": 119009,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/1b5c389a587ca8b20b25983cf3fce725d100eccf"
+    },
+    {
+      "path": "ms-rs/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "09771028c95337e5da0960750d230a3245a6e6ce",
+      "size": 732,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/09771028c95337e5da0960750d230a3245a6e6ce"
+    },
+    {
+      "path": "ms-rs/msadmin",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "0d38ff78d68dbf8344f75ef386648e7b5535048d",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/0d38ff78d68dbf8344f75ef386648e7b5535048d"
+    },
+    {
+      "path": "ms-rs/msadmin/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "69e34a07198cafa191f0640c85372cca399b5300",
+      "size": 345,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/69e34a07198cafa191f0640c85372cca399b5300"
+    },
+    {
+      "path": "ms-rs/msadmin/src",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "69ad485a921e3e14f4f9b6a4c2fd2e7c061e2f79",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/69ad485a921e3e14f4f9b6a4c2fd2e7c061e2f79"
+    },
+    {
+      "path": "ms-rs/msadmin/src/crypt.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2bc03268b6c8212ad6c70fea42e14bc86e95dfe9",
+      "size": 7292,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/2bc03268b6c8212ad6c70fea42e14bc86e95dfe9"
+    },
+    {
+      "path": "ms-rs/msadmin/src/http.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3e69fe4aa0d6f7917c65b78725eaafc4c688ef0c",
+      "size": 35908,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/3e69fe4aa0d6f7917c65b78725eaafc4c688ef0c"
+    },
+    {
+      "path": "ms-rs/msadmin/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8f869ecfdd07131eb34683d85ff2517be9e6763b",
+      "size": 58,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/8f869ecfdd07131eb34683d85ff2517be9e6763b"
+    },
+    {
+      "path": "ms-rs/msadmin/src/main.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b13a768a7ee27df197c84e6b03b3d753a7a81e6d",
+      "size": 12485,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/b13a768a7ee27df197c84e6b03b3d753a7a81e6d"
+    },
+    {
+      "path": "ms-rs/msadmin/src/store.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dc2e0ce335b0a4c66d55a6ec9fcb47a1ee60f2f7",
+      "size": 11349,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/dc2e0ce335b0a4c66d55a6ec9fcb47a1ee60f2f7"
+    },
+    {
+      "path": "ms-rs/msadmin/src/totp.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fd73cdd3a30592a4dba4be351e4a682ec753c864",
+      "size": 6696,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/fd73cdd3a30592a4dba4be351e4a682ec753c864"
+    },
+    {
+      "path": "ms-rs/msadmin/tests",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "f004f023b423914c489f3152339bc6c785f85b66",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/f004f023b423914c489f3152339bc6c785f85b66"
+    },
+    {
+      "path": "ms-rs/msadmin/tests/http_e2e.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "93af80a0fe74b1098635c6bc4f510b7ea1523c70",
+      "size": 16251,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/93af80a0fe74b1098635c6bc4f510b7ea1523c70"
+    },
+    {
+      "path": "ms-rs/msapp",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "cd73fd9b53d586ed61afab98fcc0e1ba0cc2a5f1",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/cd73fd9b53d586ed61afab98fcc0e1ba0cc2a5f1"
+    },
+    {
+      "path": "ms-rs/msapp/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6cfec4db031b96adff2cd8ad5b9c82264b5ad628",
+      "size": 408,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/6cfec4db031b96adff2cd8ad5b9c82264b5ad628"
+    },
+    {
+      "path": "ms-rs/msapp/src",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "1ee50b3d73f2c45bfb45b2c3914ac3750cad1ef1",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/1ee50b3d73f2c45bfb45b2c3914ac3750cad1ef1"
+    },
+    {
+      "path": "ms-rs/msapp/src/app.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cb85f8c0b913f11c87a10940cf4d58617087dcc8",
+      "size": 17349,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/cb85f8c0b913f11c87a10940cf4d58617087dcc8"
+    },
+    {
+      "path": "ms-rs/msapp/src/core.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "903f398f8297ec1bf82b1da37d23b31a37cafe5d",
+      "size": 5246,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/903f398f8297ec1bf82b1da37d23b31a37cafe5d"
+    },
+    {
+      "path": "ms-rs/msapp/src/engine.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "16a8d60ea2e7938e2a5453ddc8be7aff0b44e233",
+      "size": 23866,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/16a8d60ea2e7938e2a5453ddc8be7aff0b44e233"
+    },
+    {
+      "path": "ms-rs/msapp/src/listen.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1af29de54963b9be1f7f70ee12aef2dff3d35208",
+      "size": 14274,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/1af29de54963b9be1f7f70ee12aef2dff3d35208"
+    },
+    {
+      "path": "ms-rs/msapp/src/main.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "23d06ee66a7943a49ebef5ed0d5603c8842c517a",
+      "size": 8551,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/23d06ee66a7943a49ebef5ed0d5603c8842c517a"
+    },
+    {
+      "path": "ms-rs/msapp/src/telemetry.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "68be5125f3a364bfd5049e0cea3dc15dcc43fd54",
+      "size": 33142,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/68be5125f3a364bfd5049e0cea3dc15dcc43fd54"
+    },
+    {
+      "path": "ms-rs/mscore",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "164cc94c67f03f392ce2a58ffba1810473cd74ff",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/164cc94c67f03f392ce2a58ffba1810473cd74ff"
+    },
+    {
+      "path": "ms-rs/mscore/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7a09543b25ec7a04699578ef495cbeb805d9a596",
+      "size": 210,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/7a09543b25ec7a04699578ef495cbeb805d9a596"
+    },
+    {
+      "path": "ms-rs/mscore/src",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "f6b76d5285975996ad5dfe877acc475b2d72a556",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/f6b76d5285975996ad5dfe877acc475b2d72a556"
+    },
+    {
+      "path": "ms-rs/mscore/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b9400929924eee01606d8d4c3483e7838f9f4964",
+      "size": 657,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/b9400929924eee01606d8d4c3483e7838f9f4964"
+    },
+    {
+      "path": "ms-rs/mscore/src/mt19937.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3a9d23ab60d5a4ee9ea1f88f244bf59314fd495f",
+      "size": 9110,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/3a9d23ab60d5a4ee9ea1f88f244bf59314fd495f"
+    },
+    {
+      "path": "ms-rs/mscore/src/rng64.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ae7ded39db65fd4cbc87ed52696c4c5280a7e850",
+      "size": 2174,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/ae7ded39db65fd4cbc87ed52696c4c5280a7e850"
+    },
+    {
+      "path": "ms-rs/mscore/src/sim_board.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "65c2823e87fb2a4c2d6c384cbbc9d90f8c3e3d1f",
+      "size": 16173,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/65c2823e87fb2a4c2d6c384cbbc9d90f8c3e3d1f"
+    },
+    {
+      "path": "ms-rs/mscore/src/solver.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "73a830503307f2e7b28958f70151e3d40192ca4c",
+      "size": 25315,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/73a830503307f2e7b28958f70151e3d40192ca4c"
+    },
+    {
+      "path": "ms-rs/mscore/tests",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "32b7653f9b45ffe0a6848148d772ca9d4f880fb8",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/32b7653f9b45ffe0a6848148d772ca9d4f880fb8"
+    },
+    {
+      "path": "ms-rs/mscore/tests/golden_parity.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "178cc24e3b2537b4348f8f15563d77244bb5cc12",
+      "size": 6306,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/178cc24e3b2537b4348f8f15563d77244bb5cc12"
+    },
+    {
+      "path": "ms-rs/mserver",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "da50acdea6831165f200c0c5ef811787fe9ab1cb",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/da50acdea6831165f200c0c5ef811787fe9ab1cb"
+    },
+    {
+      "path": "ms-rs/mserver/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "97f9e25c4b9609ecffd59216d33159b3c982b761",
+      "size": 629,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/97f9e25c4b9609ecffd59216d33159b3c982b761"
+    },
+    {
+      "path": "ms-rs/mserver/src",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "099452837883dbeb1f73d1e716602d34bafe2fa8",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/099452837883dbeb1f73d1e716602d34bafe2fa8"
+    },
+    {
+      "path": "ms-rs/mserver/src/config.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0082874fe0afdf8787a2cade98958b5d76264826",
+      "size": 1083,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/0082874fe0afdf8787a2cade98958b5d76264826"
+    },
+    {
+      "path": "ms-rs/mserver/src/crypto.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "329ccfce6261a832be66857eddb8cfeec1873389",
+      "size": 1623,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/329ccfce6261a832be66857eddb8cfeec1873389"
+    },
+    {
+      "path": "ms-rs/mserver/src/db.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9aa40ace0c5f17027ba99d5c14a91ee5c9e7d610",
+      "size": 14887,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/9aa40ace0c5f17027ba99d5c14a91ee5c9e7d610"
+    },
+    {
+      "path": "ms-rs/mserver/src/http.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d411e7a5b0709bc159c13a488a072e480c0e51e4",
+      "size": 16290,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/d411e7a5b0709bc159c13a488a072e480c0e51e4"
+    },
+    {
+      "path": "ms-rs/mserver/src/hub.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4b068eab013f6c413795886de07c33ebb2d509d0",
+      "size": 13780,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/4b068eab013f6c413795886de07c33ebb2d509d0"
+    },
+    {
+      "path": "ms-rs/mserver/src/main.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b9a2700409c55422e56b8ffefc9cbb64801a48cd",
+      "size": 23286,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/b9a2700409c55422e56b8ffefc9cbb64801a48cd"
+    },
+    {
+      "path": "ms-rs/mserver/src/protocol.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "95e222e3146315bfef5b2437014f446f7e04e6f4",
+      "size": 21353,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/95e222e3146315bfef5b2437014f446f7e04e6f4"
+    },
+    {
+      "path": "ms-rs/mserver/src/worker.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0dd877337d9741d194133178160fa9c4b131c7cd",
+      "size": 2449,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/0dd877337d9741d194133178160fa9c4b131c7cd"
+    },
+    {
+      "path": "ms-rs/mserver/src/worker_pool.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9fd9890a37962d681019a4783b6146919e20e30b",
+      "size": 3312,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/9fd9890a37962d681019a4783b6146919e20e30b"
+    },
+    {
+      "path": "ms-rs/mserver/tests",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "baddf00068a0c8add7a74d92b55335a9a80bf5f7",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/baddf00068a0c8add7a74d92b55335a9a80bf5f7"
+    },
+    {
+      "path": "ms-rs/mserver/tests/http_roundtrip.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a7823b079a5c7ac8c2a59526858c8733428beb11",
+      "size": 16228,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/a7823b079a5c7ac8c2a59526858c8733428beb11"
+    },
+    {
+      "path": "ms-rs/mserver/tests/sim_roundtrip.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e22980b608979a0c2aa5b8a8044cbc8f83dfbe3c",
+      "size": 11735,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/e22980b608979a0c2aa5b8a8044cbc8f83dfbe3c"
+    },
+    {
+      "path": "ms-rs/mserver/tests/tls_roundtrip.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d8db0dc5c0bebec27619d91e728e44cfe8c38889",
+      "size": 10627,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/d8db0dc5c0bebec27619d91e728e44cfe8c38889"
+    },
+    {
+      "path": "ms-rs/msparity",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "34e597fa90263e77f2bf7d5fba25b2d4ca134a45",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/34e597fa90263e77f2bf7d5fba25b2d4ca134a45"
+    },
+    {
+      "path": "ms-rs/msparity/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c03a231f10ab61ed0fe80eaeabc36397731120ac",
+      "size": 160,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/c03a231f10ab61ed0fe80eaeabc36397731120ac"
+    },
+    {
+      "path": "ms-rs/msparity/src",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "a8927369f89acf8cda8a05ca5fd800225881b490",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/a8927369f89acf8cda8a05ca5fd800225881b490"
+    },
+    {
+      "path": "ms-rs/msparity/src/main.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e21aeec9f885ef1caf39ddc60472c8c9e348fee0",
+      "size": 20477,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/e21aeec9f885ef1caf39ddc60472c8c9e348fee0"
+    },
+    {
+      "path": "src",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "cf39335c33e3e36b1b310dc25471aaf0af404282",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/cf39335c33e3e36b1b310dc25471aaf0af404282"
+    },
+    {
+      "path": "src/analyze.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ae66dc76598ae11794639f4784fa395a0cb2a21e",
+      "size": 27709,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/ae66dc76598ae11794639f4784fa395a0cb2a21e"
+    },
+    {
+      "path": "src/analyze.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8a4db851df871a8353033e8dc94520fcb287ca06",
+      "size": 2477,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/8a4db851df871a8353033e8dc94520fcb287ca06"
+    },
+    {
+      "path": "src/app.manifest",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6c1b8d0ff5bf9eb1a0d540837337684537ab1db1",
+      "size": 1691,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/6c1b8d0ff5bf9eb1a0d540837337684537ab1db1"
+    },
+    {
+      "path": "src/diag.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d404f79e4888a6593981bbe93e4ef8d5de70462f",
+      "size": 24822,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/d404f79e4888a6593981bbe93e4ef8d5de70462f"
+    },
+    {
+      "path": "src/diag.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "457198846160004687ec02a5effacd708f8f56db",
+      "size": 3372,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/457198846160004687ec02a5effacd708f8f56db"
+    },
+    {
+      "path": "src/leader.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "82868745c8f9b5cd5af8b6a79c03763a678baace",
+      "size": 13567,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/82868745c8f9b5cd5af8b6a79c03763a678baace"
+    },
+    {
+      "path": "src/leader.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b29b90b21b9cde33181fc99e9adf81045bdb18be",
+      "size": 2366,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/b29b90b21b9cde33181fc99e9adf81045bdb18be"
+    },
+    {
+      "path": "src/minesweeper.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b4b3fe16f680aa5677fc80d43111bac53441e615",
+      "size": 92508,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/b4b3fe16f680aa5677fc80d43111bac53441e615"
+    },
+    {
+      "path": "src/minesweeper.ico",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c9a4965233db20deb58c41065717c2239d84f504",
+      "size": 766,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/c9a4965233db20deb58c41065717c2239d84f504"
+    },
+    {
+      "path": "src/network.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d79655034e3cbaea3466584041b74eb61e98f4cb",
+      "size": 51542,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/d79655034e3cbaea3466584041b74eb61e98f4cb"
+    },
+    {
+      "path": "src/network.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "99104acf88cf4738bbdf656376a57d132641d356",
+      "size": 8650,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/99104acf88cf4738bbdf656376a57d132641d356"
+    },
+    {
+      "path": "src/resource.h",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "981f058d9f8a9a2ef88daae07201f8ae279188e4",
+      "size": 1982,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/981f058d9f8a9a2ef88daae07201f8ae279188e4"
+    },
+    {
+      "path": "src/resources.rc",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "824d9d68cdc4add9c86ac481eba9e754e354dd65",
+      "size": 11422,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/824d9d68cdc4add9c86ac481eba9e754e354dd65"
+    },
+    {
+      "path": "tools",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "812c2d7a92acf2f87be926e8c03a300c9f801faf",
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/trees/812c2d7a92acf2f87be926e8c03a300c9f801faf"
+    },
+    {
+      "path": "tools/README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fcf6bb336f43d303206eabbba0ce49ccfc406b8d",
+      "size": 4172,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/fcf6bb336f43d303206eabbba0ce49ccfc406b8d"
+    },
+    {
+      "path": "tools/analyze_diff.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e816abcae84c289faec57106f01193948a141826",
+      "size": 4933,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/e816abcae84c289faec57106f01193948a141826"
+    },
+    {
+      "path": "tools/analyze_test.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "675b45de7868d221645fc152776baa9b329f55db",
+      "size": 2563,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/675b45de7868d221645fc152776baa9b329f55db"
+    },
+    {
+      "path": "tools/analyze_test.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "af665386d3c6674ddce0e0af5829df4b98283a85",
+      "size": 2008,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/af665386d3c6674ddce0e0af5829df4b98283a85"
+    },
+    {
+      "path": "tools/board486.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1068378106d66596efd3d84629c5e47c5e7b3e6e",
+      "size": 31,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/1068378106d66596efd3d84629c5e47c5e7b3e6e"
+    },
+    {
+      "path": "tools/diag_flow_test.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "703431149dfa3731b7b0a3b78cb6cff988de1086",
+      "size": 5149,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/703431149dfa3731b7b0a3b78cb6cff988de1086"
+    },
+    {
+      "path": "tools/diag_test.c",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6912b1f5735e282e58211a38891c4fec54eba369",
+      "size": 3569,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/6912b1f5735e282e58211a38891c4fec54eba369"
+    },
+    {
+      "path": "tools/msys2_root.cmd",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1f44b828564b6e195a05f548513c0d5ffad2cb8c",
+      "size": 860,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/1f44b828564b6e195a05f548513c0d5ffad2cb8c"
+    },
+    {
+      "path": "tools/run_analyze_diff.cmd",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9244093cce6f08c98d34249f68c27f75d8a4e53a",
+      "size": 744,
+      "url": "https://api.github.com/repos/enis1enis2/minesweeper-classic/git/blobs/9244093cce6f08c98d34249f68c27f75d8a4e53a"
+    }
+  ],
+  "truncated": false
+}

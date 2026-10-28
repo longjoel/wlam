@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use wlam_pe::Pe;
-use wlam_translate::{Analysis, Matrix, OrdinalOracle};
+use wlam_translate::{Analysis, OrdinalOracle};
 
 const USAGE: &str = "\
 wlam — Win32 PE -> WebAssembly recompiler
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn classification_state_is_exposed() {
-        let (state, _) = Matrix::classify("KERNEL32.dll", Some("VirtualAlloc"));
+        let (state, _) = wlam_translate::Matrix::classify("KERNEL32.dll", Some("VirtualAlloc"));
         assert_eq!(state, Implementation::Native);
     }
 }

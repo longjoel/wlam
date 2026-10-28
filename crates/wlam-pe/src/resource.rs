@@ -217,6 +217,7 @@ mod tests {
             raw: &raw,
             sections: &sections,
             image_base: 0,
+            is64: false,
         };
         let dir = Directory {
             index: Directory::RESOURCE,

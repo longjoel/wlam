@@ -1,0 +1,33 @@
+image: benchmarks/minesweeper/bin/minesweeper-x64.exe
+
+kind:            PE32+ (64-bit)
+machine:         Amd64
+image base:      0x140000000
+entry point:     0x1440
+subsystem:       GUI (user32)
+sections:        19
+  .text    r-x rva=0x00001000 vsize=0x019140 raw=0x019200
+  .data    rw- rva=0x0001b000 vsize=0x000190 raw=0x000200
+  .rdata   r-- rva=0x0001c000 vsize=0x003028 raw=0x003200
+  .pdata   r-- rva=0x00020000 vsize=0x0009fc raw=0x000a00
+  .xdata   r-- rva=0x00021000 vsize=0x0009f4 raw=0x000a00
+  .bss     rw- rva=0x00022000 vsize=0x008b90 raw=0x000000
+  .idata   r-- rva=0x0002b000 vsize=0x001c14 raw=0x001e00
+  .tls     rw- rva=0x0002d000 vsize=0x000010 raw=0x000200
+  .rsrc    r-- rva=0x0002e000 vsize=0x002dd0 raw=0x002dd0
+  .reloc   r-- rva=0x00031000 vsize=0x0000a8 raw=0x000200
+  /4       r-- rva=0x00032000 vsize=0x000960 raw=0x000a00
+  /19      r-- rva=0x00033000 vsize=0x0141cd raw=0x014200
+  /31      r-- rva=0x00048000 vsize=0x0041cc raw=0x004200
+  /45      r-- rva=0x0004d000 vsize=0x008ce4 raw=0x008e00
+  /57      r-- rva=0x00056000 vsize=0x0017f8 raw=0x001800
+  /70      r-- rva=0x00058000 vsize=0x000465 raw=0x000600
+  /81      r-- rva=0x00059000 vsize=0x002d67 raw=0x002e00
+  /97      r-- rva=0x0005c000 vsize=0x0092eb raw=0x009400
+  /113     r-- rva=0x00066000 vsize=0x00064d raw=0x000800
+imports:         0 symbols from 0 libraries
+exports:         0
+relocations:     0
+resources:       0
+
+compatibility:
