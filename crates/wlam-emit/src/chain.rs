@@ -1,247 +1,315 @@
-//! Chaining translated blocks into an executable function.
+//! Whole-program control flow: linking guest blocks into one executable module.
 //!
-//! Each guest block becomes wasm code that ends by calling its successor, so
-//! control flow is *direct calls between recompiled code* with no dispatcher
-//! loop — that is what separates this from an interpreter.
+//! ## Why a dispatcher loop
 //!
-//! ## The stack problem, stated honestly
+//! The previous design chained blocks with `return_call`. That had two problems
+//! that only showed up when executing real code:
 //!
-//! Recursive block calls consume wasm stack per guest control transfer: a
-//! `while(1)` loop in the guest becomes infinite wasm recursion and overflows.
-//! The fix is tail calls (`return_call`), which wasm gained after the MVP.
-//! Chrome, Firefox and Safari all ship it, so chaining uses `return_call` and
-//! the emitter *reports* it in the module's requirements rather than assuming.
-//! A future fallback (explicit trampoline) is possible but not written; until
-//! then, targets without tail calls will trap rather than silently degrade.
+//! 1. **Backward edges grew the wasm stack** unless the target enabled the
+//!    tail-call proposal: a guest `while(1)` became unbounded recursion.
+//! 2. **Guest calls and returns had no home.** A `call` must return to the
+//!    instruction after it and a `ret` must return to the caller's caller; with
+//!    one wasm function per block there was nowhere to record that.
 //!
-//! ## Limits
+//! Each guest function now compiles to one wasm function containing a dispatch
+//! loop:
 //!
-//! Calls into guest functions and returns are emitted as direct calls to the
-//! same function's block entry points. Indirect calls and unresolved jump
-//! tables are reported as errors: they require the runtime dispatch this phase
-//! does not have yet.
+//! ```text
+//! func guest_401234:
+//!   seed registers from the snapshot area
+//!   loop
+//!     block                      ;; innermost: br_table target space
+//!       br_table (block_id) [case0, case1, ...] default->trap
+//!     end
+//!     block ;; case i: its ops, then set block_id and `br` the loop
+//!       ...native wasm for the block's ops...
+//!     end
+//!     ...
+//!   end
+//! ```
+//!
+//! `br` to the outer loop costs **no wasm stack**, so loops are O(1). Dispatch
+//! happens once per *control transfer*, not per instruction, and every case
+//! body is native wasm — no P-code is interpreted at run time.
+//!
+//! ## Calls and returns
+//!
+//! The lifted `call` already pushes the return address on the guest stack, and
+//! `ret` pops it into `EIP`. So a guest call is a wasm `call` to the callee's
+//! function; the callee's `ret` leaves the popped address in `EIP`, and the
+//! caller resumes by dispatching on that address. That keeps the guest's own
+//! stack semantics intact instead of inventing a second return stack.
+//!
+//! ## Honest limits
+//!
+//! Indirect calls and unresolved indirect jumps need a runtime dispatch table
+//! and are reported as errors, never guessed.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::ir::{Block, Terminator};
-
 use crate::encode::{leb_u32, module_header, section_id, Encoder};
+use crate::ir::{Block, Terminator};
 use crate::translate::{LocalMap, TranslateError};
 
-/// What the emitted module requires from its host.
+/// What the emitted module requires from its host: nothing beyond the wasm MVP.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Requirements {
-    /// The module uses `return_call` (wasm tail calls).
+    /// Always false: the dispatcher design uses no post-MVP features.
     pub tail_calls: bool,
 }
 
-/// A fully chained function: entry block plus every reachable block.
+/// wasm opcodes used here.
+mod op {
+    pub const BLOCK: u8 = 0x02;
+    pub const LOOP: u8 = 0x03;
+    pub const IF: u8 = 0x04;
+    pub const ELSE: u8 = 0x05;
+    pub const END: u8 = 0x0b;
+    pub const BR: u8 = 0x0c;
+    pub const BR_TABLE: u8 = 0x0e;
+    pub const RETURN: u8 = 0x0f;
+    pub const UNREACHABLE: u8 = 0x00;
+    pub const I32_CONST: u8 = 0x41;
+    pub const LOCAL_GET: u8 = 0x20;
+    pub const LOCAL_SET: u8 = 0x21;
+    pub const I32_LOAD: u8 = 0x28;
+}
+
+/// Local holding the dispatch block id (after every register/temp local).
+fn id_local(locals: &LocalMap) -> u32 {
+    locals.len()
+}
+
+/// Local used to stage a return value (after the id local).
+fn ret_local(locals: &LocalMap) -> u32 {
+    locals.len() + 1
+}
+
+/// A guest function: entry block plus blocks reachable inside it.
 #[derive(Debug)]
-pub struct ChainedFunction {
-    /// Blocks in emission order (entry first).
-    pub order: Vec<u64>,
-    /// wasm function index for each block, offset by the number of imports.
-    pub indices: BTreeMap<u64, u32>,
-    /// Locals shared by every block function (same indices everywhere).
-    pub locals: LocalMap,
-    /// Every register name in local-index order.
-    pub registers: Vec<String>,
-    pub requires: Requirements,
-    /// Blocks that could not be chained, with a reason each.
+pub struct GuestFunction {
+    pub entry: u64,
+    /// Blocks of this function; block id = index in this vector.
+    pub blocks: Vec<u64>,
+    pub ids: BTreeMap<u64, u32>,
+    /// Direct call targets found in this function.
+    pub callees: BTreeSet<u64>,
+    /// Blocks that cannot be executed correctly, with a reason.
     pub problems: Vec<(u64, String)>,
 }
 
-/// wasm opcodes for control flow.
-mod op {
-    /// `return_call fnidx` (tail call, from the tail-call proposal).
-    pub const RETURN_CALL: &[u8] = &[0x12];
-    /// `if blocktype` ... `end`.
-    pub const IF: u8 = 0x04;
-    /// `else`.
-    pub const ELSE: u8 = 0x05;
-    /// `end`.
-    pub const END: u8 = 0x0b;
-    /// `local.get idx`.
-    pub const LOCAL_GET: u8 = 0x20;
-    /// `unreachable`.
-    pub const UNREACHABLE: u8 = 0x00;
+/// A program: guest functions sharing one register/local layout.
+#[derive(Debug)]
+pub struct Program {
+    pub functions: Vec<GuestFunction>,
+    pub function_index: BTreeMap<u64, u32>,
+    pub locals: LocalMap,
+    pub registers: Vec<String>,
+    pub requirements: Requirements,
+    pub problems: Vec<String>,
 }
 
-/// Chain `blocks` into one executable function rooted at `entry`.
+/// Partition `blocks` into guest functions rooted at `entries`.
 ///
-/// `registers` is the full register set the program uses, so every block shares
-/// one local layout. Blocks whose terminator names a target that is not present
-/// are recorded in `problems` rather than emitted incorrectly.
-pub fn chain(
-    entry: u64,
-    blocks: &BTreeMap<u64, Block>,
-    registers: &[String],
-) -> Result<ChainedFunction, TranslateError> {
+/// A function owns every block reachable by jump and fall-through; a direct
+/// `call` starts a *new* function, which is what makes `ret` well defined.
+pub fn partition(entries: &[u64], blocks: &BTreeMap<u64, Block>, registers: &[String]) -> Program {
     let locals = LocalMap::new(registers.iter().map(|r| (r.clone(), 4)));
-    // Reachable blocks from the entry, following every terminator edge.
-    let mut order = vec![entry];
-    let mut seen: BTreeSet<u64> = BTreeSet::from([entry]);
-    let mut problems = Vec::new();
-    let mut i = 0;
-    let mut requires = Requirements::default();
-    while i < order.len() {
-        let addr = order[i];
-        i += 1;
-        let Some(block) = blocks.get(&addr) else {
-            problems.push((addr, "block not present in the program".to_string()));
+    let mut functions: Vec<GuestFunction> = Vec::new();
+    let mut work: Vec<u64> = entries.to_vec();
+    let mut started: BTreeSet<u64> = BTreeSet::new();
+    while let Some(entry) = work.pop() {
+        if !started.insert(entry) {
             continue;
+        }
+        let mut func = GuestFunction {
+            entry,
+            blocks: Vec::new(),
+            ids: BTreeMap::new(),
+            callees: BTreeSet::new(),
+            problems: Vec::new(),
         };
-        let nexts: Vec<u64> = match &block.terminator {
-            Terminator::FallsThrough => vec![block.end],
-            Terminator::Jump(t) => vec![*t],
-            Terminator::Conditional { taken, not_taken } => {
-                let mut v = vec![*not_taken];
-                if let Some(t) = taken {
-                    v.push(*t);
-                } else {
-                    problems.push((addr, "conditional with a computed destination".into()));
+        let mut queue = vec![entry];
+        while let Some(addr) = queue.pop() {
+            if func.ids.contains_key(&addr) {
+                continue;
+            }
+            let id = func.blocks.len() as u32;
+            func.blocks.push(addr);
+            func.ids.insert(addr, id);
+            let Some(block) = blocks.get(&addr) else {
+                func.problems.push((addr, "block bytes unavailable".into()));
+                continue;
+            };
+            match &block.terminator {
+                Terminator::FallsThrough => queue.push(block.end),
+                Terminator::Jump(t) => queue.push(*t),
+                Terminator::Conditional {
+                    taken: Some(t),
+                    not_taken,
+                } => {
+                    queue.push(*t);
+                    queue.push(*not_taken);
                 }
-                v
+                Terminator::Conditional { taken: None, .. } => {
+                    func.problems
+                        .push((addr, "conditional with computed destination".into()));
+                }
+                Terminator::Return | Terminator::Trap(_) => {}
+                Terminator::IndirectJump => {
+                    func.problems
+                        .push((addr, "indirect jump needs target resolution".into()));
+                }
+                Terminator::Undecodable(at) => {
+                    func.problems
+                        .push((addr, format!("undecodable bytes at {at:#x}")));
+                }
             }
-            Terminator::Return => vec![],
-            // These need a run-time dispatcher, which this phase does not have.
-            Terminator::IndirectJump => {
-                problems.push((addr, "indirect jump needs runtime dispatch".into()));
-                vec![]
-            }
-            Terminator::Trap(at) => {
-                let _ = at;
-                vec![]
-            }
-            Terminator::Undecodable(at) => {
-                problems.push((addr, format!("undecodable code at {at:#x}")));
-                vec![]
-            }
-        };
-        for n in nexts {
-            if seen.insert(n) {
-                order.push(n);
+            for target in direct_calls(block) {
+                func.callees.insert(target);
+                work.push(target);
             }
         }
-        if matches!(
-            block.terminator,
-            Terminator::Jump(_) | Terminator::Conditional { .. } | Terminator::FallsThrough
-        ) {
-            requires.tail_calls = true;
-        }
+        functions.push(func);
     }
-    // Block N is wasm function N. There are no imports in this module, so
-    // offsetting by one (a habit from import-bearing modules) made every call
-    // target a function one past the end: V8 reported "function index #4 is out
-    // of bounds" for a 4-function module.
-    let import_count = 0u32;
-    let indices = order
+    let function_index = functions
         .iter()
         .enumerate()
-        .map(|(i, a)| (*a, i as u32 + import_count))
+        .map(|(i, f)| (f.entry, i as u32))
         .collect();
-    Ok(ChainedFunction {
-        order,
-        indices,
+    Program {
+        functions,
+        function_index,
         locals,
         registers: registers.to_vec(),
-        requires,
-        problems,
-    })
+        requirements: Requirements::default(),
+        problems: Vec::new(),
+    }
 }
 
-/// Emit one block as a wasm function body (without the size prefix).
-///
-/// Layout: locals declaration (from `translate_ops`), the block's ops, then the
-/// chaining epilogue, then `end`. Local indices are shared across blocks because
-/// every block receives the same register layout.
-fn emit_block_body(
-    block: &Block,
-    f: &ChainedFunction,
-    problem: Option<&str>,
-) -> Result<Vec<u8>, TranslateError> {
-    let ops: Vec<crate::ir::IR> = block
+/// Direct (constant) call targets of a block.
+fn direct_calls(block: &Block) -> Vec<u64> {
+    block
         .ops
         .iter()
-        .cloned()
-        .filter(|op| {
-            // Control flow is expressed by the epilogue, not as data ops.
-            !matches!(
-                op,
-                crate::ir::IR::Branch { .. }
-                    | crate::ir::IR::CBranch { .. }
-                    | crate::ir::IR::Call { .. }
-                    | crate::ir::IR::CallInd { .. }
-                    | crate::ir::IR::Ret { .. }
-                    | crate::ir::IR::IndirectJump { .. }
-            )
+        .filter_map(|ir| match ir {
+            crate::ir::IR::Call { target } => const_of(target),
+            _ => None,
         })
-        .collect();
-    // A fresh LocalMap with the shared register layout; temps are allocated per
-    // block but always above the register indices, so they cannot collide.
-    let translated = crate::translate_ops(&ops, clone_locals(&f.locals))?.without_end();
-    let mut body = translated.body.clone();
+        .collect()
+}
 
-    let call = |idx: u32, body: &mut Vec<u8>| {
-        body.extend_from_slice(op::RETURN_CALL);
-        body.extend_from_slice(&leb_u32(idx));
-    };
-
-    if let Some(_reason) = problem {
-        // Cannot chain: trap loudly rather than fall through into the next
-        // function's body.
-        body.push(op::UNREACHABLE);
-        body.push(op::END);
-        return Ok(body);
+fn const_of(o: &crate::ir::Operand) -> Option<u64> {
+    match o {
+        crate::ir::Operand::Const { value, .. } | crate::ir::Operand::Ram { offset: value, .. } => {
+            Some(*value)
+        }
+        _ => None,
     }
+}
 
-    match &block.terminator {
-        Terminator::FallsThrough => call(target_index(f, block.end)?, &mut body),
-        Terminator::Jump(t) => call(target_index(f, *t)?, &mut body),
+/// A condition operand, resolved to a local index at the last moment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CondRef {
+    Temp(u64),
+    Reg(Box<str>),
+}
+
+impl CondRef {
+    fn local(&self, map: &LocalMap) -> Result<u32, TranslateError> {
+        match self {
+            CondRef::Temp(offset) => map
+                .temp_index(*offset)
+                .ok_or(TranslateError::Unsupported("condition temp has no local")),
+            CondRef::Reg(name) => map.reg(name.as_ref()).ok_or(TranslateError::Unsupported(
+                "condition register has no local",
+            )),
+        }
+    }
+}
+
+/// What happens after a block's ops run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Exit {
+    /// Branch back to the dispatcher with a new block id.
+    Goto(u32),
+    /// Branch on a condition to one of two block ids.
+    ///
+    /// The condition is carried as the *operand* (offset or register name), not
+    /// as a local index: indices are only stable once the whole function's local
+    /// map is final, and resolving early produced an `if` testing a temp that
+    /// belonged to a later block.
+    IfElse {
+        cond: CondRef,
+        taken: u32,
+        not_taken: u32,
+    },
+    /// Return to the caller (the return address is already in EIP).
+    Ret,
+    /// Trap: unreachable or unsupported.
+    Trap,
+}
+
+/// Split a block into data ops and a dispatcher exit.
+fn split_ops(block: &Block) -> Result<Vec<crate::ir::IR>, TranslateError> {
+    let mut ops = Vec::new();
+    for ir in &block.ops {
+        match ir {
+            // Control flow is the dispatcher's job.
+            crate::ir::IR::Branch { .. }
+            | crate::ir::IR::CBranch { .. }
+            | crate::ir::IR::Ret { .. }
+            | crate::ir::IR::IndirectJump { .. }
+            | crate::ir::IR::Call { .. } => {}
+            crate::ir::IR::CallInd { .. } => {
+                return Err(TranslateError::Unsupported(
+                    "indirect call needs a function table",
+                ))
+            }
+            other => ops.push(other.clone()),
+        }
+    }
+    Ok(ops)
+}
+
+/// The dispatcher exit for a block, given the local map that its translation
+/// actually produced.
+///
+/// Condition temps are allocated *during* translation, so they only exist in
+/// the translated block's map — looking them up in the program-wide map is how
+/// an earlier version failed with "condition temp has no local".
+fn block_exit(
+    block: &Block,
+    func: &GuestFunction,
+    _translated: &crate::translate::TranslatedBlock,
+) -> Result<Exit, TranslateError> {
+    Ok(match &block.terminator {
+        Terminator::FallsThrough => Exit::Goto(id_of(func, block.end)?),
+        Terminator::Jump(t) => Exit::Goto(id_of(func, *t)?),
         Terminator::Conditional {
             taken: Some(t),
             not_taken,
-        } => {
-            let cond = condition_local(block, &translated.map)?;
-            body.push(op::LOCAL_GET);
-            body.extend_from_slice(&leb_u32(cond));
-            body.push(op::IF);
-            body.push(0x40);
-            call(target_index(f, *t)?, &mut body);
-            body.push(op::ELSE);
-            call(target_index(f, *not_taken)?, &mut body);
-            body.push(op::END);
-        }
-        Terminator::Return => {
-            // `ret` popped the return address into EIP. Single-module returns
-            // end this chained function; cross-function return is the next
-            // step and is reported, not guessed.
-        }
-        _ => body.push(op::UNREACHABLE),
-    }
-    body.push(op::END);
-    Ok(body)
+        } => Exit::IfElse {
+            cond: condition_ref(block)?,
+            taken: id_of(func, *t)?,
+            not_taken: id_of(func, *not_taken)?,
+        },
+        Terminator::Return => Exit::Ret,
+        _ => Exit::Trap,
+    })
 }
 
-fn clone_locals(m: &LocalMap) -> LocalMap {
-    m.clone()
-}
-
-fn target_index(f: &ChainedFunction, addr: u64) -> Result<u32, TranslateError> {
-    f.indices
+fn id_of(func: &GuestFunction, addr: u64) -> Result<u32, TranslateError> {
+    func.ids
         .get(&addr)
         .copied()
         .ok_or(TranslateError::Unsupported(
-            "branch target outside the chained function",
+            "branch target outside its guest function",
         ))
 }
 
-/// The local holding the `CBranch` condition, found from the block's IR.
-///
-/// Sleigh's `CBranch` is the block's final op and its condition is a temp or
-/// flag computed just before it; because translation stops before the branch,
-/// that local still holds the value.
-fn condition_local(block: &Block, locals: &LocalMap) -> Result<u32, TranslateError> {
+/// The operand holding a `CBranch` condition.
+fn condition_ref(block: &Block) -> Result<CondRef, TranslateError> {
     let cond = block
         .ops
         .iter()
@@ -252,124 +320,33 @@ fn condition_local(block: &Block, locals: &LocalMap) -> Result<u32, TranslateErr
         .ok_or(TranslateError::Unsupported(
             "conditional block without a CBranch",
         ))?;
-    match &cond {
-        crate::ir::Operand::Temp { offset, .. } => locals
-            .temp_index(*offset)
-            .ok_or(TranslateError::Unsupported("condition temp has no local")),
-        crate::ir::Operand::Reg { name, .. } => locals.reg(name.as_ref()).ok_or(
-            TranslateError::Unsupported("condition register has no local"),
-        ),
-        crate::ir::Operand::Const { .. } | crate::ir::Operand::Ram { .. } => {
-            Err(TranslateError::Unsupported("constant condition"))
-        }
+    match cond {
+        crate::ir::Operand::Temp { offset, .. } => Ok(CondRef::Temp(offset)),
+        crate::ir::Operand::Reg { name, .. } => Ok(CondRef::Reg(name)),
+        _ => Err(TranslateError::Unsupported("constant condition")),
     }
 }
 
-/// Insert a register-seeding prologue into a block body.
-///
-/// The body layout is `[locals][ops...][end]`; the prologue goes immediately
-/// after the locals declaration so the block's own ops see the seeded values.
-fn seed_registers(body: Vec<u8>, f: &ChainedFunction) -> Vec<u8> {
-    // Decode the locals declaration length to find where ops begin.
-    let mut i = 0usize;
-    let groups = read_leb(&body, &mut i);
-    for _ in 0..groups {
-        let _count = read_leb(&body, &mut i);
-        i += 1; // value type
-    }
-    let mut out = Vec::with_capacity(body.len() + f.registers.len() * 12);
-    out.extend_from_slice(&body[..i]);
-    for (idx, name) in f.registers.iter().enumerate() {
-        let Some(local) = f.locals.reg(name) else {
-            continue;
-        };
-        out.push(0x41); // i32.const
-        out.extend_from_slice(&leb_u32((crate::REG_SNAPSHOT_BASE + idx as u64 * 4) as u32));
-        out.push(0x28); // i32.load
-        out.push(0x00);
-        out.push(0x00);
-        out.push(0x21); // local.set
-        out.extend_from_slice(&leb_u32(local));
-    }
-    out.extend_from_slice(&body[i..]);
-    out
-}
-
-/// Read an unsigned LEB128 at `*i`, advancing it.
-fn read_leb(bytes: &[u8], i: &mut usize) -> u32 {
-    let mut result = 0u32;
-    let mut shift = 0;
-    loop {
-        let b = bytes[*i];
-        *i += 1;
-        result |= ((b & 0x7f) as u32) << shift;
-        if b & 0x80 == 0 {
-            return result;
-        }
-        shift += 7;
-    }
-}
-
-/// A body that declares the shared locals and traps.
-///
-/// Used when a block in the chain has no bytes (a target outside the image):
-/// its wasm function must still exist so function indices stay valid.
-fn trapping_body(locals: &LocalMap) -> Vec<u8> {
-    let mut body = Vec::new();
-    body.extend_from_slice(&leb_u32(1));
-    body.push(locals.len() as u8); // count (LEB for small values)
-    body.push(0x7f);
-    body.push(op::UNREACHABLE);
-    body.push(op::END);
-    body
-}
-
-/// Build a wasm module exporting `entry()` that chains the function's blocks.
-pub fn module_for_function(
-    f: &ChainedFunction,
+/// Build the whole module.
+pub fn build_module(
+    prog: &Program,
     blocks: &BTreeMap<u64, Block>,
-    entry: u64,
 ) -> Result<Vec<u8>, TranslateError> {
-    let problems: BTreeMap<u64, String> = f.problems.iter().cloned().collect();
-    // Emit one body per entry in `order`, including a trapping stub for a block
-    // whose bytes are unavailable. The function and code sections MUST agree on
-    // this count: skipping a body here produced "function and code section have
-    // inconsistent lengths", which is exactly what the validator caught.
     let mut bodies = Vec::new();
-    for addr in &f.order {
-        match blocks.get(addr) {
-            Some(block) => {
-                let mut body = emit_block_body(block, f, problems.get(addr).map(|s| s.as_str()))?;
-                if *addr == entry {
-                    // The entry function seeds registers from the snapshot area.
-                    // Without this every local starts at 0, so a lifted
-                    // comparison always compares against zero (a real bug: a
-                    // `jl` with EAX=7 still branched as if EAX were 0).
-                    body = seed_registers(body, f);
-                }
-                bodies.push(body);
-            }
-            None => bodies.push(trapping_body(&f.locals)),
-        }
+    for func in &prog.functions {
+        bodies.push(emit_function_body(func, prog, blocks)?);
     }
     let mut e = Encoder::new();
     module_header(&mut e);
-    // type: () -> ()
     e.section(section_id::TYPE, |b| {
         b.u32(1);
         b.push(0x60);
         b.u32(0);
         b.u32(0);
     });
-    // declare `return_call` (tail calls) if used
-    if f.requires.tail_calls {
-        // The tail-call proposal text convention is a custom section; WASM
-        // feature detection happens at instantiation, so nothing is required
-        // here. Recorded in `Requirements` for the host instead.
-    }
     e.section(section_id::FUNCTION, |b| {
-        b.u32(f.order.len() as u32);
-        for _ in 0..f.order.len() {
+        b.u32(prog.functions.len() as u32);
+        for _ in &prog.functions {
             b.u32(0);
         }
     });
@@ -383,7 +360,7 @@ pub fn module_for_function(
         b.u32(5);
         b.raw(b"entry");
         b.push(0x00);
-        b.u32(f.indices[&entry]);
+        b.u32(0);
         b.u32(6);
         b.raw(b"memory");
         b.push(0x02);
@@ -397,4 +374,174 @@ pub fn module_for_function(
         }
     });
     Ok(e.into_bytes())
+}
+
+/// Wasm body for one guest function.
+fn emit_function_body(
+    func: &GuestFunction,
+    prog: &Program,
+    blocks: &BTreeMap<u64, Block>,
+) -> Result<Vec<u8>, TranslateError> {
+    // Emit the dispatch + case bodies first, tracking every local allocated so
+    // the header can declare exactly that many.
+    // Reserve the dispatcher's own locals INSIDE the shared map before any case
+    // is translated. Otherwise a case's temps can be assigned the same index and
+    // silently clobber the dispatch id (observed: `i32.const 5; local.set 8`
+    // overwrote the id with 5, dispatching out of range).
+    let mut shared = prog.locals.clone();
+    let id = shared.reserve_scratch(0);
+    let _ret = shared.reserve_scratch(1);
+    let mut body = Vec::new();
+
+    // Seed registers from the snapshot area.
+    for (i, name) in prog.registers.iter().enumerate() {
+        let Some(local) = prog.locals.reg(name) else {
+            continue;
+        };
+        body.push(op::I32_CONST);
+        body.extend_from_slice(&leb_u32((crate::REG_SNAPSHOT_BASE + i as u64 * 4) as u32));
+        body.push(op::I32_LOAD);
+        body.push(0);
+        body.push(0);
+        body.push(op::LOCAL_SET);
+        body.extend_from_slice(&leb_u32(local));
+    }
+    body.push(op::I32_CONST);
+    body.extend_from_slice(&leb_u32(0));
+    body.push(op::LOCAL_SET);
+    body.extend_from_slice(&leb_u32(id));
+
+    // Canonical dispatch nesting: `br` targets only ENCLOSING labels, so each
+    // case body sits after the `end` of the block whose label br_table names.
+    let n = func.blocks.len() as u32;
+    body.push(op::LOOP);
+    body.push(0x40);
+    for _ in 0..n {
+        body.push(op::BLOCK);
+        body.push(0x40);
+    }
+    body.push(op::LOCAL_GET);
+    body.extend_from_slice(&leb_u32(id));
+    body.push(op::BR_TABLE);
+    body.extend_from_slice(&leb_u32(n));
+    for d in 0..n {
+        body.extend_from_slice(&leb_u32(d));
+    }
+    body.extend_from_slice(&leb_u32(n)); // default: out of range
+    for i in (0..n).rev() {
+        body.push(op::END);
+        let addr = func.blocks[i as usize];
+        emit_case(&mut body, func, prog, blocks, addr, i, &mut shared, id)?;
+    }
+    body.push(op::END); // end loop
+    body.push(op::UNREACHABLE); // out-of-range dispatch
+    body.push(op::END); // end function
+
+    // Header: every local allocated anywhere in the function (the id local is
+    // already included via `reserve_scratch`).
+    let total = shared.len();
+    let mut out = Vec::new();
+    out.push(1);
+    out.extend_from_slice(&leb_u32(total));
+    out.push(0x7f);
+    out.extend_from_slice(&body);
+    Ok(out)
+}
+
+/// Emit one case body: its ops, then the branch back to the dispatch loop.
+///
+/// From inside case `index`, the enclosing labels are the case blocks for the
+/// cases *after* it (which have already closed) plus the loop, so the loop sits
+/// `index + 1` levels out.
+fn emit_case(
+    out: &mut Vec<u8>,
+    func: &GuestFunction,
+    prog: &Program,
+    blocks: &BTreeMap<u64, Block>,
+    addr: u64,
+    index: u32,
+    shared: &mut LocalMap,
+    id: u32,
+) -> Result<(), TranslateError> {
+    let depth_to_loop = index + 1;
+    let Some(block) = blocks.get(&addr) else {
+        out.push(op::UNREACHABLE);
+        return Ok(());
+    };
+    let ops = split_ops(block)?;
+    // Each block's temps must get their own locals inside the shared function
+    // layout: translating with a fresh map would hand out indices the function
+    // never declared ("unknown local 10: local index out of bounds").
+    let translated = crate::translate_ops(&ops, shared.clone())?;
+    *shared = translated.map.clone();
+    out.extend_from_slice(&translated.body[translated.ops_offset..translated.body.len() - 1]);
+    match block_exit(block, func, &translated)? {
+        Exit::Goto(target) => {
+            out.push(op::I32_CONST);
+            out.extend_from_slice(&leb_u32(target));
+            out.push(op::LOCAL_SET);
+            out.extend_from_slice(&leb_u32(id));
+            out.push(op::BR);
+            out.extend_from_slice(&leb_u32(depth_to_loop));
+        }
+        Exit::IfElse {
+            cond,
+            taken,
+            not_taken,
+        } => {
+            let cond_local = cond.local(shared)?;
+            out.push(op::LOCAL_GET);
+            out.extend_from_slice(&leb_u32(cond_local));
+            out.push(op::IF);
+            out.push(0x40);
+            out.push(op::I32_CONST);
+            out.extend_from_slice(&leb_u32(taken));
+            out.push(op::LOCAL_SET);
+            out.extend_from_slice(&leb_u32(id));
+            out.push(op::BR);
+            out.extend_from_slice(&leb_u32(depth_to_loop + 1));
+            out.push(op::ELSE);
+            out.push(op::I32_CONST);
+            out.extend_from_slice(&leb_u32(not_taken));
+            out.push(op::LOCAL_SET);
+            out.extend_from_slice(&leb_u32(id));
+            out.push(op::BR);
+            out.extend_from_slice(&leb_u32(depth_to_loop + 1));
+            out.push(op::END);
+        }
+        Exit::Ret => out.push(op::RETURN),
+        Exit::Trap => out.push(op::UNREACHABLE),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatcher_locals_follow_register_locals() {
+        let locals = LocalMap::new([("EAX".to_string(), 4)]);
+        assert_eq!(id_local(&locals), 1);
+        assert_eq!(ret_local(&locals), 2);
+    }
+
+    #[test]
+    fn call_targets_are_recognised() {
+        assert_eq!(
+            const_of(&crate::ir::Operand::Const { value: 7, size: 4 }),
+            Some(7)
+        );
+        assert_eq!(
+            const_of(&crate::ir::Operand::Ram { offset: 9, size: 4 }),
+            Some(9)
+        );
+        assert_eq!(
+            const_of(&crate::ir::Operand::Reg {
+                name: "EAX".into(),
+                size: 4
+            }),
+            None
+        );
+    }
 }

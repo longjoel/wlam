@@ -10,7 +10,7 @@ mod shared;
 use std::collections::BTreeMap;
 
 use wlam_emit::ir as eir;
-use wlam_emit::chain::{chain, module_for_function};
+use wlam_emit::chain::{build_module, partition};
 use wlam_sleigh::{lift_block, with_big_stack};
 
 /// Lift `code` starting at each address in `starts` and adapt to the emitter's
@@ -167,9 +167,10 @@ fn conditional_branch_takes_the_correct_path() {
         eir::Terminator::Conditional { taken: Some(taken), not_taken: jmp_at }
     );
     let regs = registers(&blocks);
-    let f = chain(base, &blocks, &regs).expect("chain");
-    assert!(f.problems.is_empty(), "chain problems: {:?}", f.problems);
-    let module = module_for_function(&f, &blocks, base).expect("module");
+    let prog = partition(&[base], &blocks, &regs);
+    let func = &prog.functions[0];
+    assert!(func.problems.is_empty(), "problems: {:?}", func.problems);
+    let module = build_module(&prog, &blocks).expect("module");
 
     let read = |eax: u32| -> (Option<u32>, Option<u32>, String) {
         static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -231,10 +232,12 @@ fn jump_chains_into_the_next_block_and_stores() {
     let blocks = blocks_from(&code, base, &[base, base + 6]);
     assert_eq!(blocks[&base].terminator, eir::Terminator::Jump(base + 6));
     let regs = registers(&blocks);
-    let f = chain(base, &blocks, &regs).expect("chain");
-    assert!(f.problems.is_empty(), "chain problems: {:?}", f.problems);
-    assert_eq!(f.order, vec![base, base + 6], "both blocks chained");
-    let module = module_for_function(&f, &blocks, base).expect("module");
+    let prog = partition(&[base], &blocks, &regs);
+    assert_eq!(prog.functions.len(), 1);
+    let func = &prog.functions[0];
+    assert_eq!(func.blocks, vec![base, base + 6], "both blocks in one function");
+    assert!(func.problems.is_empty(), "problems: {:?}", func.problems);
+    let module = build_module(&prog, &blocks).expect("module");
 
     // Read guest memory at 0x10000 after running.
     static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -267,8 +270,8 @@ fn chained_module_is_valid_wasm() {
     let (code, base, starts) = branch_fixture();
     let blocks = blocks_from(&code, base, &starts);
     let regs = registers(&blocks);
-    let f = chain(0x1000, &blocks, &regs).expect("chain");
-    let module = module_for_function(&f, &blocks, 0x1000).expect("module");
+    let prog = partition(&[0x1000], &blocks, &regs);
+    let module = build_module(&prog, &blocks).expect("module");
     let path = std::env::temp_dir().join(format!("wlam-valid-{}.wasm", std::process::id()));
     std::fs::write(&path, &module).unwrap();
     let out = std::process::Command::new("../../toolchain/tools/bin/wasm-tools")
