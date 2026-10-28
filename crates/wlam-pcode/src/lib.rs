@@ -147,10 +147,11 @@ impl fmt::Display for Address {
 }
 
 /// An operand.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Varnode {
-    /// A value at an address: register, unique temp, or memory location whose
-    /// base is a RAM address.
+    /// A value stored at an address: register, unique temp, or memory location
+    /// whose base is a RAM address. This is always an *lvalue*: when it appears
+    /// as an op input the consumer loads from it.
     Addr(Address, ByteSize),
     /// A constant, stored zero-extended in a `u64`.
     Const(u64, ByteSize),
@@ -244,7 +245,24 @@ pub enum UnaryOp {
     Popcount,
 }
 
+/// How an operand position is consumed: as an lvalue that is loaded, or as an
+/// rvalue whose value is used directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadKind {
+    /// Load `size` bytes from the address in the operand.
+    Load,
+    /// Use the operand's value directly (branch destinations, store address).
+    Rvalue,
+}
+
 /// One P-code operation, corresponding to Ghidra's `PcodeOp` kinds.
+///
+/// Operand semantics follow Ghidra's model precisely: `Addr` inputs are
+/// *always* lvalues. A binary op computes `out = input[0] <op> input[1]`, `Copy`
+/// is `out = *input[0]`, `Call` jumps to the value of `input[0]`, and a store
+/// writes `*input[1]` to the address in `input[0]`. Any tool that consumes this
+/// IR (emitter, reference interpreter, pretty printer) must agree on this, so
+/// the rule is encoded in [`Op::reads`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
     /// `out = in[0]`, possibly resizing (zero-extend or truncate).
@@ -290,8 +308,11 @@ pub enum Op {
     Call { target: u64, ret: u64 },
     /// Call through `input` (IAT slot, function pointer).
     CallInd { input: Varnode, ret: u64 },
-    /// Return from the current function.
-    Return { input: Varnode },
+    /// Return from the current function: control flow only.
+    Return,
+    /// Return, also carrying the popped return address in `input` (the lifter
+    /// emits this; the emitter reads `input` as the branch target).
+    ReturnTo { input: Varnode },
     /// A call into the host: `name` identifies the Win32 import.
     CallOther {
         name: String,
@@ -300,6 +321,62 @@ pub enum Op {
     },
     /// No-op (nop, prefix quirks, padding).
     Nop,
+}
+
+impl Op {
+    /// The inputs of this op with how each is read, in order.
+    ///
+    /// This is the single source of truth for operand semantics; consumers
+    /// (the emitter and the reference interpreter) iterate it rather than
+    /// pattern-matching operand fields, so they cannot drift apart.
+    pub fn reads(&self) -> Vec<(&Varnode, ReadKind)> {
+        match self {
+            // `out = *input`: Copy input is an lvalue.
+            Op::Copy { input, .. } => vec![(input, ReadKind::Load)],
+            // Unary operators read their input's value at its own width.
+            Op::Unary { input, .. } => vec![(input, ReadKind::Load)],
+            // The address is used directly; the loaded value is the input.
+            Op::Load { input, .. } => vec![(input, ReadKind::Rvalue)],
+            Op::Store { address, value, .. } => {
+                vec![(address, ReadKind::Rvalue), (value, ReadKind::Load)]
+            }
+            Op::Binary { a, b, .. } => vec![(a, ReadKind::Load), (b, ReadKind::Load)],
+            Op::BranchIndirect {
+                cond,
+                taken,
+                not_taken,
+                ..
+            } => {
+                vec![
+                    (cond, ReadKind::Load),
+                    (taken, ReadKind::Rvalue),
+                    (not_taken, ReadKind::Rvalue),
+                ]
+            }
+            // The branch condition is loaded; the target is an immediate.
+            Op::CBranch { cond, .. } => vec![(cond, ReadKind::Load)],
+            // The callee address is loaded from the IAT slot / register.
+            Op::CallInd { input, .. } => vec![(input, ReadKind::Load)],
+            Op::CallOther { inputs, .. } => inputs.iter().map(|v| (v, ReadKind::Load)).collect(),
+            Op::Call { .. } | Op::Branch { .. } | Op::Nop | Op::Return | Op::ReturnTo { .. } => {
+                vec![]
+            }
+        }
+    }
+
+    /// The destination varnode, if the operation writes one.
+    pub fn output(&self) -> Option<&Varnode> {
+        match self {
+            Op::Copy { out, .. }
+            | Op::Load { out, .. }
+            | Op::Binary { out, .. }
+            | Op::Unary { out, .. }
+            | Op::BranchIndirect { out, .. } => Some(out),
+            Op::CallOther { output, .. } => output.as_ref(),
+            Op::Store { .. } | Op::CBranch { .. } | Op::Call { .. } | Op::CallInd { .. } => None,
+            Op::Branch { .. } | Op::Nop | Op::Return | Op::ReturnTo { .. } => None,
+        }
+    }
 }
 
 /// One lifted instruction.
@@ -443,7 +520,8 @@ impl CPrinter {
             Op::CBranch { cond, target } => format!("if ({cond}) goto {target:#x}"),
             Op::Call { target, ret } => format!("call {target:#x} -> {ret:#x}"),
             Op::CallInd { input, ret } => format!("call *{input} -> {ret:#x}"),
-            Op::Return { input } => format!("return {input}"),
+            Op::Return => "return".to_string(),
+            Op::ReturnTo { input } => format!("return {input}"),
             Op::CallOther {
                 name,
                 inputs,
