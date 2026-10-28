@@ -34,6 +34,7 @@
 
 pub mod encode;
 pub mod ir;
+pub mod chain;
 pub mod translate;
 
 pub use ir::{BinOp, Operand, UnOp, IR};

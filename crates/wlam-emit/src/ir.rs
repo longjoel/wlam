@@ -130,3 +130,33 @@ pub enum IR {
     },
     Nop,
 }
+
+// ---- Block contract ----
+
+/// How a block ends. Produced by the lifter, consumed by [`crate::chain`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Terminator {
+    /// Execution continues at the next instruction.
+    FallsThrough,
+    /// Unconditional jump.
+    Jump(u64),
+    /// Conditional jump; `taken` is `None` when computed at run time.
+    Conditional { taken: Option<u64>, not_taken: u64 },
+    /// Indirect jump (computed goto / jump table).
+    IndirectJump,
+    /// Return to the guest caller.
+    Return,
+    /// A trap by design (`INT3`), carrying the address after the instruction.
+    Trap(u64),
+    /// The bytes at this address are not valid code.
+    Undecodable(u64),
+}
+
+/// A lifted basic block.
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub start: u64,
+    pub end: u64,
+    pub ops: Vec<IR>,
+    pub terminator: Terminator,
+}

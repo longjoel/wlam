@@ -62,7 +62,7 @@ impl std::fmt::Display for TranslateError {
 impl std::error::Error for TranslateError {}
 
 /// wasm local indices for a block function: guest registers first, then temps.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct LocalMap {
     /// Register name (e.g. "EAX", "ZF") -> local index.
     regs: BTreeMap<String, u32>,
@@ -98,6 +98,16 @@ impl LocalMap {
         idx
     }
 
+    /// Index of a temp local, if one was allocated for that offset.
+    pub fn temp_index(&self, offset: u64) -> Option<u32> {
+        self.temps.get(&offset).map(|(idx, _)| *idx)
+    }
+
+    /// Reserve a scratch local for the epilogue (outside the temp keyspace).
+    pub fn reserve_scratch(&mut self, slot: u64) -> u32 {
+        self.temp(u64::MAX - 1000 - slot, 4)
+    }
+
     /// Index of a register local.
     pub fn reg(&self, name: &str) -> Option<u32> {
         self.regs.get(name).copied()
@@ -122,6 +132,30 @@ pub struct TranslatedBlock {
     pub locals: Vec<(u32, u8)>,
     /// Total locals incl. parameters.
     pub local_count: u32,
+    /// Offset in `body` where the ops start (after the locals declaration).
+    pub ops_offset: usize,
+    /// The final local map (registers plus every temp allocated during
+    /// emission), so callers can resolve temp/register operands to indices.
+    pub map: LocalMap,
+}
+
+impl TranslatedBlock {
+    /// Drop the trailing `end` so a caller can append its own epilogue.
+    ///
+    /// The locals declaration stays intact: rebuilding a body by hand is how a
+    /// previous version silently emitted functions with undeclared locals.
+    pub fn without_end(mut self) -> Self {
+        if self.body.last() == Some(&0x0b) {
+            self.body.pop();
+        }
+        self
+    }
+
+    /// Append raw wasm instructions, then close the body with `end`.
+    pub fn finish(mut self) -> Self {
+        self.body.push(0x0b);
+        self
+    }
 }
 
 /// wasm opcodes we emit, named for readability.
@@ -581,6 +615,7 @@ pub fn translate_ops(ops: &[IR], locals: LocalMap) -> Result<TranslatedBlock, Tr
         Vec::new()
     };
     let total = e.locals.len();
+    let map = e.locals.clone();
     // Function body: locals, then ops, then `end`.
     let mut out = Vec::new();
     out.extend_from_slice(&leb_u32(locals.len() as u32));
@@ -588,12 +623,18 @@ pub fn translate_ops(ops: &[IR], locals: LocalMap) -> Result<TranslatedBlock, Tr
         out.extend_from_slice(&leb_u32(*n));
         out.push(*ty);
     }
+    let prefix_len = out.len();
     out.extend_from_slice(&e.body);
     out.push(0x0b);
+    // `prefix_len` is where the ops begin: everything before it is the locals
+    // declaration. Callers that need to append an epilogue before the closing
+    // `end` can use it rather than re-deriving the layout.
     Ok(TranslatedBlock {
         body: out,
         locals,
         local_count: total,
+        ops_offset: prefix_len,
+        map,
     })
 }
 
@@ -652,17 +693,22 @@ pub fn module_for_block(block: &TranslatedBlock, exports: &str) -> Vec<u8> {
 /// diagnostics can read it without giving up the locals.
 pub const REG_SNAPSHOT_BASE: u64 = 0x8000;
 
+/// `initial` is currently informational: the harness writes the initial
+/// register values into the snapshot area itself before calling `run`, so the
+/// module only needs to *read* them from there (which it does). Keeping the
+/// argument makes the caller's intent explicit and lets a future variant embed
+/// the constants directly.
 pub fn module_with_snapshot(
     block: &TranslatedBlock,
     locals: &LocalMap,
     registers: &[String],
     initial: &[u64],
 ) -> Vec<u8> {
+    let _ = initial;
     let mut body = block.body.clone();
     body.pop(); // drop the trailing `end`
-                // Prologue: load caller-supplied initial register values from the snapshot
-                // area into the locals, so the function starts from a known machine state
-                // (`initial` is written into that area by the harness before `run`).
+    // Prologue: load the initial register values from the snapshot area into
+    // the locals, so the function starts from a known machine state.
     for (i, name) in registers.iter().enumerate() {
         let Some(idx) = locals.reg(name) else {
             continue;
@@ -692,6 +738,8 @@ pub fn module_with_snapshot(
         body,
         locals: block.locals.clone(),
         local_count: block.local_count,
+        ops_offset: block.ops_offset,
+        map: block.map.clone(),
     };
     module_for_block(&augmented, "run")
 }
