@@ -1,0 +1,473 @@
+{
+  "function": "0x40ccb2",
+  "instructions": [
+    {
+      "address": "0x40ccb2",
+      "disassembly": "PUSH EBP",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40ccb3",
+      "disassembly": "MOV EBP,ESP",
+      "length": 2,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40ccb5",
+      "disassembly": "PUSH -0x1",
+      "length": 2,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40ccb7",
+      "disassembly": "PUSH 0x4113d0",
+      "length": 5,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40ccbc",
+      "disassembly": "PUSH 0x40d97c",
+      "length": 5,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40ccc1",
+      "disassembly": "MOV EAX,FS:[0x0]",
+      "length": 6,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40ccc7",
+      "disassembly": "PUSH EAX",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40ccc8",
+      "disassembly": "MOV dword ptr FS:[0x0],ESP",
+      "length": 7,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40cccf",
+      "disassembly": "SUB ESP,0x58",
+      "length": 3,
+      "pcode_ops": 10
+    },
+    {
+      "address": "0x40ccd2",
+      "disassembly": "PUSH EBX",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40ccd3",
+      "disassembly": "PUSH ESI",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40ccd4",
+      "disassembly": "PUSH EDI",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40ccd5",
+      "disassembly": "MOV dword ptr [EBP + -0x18],ESP",
+      "length": 3,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40ccd8",
+      "disassembly": "CALL dword ptr [0x41106c]",
+      "length": 6,
+      "pcode_ops": 4
+    },
+    {
+      "address": "0x40ccde",
+      "disassembly": "XOR EDX,EDX",
+      "length": 2,
+      "pcode_ops": 9
+    },
+    {
+      "address": "0x40cce0",
+      "disassembly": "MOV DL,AH",
+      "length": 2,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40cce2",
+      "disassembly": "MOV dword ptr [0x415b80],EDX",
+      "length": 6,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40cce8",
+      "disassembly": "MOV ECX,EAX",
+      "length": 2,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40ccea",
+      "disassembly": "AND ECX,0xff",
+      "length": 6,
+      "pcode_ops": 9
+    },
+    {
+      "address": "0x40ccf0",
+      "disassembly": "MOV dword ptr [0x415b7c],ECX",
+      "length": 6,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40ccf6",
+      "disassembly": "SHL ECX,0x8",
+      "length": 3,
+      "pcode_ops": 36
+    },
+    {
+      "address": "0x40ccf9",
+      "disassembly": "ADD ECX,EDX",
+      "length": 2,
+      "pcode_ops": 9
+    },
+    {
+      "address": "0x40ccfb",
+      "disassembly": "MOV dword ptr [0x415b78],ECX",
+      "length": 6,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40cd01",
+      "disassembly": "SHR EAX,0x10",
+      "length": 3,
+      "pcode_ops": 37
+    },
+    {
+      "address": "0x40cd04",
+      "disassembly": "MOV [0x415b74],EAX",
+      "length": 5,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40cd09",
+      "disassembly": "XOR ESI,ESI",
+      "length": 2,
+      "pcode_ops": 9
+    },
+    {
+      "address": "0x40cd0b",
+      "disassembly": "PUSH ESI",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd0c",
+      "disassembly": "CALL 0x40d827",
+      "length": 5,
+      "pcode_ops": 3
+    },
+    {
+      "address": "0x40cd11",
+      "disassembly": "POP ECX",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd12",
+      "disassembly": "TEST EAX,EAX",
+      "length": 2,
+      "pcode_ops": 9
+    },
+    {
+      "address": "0x40cd14",
+      "disassembly": "JNZ 0x40cd1e",
+      "length": 2,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd16",
+      "disassembly": "PUSH 0x1c",
+      "length": 2,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd18",
+      "disassembly": "CALL 0x40cdcd",
+      "length": 5,
+      "pcode_ops": 3
+    },
+    {
+      "address": "0x40cd1d",
+      "disassembly": "POP ECX",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd1e",
+      "disassembly": "MOV dword ptr [EBP + -0x4],ESI",
+      "length": 3,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd21",
+      "disassembly": "CALL 0x40d507",
+      "length": 5,
+      "pcode_ops": 3
+    },
+    {
+      "address": "0x40cd26",
+      "disassembly": "CALL dword ptr [0x411070]",
+      "length": 6,
+      "pcode_ops": 4
+    },
+    {
+      "address": "0x40cd2c",
+      "disassembly": "MOV [0x416078],EAX",
+      "length": 5,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40cd31",
+      "disassembly": "CALL 0x40d3d5",
+      "length": 5,
+      "pcode_ops": 3
+    },
+    {
+      "address": "0x40cd36",
+      "disassembly": "MOV [0x415b5c],EAX",
+      "length": 5,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40cd3b",
+      "disassembly": "CALL 0x40d188",
+      "length": 5,
+      "pcode_ops": 3
+    },
+    {
+      "address": "0x40cd40",
+      "disassembly": "CALL 0x40d0cf",
+      "length": 5,
+      "pcode_ops": 3
+    },
+    {
+      "address": "0x40cd45",
+      "disassembly": "CALL 0x40cdf1",
+      "length": 5,
+      "pcode_ops": 3
+    },
+    {
+      "address": "0x40cd4a",
+      "disassembly": "MOV dword ptr [EBP + -0x30],ESI",
+      "length": 3,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd4d",
+      "disassembly": "LEA EAX,[EBP + -0x5c]",
+      "length": 3,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40cd50",
+      "disassembly": "PUSH EAX",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd51",
+      "disassembly": "CALL dword ptr [0x411074]",
+      "length": 6,
+      "pcode_ops": 4
+    },
+    {
+      "address": "0x40cd57",
+      "disassembly": "CALL 0x40d077",
+      "length": 5,
+      "pcode_ops": 3
+    },
+    {
+      "address": "0x40cd5c",
+      "disassembly": "MOV dword ptr [EBP + -0x64],EAX",
+      "length": 3,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd5f",
+      "disassembly": "TEST byte ptr [EBP + -0x30],0x1",
+      "length": 4,
+      "pcode_ops": 10
+    },
+    {
+      "address": "0x40cd63",
+      "disassembly": "JZ 0x40cd6b",
+      "length": 2,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40cd65",
+      "disassembly": "MOVZX EAX,word ptr [EBP + -0x2c]",
+      "length": 4,
+      "pcode_ops": 3
+    },
+    {
+      "address": "0x40cd69",
+      "disassembly": "JMP 0x40cd6e",
+      "length": 2,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40cd6b",
+      "disassembly": "PUSH 0xa",
+      "length": 2,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd6d",
+      "disassembly": "POP EAX",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd6e",
+      "disassembly": "PUSH EAX",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd6f",
+      "disassembly": "PUSH dword ptr [EBP + -0x64]",
+      "length": 3,
+      "pcode_ops": 4
+    },
+    {
+      "address": "0x40cd72",
+      "disassembly": "PUSH ESI",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd73",
+      "disassembly": "PUSH ESI",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd74",
+      "disassembly": "CALL dword ptr [0x411148]",
+      "length": 6,
+      "pcode_ops": 4
+    },
+    {
+      "address": "0x40cd7a",
+      "disassembly": "PUSH EAX",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd7b",
+      "disassembly": "CALL 0x401000",
+      "length": 5,
+      "pcode_ops": 3
+    },
+    {
+      "address": "0x40cd80",
+      "disassembly": "MOV dword ptr [EBP + -0x60],EAX",
+      "length": 3,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd83",
+      "disassembly": "PUSH EAX",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd84",
+      "disassembly": "CALL 0x40ce1e",
+      "length": 5,
+      "pcode_ops": 3
+    },
+    {
+      "address": "0x40cd89",
+      "disassembly": "MOV EAX,dword ptr [EBP + -0x14]",
+      "length": 3,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd8c",
+      "disassembly": "MOV ECX,dword ptr [EAX]",
+      "length": 2,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40cd8e",
+      "disassembly": "MOV ECX,dword ptr [ECX]",
+      "length": 2,
+      "pcode_ops": 1
+    },
+    {
+      "address": "0x40cd90",
+      "disassembly": "MOV dword ptr [EBP + -0x68],ECX",
+      "length": 3,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd93",
+      "disassembly": "PUSH EAX",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd94",
+      "disassembly": "PUSH ECX",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd95",
+      "disassembly": "CALL 0x40cef3",
+      "length": 5,
+      "pcode_ops": 3
+    },
+    {
+      "address": "0x40cd9a",
+      "disassembly": "POP ECX",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd9b",
+      "disassembly": "POP ECX",
+      "length": 1,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cd9c",
+      "disassembly": "RET",
+      "length": 1,
+      "pcode_ops": 3
+    },
+    {
+      "address": "0x40cd9d",
+      "disassembly": "MOV ESP,dword ptr [EBP + -0x18]",
+      "length": 3,
+      "pcode_ops": 2
+    },
+    {
+      "address": "0x40cda0",
+      "disassembly": "PUSH dword ptr [EBP + -0x68]",
+      "length": 3,
+      "pcode_ops": 4
+    },
+    {
+      "address": "0x40cda3",
+      "disassembly": "CALL 0x40ce2f",
+      "length": 5,
+      "pcode_ops": 3
+    }
+  ]
+}

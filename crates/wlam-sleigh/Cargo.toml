@@ -1,0 +1,12 @@
+[package]
+name = "wlam-sleigh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "x86-32 lifter backed by Ghidra's Sleigh specification (via rsleigh)"
+
+[workspace]
+
+[dependencies]
+rsleigh-api = { path = "../../toolchain/rsleigh/rsleigh-api" }
+pcode-ir = { path = "../../toolchain/rsleigh/pcode-ir" }

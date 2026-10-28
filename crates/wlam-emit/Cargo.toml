@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 wlam-pcode.workspace = true
+thiserror.workspace = true
