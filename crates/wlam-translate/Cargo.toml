@@ -1,0 +1,10 @@
+[package]
+name = "wlam-translate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wlam-pe.workspace = true
+wlam-pcode.workspace = true
+wlam-lift-x86.workspace = true

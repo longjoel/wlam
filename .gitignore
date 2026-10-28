@@ -1,0 +1,6 @@
+/target
+/toolchain/cargo
+/toolchain/rustup
+/toolchain/wabt-src
+/toolchain/tools
+/toolchain/smoke

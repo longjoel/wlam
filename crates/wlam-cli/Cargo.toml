@@ -1,0 +1,13 @@
+[package]
+name = "wlam-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wlam"
+path = "src/main.rs"
+
+[dependencies]
+wlam-pe.workspace = true
+wlam-translate.workspace = true
