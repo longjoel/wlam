@@ -1,10 +1,13 @@
 [package]
 name = "wlam-sleigh"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
 description = "x86-32 lifter backed by Ghidra's Sleigh specification (via rsleigh)"
 
+# Deliberately not a member of the main workspace: it depends on the vendored
+# rsleigh checkout under toolchain/, which is fetched and generated on demand
+# by scripts/fetch-deps.sh rather than committed to this repository.
 [workspace]
 
 [dependencies]

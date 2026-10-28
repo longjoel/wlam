@@ -1,14 +1,14 @@
 use rsleigh_api::{Architecture, Decoder};
-
 fn main() {
     let mut d = Decoder::new(Architecture::X86_32);
-    let bytes: [u8; 13] = [
-        0x64, 0xa1, 0x00, 0x00, 0x00, 0x00, // mov eax, fs:[0]
-        0x64, 0x89, 0x25, 0x00, 0x00, 0x00, 0x00, // mov fs:[0], esp
-    ];
-    let insn = d.decode(&bytes, 0x0040_ccc1).expect("decode");
-    println!("=== disassembly: {} (len {})", insn.disassembly, insn.len);
-    for op in &insn.ops {
-        println!("{op:?}");
+    for (bytes, label) in [
+        (&[0x83,0xf8,0x03,0x72,0x05][..], "cmp eax,3; jb +5"),
+        (&[0x75,0x05][..], "jnz +5"),
+        (&[0xeb,0x05][..], "jmp +5"),
+    ] {
+        println!("== {label}");
+        let ins = d.decode(bytes, 0x1000).unwrap();
+        println!("   disasm={} len={}", ins.disassembly, ins.len);
+        for op in &ins.ops { println!("   {op:?}"); }
     }
 }
