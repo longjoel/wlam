@@ -33,6 +33,14 @@
 //! will land on the encoder below.
 
 pub mod encode;
+pub mod ir;
+pub mod translate;
+
+pub use ir::{BinOp, Operand, UnOp, IR};
+pub use translate::{
+    module_with_snapshot, translate_ops, LocalMap, TranslateError, TranslatedBlock,
+    REG_SNAPSHOT_BASE,
+};
 
 pub use encode::{leb_u32, module_header, section_id, Encoder, SectionKind};
 

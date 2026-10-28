@@ -3,14 +3,15 @@ name = "wlam-sleigh"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "x86-32 lifter backed by Ghidra's Sleigh specification (via rsleigh)"
+description = "x86-32 lifter backed by Ghidra Sleigh, with a differential gate against the wasm emitter"
 
-# Deliberately not a member of the main workspace: it depends on the vendored
-# rsleigh checkout under toolchain/, which is fetched and generated on demand
-# by scripts/fetch-deps.sh rather than committed to this repository.
+# Not a member of the main workspace: rsleigh is vendored and carries its own
+# workspace, while wlam-emit belongs to ours. This crate depends on both so it
+# can host the differential tests comparing emitted wasm to the interpreter.
 [workspace]
 
 [dependencies]
 wlam-pe = { path = "../wlam-pe" }
+wlam-emit = { path = "../wlam-emit" }
 rsleigh-api = { path = "../../toolchain/rsleigh/rsleigh-api" }
 pcode-ir = { path = "../../toolchain/rsleigh/pcode-ir" }

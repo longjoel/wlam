@@ -117,6 +117,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
+name = "wlam-emit"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "wlam-pcode",
+]
+
+[[package]]
+name = "wlam-pcode"
+version = "0.1.0"
+
+[[package]]
 name = "wlam-pe"
 version = "0.1.0"
 dependencies = [
@@ -129,5 +141,6 @@ version = "0.1.0"
 dependencies = [
  "pcode-ir",
  "rsleigh-api",
+ "wlam-emit",
  "wlam-pe",
 ]

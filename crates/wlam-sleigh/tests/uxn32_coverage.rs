@@ -74,7 +74,7 @@ fn registers_needed_for_real_code_are_covered() {
                 break;
             }
             for op in &ins.ops {
-                let ops = wlam_sleigh::lower(op);
+                let ops = wlam_sleigh::ir::lower(op);
                 collect_regs(&ops, &mut found);
             }
             ip += ins.len;

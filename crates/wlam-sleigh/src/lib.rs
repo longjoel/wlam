@@ -32,6 +32,8 @@
 #![forbid(unsafe_code)]
 
 pub mod discover;
+pub mod interp;
+pub mod ir;
 pub mod registers;
 
 pub use registers::X86_32_REGISTERS;
@@ -39,6 +41,8 @@ pub use registers::X86_32_REGISTERS;
 use std::collections::BTreeMap;
 
 pub use pcode_ir::{AddressSpaceId, PcodeOp, Varnode};
+pub use ir::{BinOp, IR, Operand, UnOp};
+pub use pcode_ir;
 pub use rsleigh_api::{Architecture, Decoder};
 
 /// Stack size used for lifting work: 16 MiB.
@@ -117,220 +121,6 @@ impl NamedRegister {
             .find(|(o, s, _)| *o == offset && *s == size)
             .map(|(_, _, n)| *n)
     }
-}
-
-/// Send-side view of the IR: every varnode is classified once, so consumers
-/// (emitter, interpreter) do not repeat the "is this a register / a temp / an
-/// address" branching.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Operand {
-    /// An immediate.
-    Const { value: u64, size: u32 },
-    /// A register local, by name. The name is boxed deliberately: `Operand`
-    /// appears inline several times per `IR` value, and a large inline
-    /// variant multiplies the size (and stack usage) of every IR node.
-    Reg { name: Box<str>, size: u32 },
-    /// A per-instruction temporary.
-    Temp { offset: u64, size: u32 },
-    /// A guest memory location, used directly as an address.
-    ///
-    /// Sleigh keeps memory operands in the RAM space; such a varnode *is* an
-    /// address, so there is no pointer indirection to model here. (An earlier
-    /// version wrapped a nested `Operand`, which made `Debug`/`PartialEq`
-    /// recurse forever — a stack overflow, not a theoretical concern.)
-    Ram { offset: u64, size: u32 },
-}
-
-impl Operand {
-    /// Size in bytes.
-    pub fn size(&self) -> u32 {
-        match self {
-            Operand::Const { size, .. }
-            | Operand::Reg { size, .. }
-            | Operand::Temp { size, .. }
-            | Operand::Ram { size, .. } => *size,
-        }
-    }
-
-    /// Is this an address in guest memory (as opposed to a value)?
-    pub fn is_memory(&self) -> bool {
-        matches!(self, Operand::Ram { .. })
-    }
-
-    fn from_varnode(v: &Varnode) -> Operand {
-        match v.space {
-            AddressSpaceId::Const => Operand::Const { value: v.offset, size: v.size },
-            AddressSpaceId::Register => {
-                let name: Box<str> = match NamedRegister::lookup(v.offset, v.size) {
-                    Some(n) => n.into(),
-                    None => format!("reg_{:x}_{}", v.offset, v.size).into_boxed_str(),
-                };
-                Operand::Reg { name, size: v.size }
-            }
-            AddressSpaceId::Unique => Operand::Temp { offset: v.offset, size: v.size },
-            AddressSpaceId::Ram => Operand::Ram { offset: v.offset, size: v.size },
-        }
-    }
-}
-
-/// Sleigh-space IR: every op with its operands classified.
-#[derive(Debug, Clone, PartialEq)]
-pub enum IR {
-    Copy { dst: Operand, src: Operand },
-    Load { dst: Operand, addr: Operand, size: u32 },
-    Store { addr: Operand, value: Operand, size: u32 },
-    /// Three-operand and two-operand forms are boxed as a pair: inlining them
-    /// would make every `IR` value large enough to exhaust a 2 MiB test-thread
-    /// stack during recursion in `Debug`/`PartialEq`.
-    Bin { op: BinOp, dst: Operand, operands: Box<(Operand, Operand)> },
-    Un { op: UnOp, dst: Operand, src: Operand },
-    /// Extract bytes `[lsb, lsb+sizeof(dst))` of `src`.
-    Subpiece { dst: Operand, src: Operand, lsb: u32 },
-    /// Unconditional branch to a destination fixed by the encoding.
-    Branch { target: Operand },
-    /// Branch through a register or memory cell: a jump table, a computed
-    /// goto, or an IAT-resolved thunk tail. Requires target resolution.
-    IndirectJump { target: Operand },
-    /// Conditional branch.
-    CBranch { cond: Operand, target: Operand },
-    /// Call to a constant address (a known guest function).
-    Call { target: Operand },
-    /// Call through a computed destination, typically `call [IAT]`.
-    CallInd { target: Operand },
-    /// Return; `target` is the popped return address.
-    Ret { target: Option<Operand> },
-    /// An environment operation.
-    Userop { id: u64, kind: Userop, args: Vec<Operand>, dst: Option<Operand> },
-    /// No-observable-effect operation.
-    Nop,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinOp {
-    Add,
-    /// Multiplier result: the full product, twice the operand width.
-    MulFull,
-    /// Carry out of an unsigned addition.
-    Carry,
-    /// Signed carry (overflow) out of an addition.
-    SCarry,
-    /// Signed borrow out of a subtraction.
-    SBorrow,
-    DivU,
-    RemU,
-    Sub,
-    Mul,
-    DivS,
-    RemS,
-    Eq,
-    NotEq,
-    LessU,
-    LessEqU,
-    LessS,
-    LessEqS,
-    And,
-    Or,
-    Xor,
-    Lsh,
-    Rsh,
-    Asr,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnOp {
-    Neg,
-    Popcount,
-    Lzcount,
-    Not,
-    Zext,
-    Sext,
-}
-
-fn operand(v: &Varnode) -> Operand {
-    Operand::from_varnode(v)
-}
-
-fn store_size(op: &PcodeOp) -> u32 {
-    match op {
-        PcodeOp::Store { val, .. } => val.size,
-        _ => 0,
-    }
-}
-
-/// Translate rsleigh's `PcodeOp` into [`IR`].
-pub fn lower(op: &PcodeOp) -> IR {
-    use PcodeOp as P;
-    match op {
-        P::Copy { out, input } => IR::Copy { dst: operand(out), src: operand(input) },
-        P::Load { out, ptr, .. } => IR::Load { dst: operand(out), addr: operand(ptr), size: out.size },
-        P::Store { ptr, val, .. } => {
-            IR::Store { addr: operand(ptr), value: operand(val), size: val.size }
-        }
-        P::Branch { dest } => IR::Branch { target: operand(dest) },
-        P::CBranch { dest, cond } => IR::CBranch { cond: operand(cond), target: operand(dest) },
-        // An *indirect* branch takes its destination from a register or
-        // memory, which is a jump table or a computed goto. Lowering it as a
-        // plain Branch would silently drop the indirection.
-        P::BranchInd { dest } => IR::IndirectJump { target: operand(dest) },
-        P::Call { dest } => IR::Call { target: operand(dest) },
-        P::CallInd { dest } => IR::CallInd { target: operand(dest) },
-        P::Return { dest } => IR::Ret { target: Some(operand(dest)) },
-        P::CallOther { out, func_id, inputs } => IR::Userop {
-            id: *func_id,
-            kind: classify_userop(*func_id),
-            args: inputs.iter().map(operand).collect(),
-            dst: out.as_ref().map(operand),
-        },
-        P::IntAdd { out, left, right } => bin(BinOp::Add, out, left, right),
-        P::IntSub { out, left, right } => bin(BinOp::Sub, out, left, right),
-        P::IntMult { out, left, right } => bin(BinOp::Mul, out, left, right),
-        P::IntSDiv { out, left, right } => bin(BinOp::DivS, out, left, right),
-        P::IntSRem { out, left, right } => bin(BinOp::RemS, out, left, right),
-        P::IntEq { out, left, right } => bin(BinOp::Eq, out, left, right),
-        P::IntNotEq { out, left, right } => bin(BinOp::NotEq, out, left, right),
-        P::IntLess { out, left, right } => bin(BinOp::LessU, out, left, right),
-        P::IntLessEq { out, left, right } => bin(BinOp::LessEqU, out, left, right),
-        P::IntSLess { out, left, right } => bin(BinOp::LessS, out, left, right),
-        P::IntSLessEq { out, left, right } => bin(BinOp::LessEqS, out, left, right),
-        P::IntAnd { out, left, right } => bin(BinOp::And, out, left, right),
-        P::IntOr { out, left, right } => bin(BinOp::Or, out, left, right),
-        P::IntXor { out, left, right } => bin(BinOp::Xor, out, left, right),
-        P::IntLsl { out, left, right } => bin(BinOp::Lsh, out, left, right),
-        P::IntLsr { out, left, right } => bin(BinOp::Rsh, out, left, right),
-        P::IntAsr { out, left, right } => bin(BinOp::Asr, out, left, right),
-        P::IntNeg { out, input } => un(UnOp::Neg, out, input),
-        // Flag support ops: counts and boolean operators. These are part of
-        // ordinary flag computation, not exotic.
-        P::Popcount { out, input } => IR::Un { op: UnOp::Popcount, dst: operand(out), src: operand(input) },
-        P::Lzcount { out, input } => IR::Un { op: UnOp::Lzcount, dst: operand(out), src: operand(input) },
-        P::BoolNot { out, input } => IR::Un { op: UnOp::Not, dst: operand(out), src: operand(input) },
-        P::BoolAnd { out, left, right } => bin(BinOp::And, out, left, right),
-        P::BoolOr { out, left, right } => bin(BinOp::Or, out, left, right),
-        P::BoolXor { out, left, right } => bin(BinOp::Xor, out, left, right),
-        P::IntCarry { out, left, right } => bin(BinOp::Carry, out, left, right),
-        P::IntSCarry { out, left, right } => bin(BinOp::SCarry, out, left, right),
-        P::IntSBorrow { out, left, right } => bin(BinOp::SBorrow, out, left, right),
-        P::IntRem { out, left, right } => bin(BinOp::RemU, out, left, right),
-        P::IntDiv { out, left, right } => bin(BinOp::DivU, out, left, right),
-        P::IntNot { out, input } => un(UnOp::Not, out, input),
-        P::IntZext { out, input } => un(UnOp::Zext, out, input),
-        P::IntSext { out, input } => un(UnOp::Sext, out, input),
-        P::Subpiece { out, input, lsb } => {
-            IR::Subpiece { dst: operand(out), src: operand(input), lsb: *lsb }
-        }
-        // Anything else is not yet lowered; reported honestly rather than
-        // silently turned into a no-op. See `docs/sleigh-notes.md` for the
-        // list of ops that still need lowering (float, multipliers, etc).
-        _ => IR::Nop,
-    }
-}
-
-fn bin(op: BinOp, out: &Varnode, left: &Varnode, right: &Varnode) -> IR {
-    IR::Bin { op, dst: operand(out), operands: Box::new((operand(left), operand(right))) }
-}
-
-fn un(op: UnOp, out: &Varnode, input: &Varnode) -> IR {
-    IR::Un { op, dst: operand(out), src: operand(input) }
 }
 
 /// One lifted instruction.
@@ -417,7 +207,7 @@ pub fn lift_block(bytes: &[u8], start: u64) -> Block {
         let mut ops = Vec::with_capacity(insn.ops.len());
         let mut unlowered = 0usize;
         for op in &insn.ops {
-            let lowered = lower(op);
+            let lowered = crate::ir::lower(op);
             if matches!(lowered, IR::Nop) && !matches!(op, PcodeOp::CallOther { .. }) {
                 unlowered += 1;
             }
@@ -504,9 +294,11 @@ impl IR {
                 Some(t) => format!("return {}", o(t)),
                 None => "return".to_string(),
             },
-            IR::Userop { kind, args, dst, id } => {
+            IR::Userop { args, dst, id, .. } => {
                 let a: Vec<String> = args.iter().map(o).collect();
-                let call = format!("{kind:?}({})", a.join(", "));
+                // Classify here: the IR variant stays free of the userop table
+                // so the emitter's copy of the contract does not need it.
+                let call = format!("{:?}({})", crate::classify_userop(*id), a.join(", "));
                 match dst {
                     Some(d) => format!("{} = {call}  ; userop {id}", o(d)),
                     None => format!("{call}  ; userop {id}"),
@@ -561,7 +353,6 @@ pub fn scan(bytes: &[u8], base: u64) -> Coverage {
             }
         }
     }
-    let _ = store_size;
     cov
 }
 
@@ -702,7 +493,7 @@ mod tests {
             .ops
             .iter()
             .find_map(|o| match o {
-                IR::Userop { kind, .. } => Some(*kind),
+                IR::Userop { id, .. } => Some(crate::classify_userop(*id)),
                 _ => None,
             })
             .expect("INT3 is an environment operation");
