@@ -927,6 +927,24 @@ impl BlockEmitter {
         }
     }
 
+    /// The width an operand's storage is declared at.
+    ///
+    /// A temp declared i64 holds a qword even when a particular use mentions 4
+    /// bytes, and that is the width the wasm opcode must match.
+    fn operand_declared_width(&self, op: &Operand) -> u32 {
+        match op {
+            Operand::Temp { offset, .. } => self
+                .locals
+                .temp_index(*offset)
+                .map_or(op.size(), |idx| self.locals.width(idx)),
+            Operand::Reg { name, .. } => self
+                .locals
+                .reg(name)
+                .map_or(op.size(), |idx| self.locals.width(idx)),
+            _ => op.size(),
+        }
+    }
+
     /// Whether an operand is an x87 stack register.
     fn operand_is_x87(&self, op: &Operand) -> bool {
         match op {
@@ -1058,15 +1076,18 @@ impl BlockEmitter {
             }
             _ => {}
         }
-        let lw = self.push_value(lhs)?;
+        let mut lw = self.push_value(lhs)?;
+        // Widen the LEFT operand now, while it is still on top of the stack.
+        // Doing it after rhs is pushed would require parking rhs in a scratch
+        // local, and a scratch local gets one fixed width that then has to match
+        // both uses. Sleigh knows the right operand's declared width statically,
+        // so decide from that instead.
+        if self.operand_declared_width(rhs) == 8 && lw != 8 {
+            self.op(op::I64_EXTEND_I32_U);
+            lw = 8;
+        }
         let rw = self.push_value(rhs)?;
-        // wasm types an operator after BOTH operands, so when either side is a
-        // qword the other must be widened too. This applies to every binary op,
-        // not only shifts: `EAX64 & 1` pushes a qword and an i32, and the
-        // i64.and then failed validation.
-        // wasm types an operator after BOTH operands, so when either side is a
-        // qword the other must be widened too. Only the right-hand case is
-        // handled here; the mirrored case is a known gap (see docs/roadmap.md).
+        // rhs is on top, so widening it in place is always safe.
         if (lw == 8 || rw == 8) && rw != 8 {
             self.op(op::I64_EXTEND_I32_U);
         }
