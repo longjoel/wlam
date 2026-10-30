@@ -462,7 +462,7 @@ impl BlockEmitter {
                 // happens to mention. A temp first seen at 8 bytes is an i64
                 // local; a later 4-byte use still pushes an i64, and telling the
                 // caller otherwise made it emit `i32.and` on an i64 value.
-                Ok(self.locals.width(idx))
+                        Ok(self.locals.width(idx))
             }
             Operand::Ram { offset, .. } => {
                 self.op(op::I32_CONST);
@@ -482,6 +482,16 @@ impl BlockEmitter {
     /// `mov [slot], edx` stores the *stale* EDX. That is exactly the Uxn32 bug
     /// where `GetVersion` succeeds but the guest records major version 0.
     fn pop_into(&mut self, dst: &Operand) -> Result<(), TranslateError> {
+        self.pop_into_width(dst, dst.size())
+    }
+
+    /// `pop_into`, told the width of the value actually on the stack.
+    ///
+    /// A `Copy` from a 32-bit register into a qword temp pushes an i32 while the
+    /// destination claims 8 bytes; comparing the destination's nominal size to
+    /// its declared size finds them equal and emits no conversion, leaving an i64
+    /// value where an i32 is expected. Only the producer knows the real width.
+    fn pop_into_width(&mut self, dst: &Operand, pushed: u32) -> Result<(), TranslateError> {
         match dst {
             Operand::Reg { name, size } => {
                 // A wider-than-4-byte register (x87, 8-byte) has no parent.
@@ -519,9 +529,10 @@ impl BlockEmitter {
                 // register into a qword temp pushes an i32 while claiming 8 --
                 // comparing nominal to declared then finds them equal and emits
                 // no conversion, leaving an i64 value in an i32 slot.
-                if declared == 8 && *size != 8 {
+                let _ = size;
+                        if declared == 8 && pushed != 8 {
                     self.op(op::I64_EXTEND_I32_U);
-                } else if declared != 8 && *size == 8 {
+                } else if declared != 8 && pushed == 8 {
                     self.op(op::I32_WRAP_I64);
                 }
                 self.local(op::LOCAL_SET, idx);
@@ -657,9 +668,9 @@ impl BlockEmitter {
     fn emit_ir(&mut self, ir: &IR) -> Result<(), TranslateError> {
         match ir {
             IR::Copy { dst, src } => {
-                self.push_value(src)?;
+                        let pushed = self.push_value(src)?;
                 self.normalize(src)?;
-                self.pop_into(dst)
+                self.pop_into_width(dst, pushed)
             }
             IR::Load { dst, addr, size } => {
                 self.push_value(addr)?;
