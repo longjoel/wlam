@@ -123,6 +123,15 @@ fn collect_regs(ir: &IR, out: &mut std::collections::BTreeSet<String>) {
             visit(dst, out);
             visit(src, out);
         }
+        IR::Float { dst, operands, .. } => {
+            visit(dst, out);
+            visit(&operands.0, out);
+            visit(&operands.1, out);
+        }
+        IR::Convert { dst, src, .. } => {
+            visit(dst, out);
+            visit(src, out);
+        }
         IR::Subpiece { dst, src, .. } => {
             visit(dst, out);
             visit(src, out);

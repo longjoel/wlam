@@ -150,6 +150,16 @@ pub enum Terminator {
     Return,
     /// A trap: `INT3` (a compiler patch point or breakpoint), `INT n`.
     Trap(u64),
+    /// A `call` ends the block: control leaves for the callee and resumes at
+    /// `resume`, the address of the instruction after the call.
+    ///
+    /// The lifted ops still contain the `Call`, so the block carries both the
+    /// callee target (from that op) and the resume point.
+    Call { resume: u64 },
+    /// An indirect `call` (`call [slot]`, `call reg`) ends the block; control
+    /// resumes at `resume`. The lifted ops carry the `CallInd` and the load
+    /// that produced its target.
+    CallInd { resume: u64 },
     /// Block ended because the next bytes did not decode.
     Undecodable(u64),
 }
@@ -217,25 +227,48 @@ pub fn lift_block(bytes: &[u8], start: u64) -> Block {
         let mut term = None;
         for op in &insn.ops {
             match op {
-                // Sleigh emits a *relative* branch target as a RAM-space
+                // A *genuine* relative branch target arrives as a RAM-space
                 // varnode holding the already-computed absolute address
                 // (verified: `jmp +5` at 0x1000 gives `Branch{dest: Ram 0x1007}`).
-                // Only a non-constant destination is a genuine indirect jump.
-                PcodeOp::Branch { dest } => {
-                    term = Some(match dest.space {
-                        AddressSpaceId::Ram | AddressSpaceId::Const => Terminator::Jump(dest.offset),
-                        _ => Terminator::IndirectJump,
-                    });
-                }
+                //
+                // A CONST-space destination is NOT an address. Sleigh's x86
+                // spec implements several instructions as a conditional
+                // microcode path and encodes the internal branch as a constant
+                // varnode: `BSR EAX,EDX` emits `CBranch{dest: Const 2}`, which
+                // means "the spec's internal label 2", not "address 2".
+                // Treating it as an address invented 70 phantom branch targets
+                // below the image base on Minesweeper (0x1 and 0x2), which made
+                // unrelated functions appear to share blocks. Such an op is
+                // internal control flow: it does not terminate the block, so
+                // decoding continues past it.
+                PcodeOp::Branch { dest } => match dest.space {
+                    AddressSpaceId::Ram => term = Some(Terminator::Jump(dest.offset)),
+                    AddressSpaceId::Const => {}
+                    _ => term = Some(Terminator::IndirectJump),
+                },
                 PcodeOp::BranchInd { .. } => term = Some(Terminator::IndirectJump),
-                PcodeOp::CBranch { dest, .. } => {
-                    let taken = match dest.space {
-                        AddressSpaceId::Ram | AddressSpaceId::Const => Some(dest.offset),
-                        _ => None,
-                    };
-                    term = Some(Terminator::Conditional { taken, not_taken: next });
-                }
+                PcodeOp::CBranch { dest, .. } => match dest.space {
+                    AddressSpaceId::Ram => {
+                        term = Some(Terminator::Conditional {
+                            taken: Some(dest.offset),
+                            not_taken: next,
+                        });
+                    }
+                    AddressSpaceId::Const => {}
+                    _ => {
+                        term = Some(Terminator::Conditional {
+                            taken: None,
+                            not_taken: next,
+                        });
+                    }
+                },
                 PcodeOp::Return { .. } => term = Some(Terminator::Return),
+                // A call leaves this block for the callee and resumes at the
+                // next instruction, so it is a block boundary. Without this the
+                // lifter ran straight through the call and the emitter had no
+                // place to put the `call`.
+                PcodeOp::Call { .. } => term = Some(Terminator::Call { resume: next }),
+                PcodeOp::CallInd { .. } => term = Some(Terminator::CallInd { resume: next }),
                 PcodeOp::CallOther { func_id, .. } if classify_userop(*func_id) == Userop::Breakpoint => {
                     term = Some(Terminator::Trap(next));
                 }
@@ -283,7 +316,13 @@ impl IR {
             IR::Bin { op, dst, operands } => {
                 format!("{} = {op:?}({}, {})", o(dst), o(&operands.0), o(&operands.1))
             }
+            IR::Float { op, dst, operands } => {
+                // `~` marks a real-number operation so a dumped block cannot be
+                // mistaken for integer arithmetic with a same-named mnemonic.
+                format!("{} = ~{op:?}({}, {})", o(dst), o(&operands.0), o(&operands.1))
+            }
             IR::Un { op, dst, src } => format!("{} = {op:?}({})", o(dst), o(src)),
+            IR::Convert { op, dst, src } => format!("{} = {op:?}({})", o(dst), o(src)),
             IR::Subpiece { dst, src, lsb } => format!("{} = {}.{lsb}", o(dst), o(src)),
             IR::Branch { target } => format!("goto {}", o(target)),
             IR::IndirectJump { target } => format!("goto *{}", o(target)),
@@ -524,5 +563,116 @@ mod tests {
             assert!(!name.is_empty());
             assert!(*size > 0);
         }
+    }
+
+    /// A `Const`-space branch destination is an internal label, not an address.
+    ///
+    /// Sleigh compiles several x86 instructions as a conditional microcode path
+    /// and encodes the internal jump as a constant varnode. `BSR EAX,EDX`
+    /// (`0f bd c2`) is the canonical case: the spec tests the source for zero
+    /// and emits `CBranch { dest: Const 2 }`, meaning "the spec's own label 2".
+    /// Reading that as address `0x2` invented blocks below the image base. The
+    /// instruction is not a branch, so the block must keep decoding past it.
+    #[test]
+    fn const_space_branch_is_not_a_terminator() {
+        // BSR EAX,EDX ; XOR EAX,0x1f ; RET
+        let bytes = [0x0f, 0xbd, 0xc2, 0x83, 0xf0, 0x1f, 0xc3];
+        let block = with_big_stack(move || lift_block(&bytes, 0x401000));
+
+        // The block runs to the RET, not to a phantom branch after the BSR.
+        match block.terminator {
+            Terminator::Return => {}
+            ref other => panic!("BSR must not terminate the block; got {other:?}"),
+        }
+        assert_eq!(block.instructions.len(), 3, "BSR, XOR and RET must all be lifted");
+        assert_eq!(block.end, 0x401007);
+    }
+
+    /// The complement of the test above: a real relative branch *is* a
+    /// terminator, and its target is the resolved absolute address.
+    ///
+    /// Without this, "ignore every branch" would pass the test above while
+    /// breaking all control flow.
+    #[test]
+    fn ram_space_branch_is_still_a_terminator() {
+        // JNZ rel8 -0x04 at 0x401000 -> target 0x400ffe ; plus padding.
+        let bytes = [0x75, 0xfc, 0x90, 0x90];
+        let block = with_big_stack(move || lift_block(&bytes, 0x401000));
+        match block.terminator {
+            Terminator::Conditional { taken: Some(t), not_taken } => {
+                assert_eq!(t, 0x400ffe, "the branch target must be the resolved absolute address");
+                assert_eq!(not_taken, 0x401002, "fall-through is the next instruction");
+            }
+            ref other => panic!("JNZ must be a conditional terminator; got {other:?}"),
+        }
+        assert_eq!(block.instructions.len(), 1, "the jump ends the block");
+    }
+
+    /// x87 arithmetic must survive lifting as a real operation.
+    ///
+    /// `FMUL ST1` (`d8 c9`) lowers to `FloatMult { ST0 = ST0 * ST1 }`. Before
+    /// the `IR::Float` arms existed it became `Nop`, so the multiplication
+    /// silently did not happen and the guest read a stale `ST0`. The block
+    /// reported `unlowered = 1`, which is the signal this asserts on.
+    #[test]
+    fn x87_multiply_lifts_to_a_real_operation() {
+        let bytes = [0xd8, 0xc9, 0xc3]; // FMUL ST1 ; RET
+        let block = with_big_stack(move || lift_block(&bytes, 0x401000));
+
+        let mul = block
+            .instructions
+            .iter()
+            .flat_map(|i| i.ops.iter())
+            .find_map(|op| match op {
+                IR::Float { op, dst, operands } => Some((*op, dst, operands)),
+                _ => None,
+            })
+            .expect("FMUL must lift to IR::Float, not Nop");
+
+        assert_eq!(mul.0, crate::ir::FloatOp::Mul, "the operation is a multiply");
+        assert!(
+            matches!(mul.1, Operand::Reg { ref name, .. } if &**name == "ST0"),
+            "result goes to ST0, got {:?}",
+            mul.1
+        );
+        assert!(
+            matches!(mul.2 .1, Operand::Reg { ref name, .. } if &**name == "ST1"),
+            "right operand is ST1, got {:?}",
+            mul.2 .1
+        );
+        assert_eq!(
+            block.instructions[0].unlowered, 0,
+            "no op may be dropped: that is the bug this guards"
+        );
+    }
+
+    /// `FSTP m64` must produce a real -> real conversion, not a bare store.
+    ///
+    /// It lowers to `Float2Float { tmp(64) = ST0(80) }` followed by a store.
+    /// Without the `Convert` arm the store received an untyped temp and the
+    /// emitter reported "i64 store".
+    #[test]
+    fn x87_store_lifts_to_a_float_conversion() {
+        // FSTP qword ptr [esp] ; RET
+        let bytes = [0xdd, 0x1c, 0x24, 0xc3];
+        let block = with_big_stack(move || lift_block(&bytes, 0x401000));
+
+        let conv = block
+            .instructions
+            .iter()
+            .flat_map(|i| i.ops.iter())
+            .find_map(|op| match op {
+                IR::Convert { op, src, .. } => Some((*op, src)),
+                _ => None,
+            })
+            .expect("FSTP must lift to IR::Convert");
+
+        assert_eq!(conv.0, crate::ir::ConvertOp::FloatToFloat);
+        assert!(
+            matches!(conv.1, Operand::Reg { ref name, .. } if &**name == "ST0"),
+            "the source is the x87 stack top, got {:?}",
+            conv.1
+        );
+        assert_eq!(block.instructions[0].unlowered, 0);
     }
 }

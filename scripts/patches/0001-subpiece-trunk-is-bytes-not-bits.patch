@@ -1,0 +1,19 @@
+diff --git a/src/codegen/builder/disassembler/constructor/execution.rs b/src/codegen/builder/disassembler/constructor/execution.rs
+index 155449b..9df1509 100644
+--- a/src/codegen/builder/disassembler/constructor/execution.rs
++++ b/src/codegen/builder/disassembler/constructor/execution.rs
+@@ -1306,7 +1306,13 @@ impl<'a> ExecutionGenerator<'a> {
+                 (out, code)
+             }
+             Unary::TrunkLsb { trunk, bits } => {
+-                let lsb = (*trunk / 8) as u32;
++                // `trunk` is already a count of BYTES to discard -- SLASPEC
++                // truncation syntax is `expr(n)` measured in bytes, the same
++                // units `TakeLsb(len)` is converted from just above
++                // (`len * 8` -> bits). Dividing by 8 here treated it as bits,
++                // so `tmp(4)` produced `lsb = 0` and both halves of a
++                // dword MUL became indistinguishable (EDX = EAX).
++                let lsb = *trunk as u32;
+                 let out = self.fresh_unique(Self::bytes_from_bits(bits.get()));
+                 let o = out.clone();
+                 code.extend(quote! { ops.push(pcode_ir::PcodeOp::Subpiece { out: #o, input: #inp, lsb: #lsb }); });

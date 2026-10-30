@@ -9,7 +9,7 @@ fn main() {
     let bytes = std::fs::read("../../north-star/bin/Uxn32.exe").expect("north star");
     let pe = Pe::parse(&bytes).expect("parse");
     let entries = prologue_candidates(&pe);
-    let prog = with_big_stack(move || discover(&pe, 8));
+    let prog = with_big_stack(move || discover(&pe, 64));
     let starts: BTreeSet<u64> = prog.block_starts().into_iter().collect();
 
     let missing: Vec<u64> = entries.iter().copied().filter(|a| !starts.contains(a)).collect();
@@ -29,6 +29,8 @@ fn main() {
             Edge::Jump(_) => "jump",
             Edge::Conditional { .. } => "cond",
             Edge::FallsTo(_) => "falls",
+            Edge::Call { .. } => "call",
+            Edge::CallInd { .. } => "callind",
             Edge::IndirectJump { .. } => "indirect",
             Edge::Return => "return",
             Edge::Trap(_) => "trap",

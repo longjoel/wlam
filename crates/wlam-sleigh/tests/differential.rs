@@ -84,6 +84,29 @@ fn to_emit(ir: &sir::IR) -> eir::IR {
             dst: op(dst),
             src: op(src),
         },
+        sir::IR::Float { op: f, dst, operands } => eir::IR::Float {
+            op: match f {
+                sir::FloatOp::Add => eir::FloatOp::Add,
+                sir::FloatOp::Sub => eir::FloatOp::Sub,
+                sir::FloatOp::Mul => eir::FloatOp::Mul,
+                sir::FloatOp::Div => eir::FloatOp::Div,
+                sir::FloatOp::Eq => eir::FloatOp::Eq,
+                sir::FloatOp::NotEq => eir::FloatOp::NotEq,
+                sir::FloatOp::Less => eir::FloatOp::Less,
+                sir::FloatOp::LessEq => eir::FloatOp::LessEq,
+            },
+            dst: op(dst),
+            operands: Box::new((op(&operands.0), op(&operands.1))),
+        },
+        sir::IR::Convert { op: c, dst, src } => eir::IR::Convert {
+            op: match c {
+                sir::ConvertOp::IntToFloat => eir::ConvertOp::IntToFloat,
+                sir::ConvertOp::FloatToFloat => eir::ConvertOp::FloatToFloat,
+                sir::ConvertOp::FloatToInt => eir::ConvertOp::FloatToInt,
+            },
+            dst: op(dst),
+            src: op(src),
+        },
         sir::IR::Subpiece { dst, src, lsb } => {
             eir::IR::Subpiece { dst: op(dst), src: op(src), lsb: *lsb }
         }
@@ -115,6 +138,15 @@ fn registers(ops: &[sir::IR]) -> BTreeMap<String, u32> {
     for ir in ops {
         match ir {
             sir::IR::Copy { dst, src } => {
+                visit(dst, &mut out);
+                visit(src, &mut out);
+            }
+            sir::IR::Float { dst, operands, .. } => {
+                visit(dst, &mut out);
+                visit(&operands.0, &mut out);
+                visit(&operands.1, &mut out);
+            }
+            sir::IR::Convert { dst, src, .. } => {
                 visit(dst, &mut out);
                 visit(src, &mut out);
             }

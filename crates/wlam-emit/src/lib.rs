@@ -38,12 +38,18 @@ pub mod ir;
 pub mod translate;
 
 pub use ir::{BinOp, Operand, UnOp, IR};
+
+/// Resolve an x86-32 register name to its byte window in the register file.
+///
+/// Re-exported from `wlam-pcode::regfile` so the emitter and the lifter agree on
+/// which byte of which parent a name like `AH` refers to.
+pub use wlam_pcode::regfile::{is_partial, slot_of as regfile_slot, Parent as RegParent, Slot as RegSlot};
 pub use translate::{
     module_with_snapshot, translate_ops, LocalMap, TranslateError, TranslatedBlock,
     REG_SNAPSHOT_BASE,
 };
 
-pub use encode::{leb_u32, module_header, section_id, Encoder, SectionKind};
+pub use encode::{leb_s32, leb_u32, module_header, section_id, Encoder, SectionKind};
 
 use thiserror::Error;
 
@@ -98,6 +104,34 @@ pub const GUEST_LOCALS: &[&str] = &[
     "FS_OFFSET",
     "GS_OFFSET",
 ];
+
+/// The x87 register stack.
+///
+/// Sleigh models `ST0`-`ST7` as 10-byte (80-bit `EXTENDED`) registers. The
+/// emitter does **not** yet represent them: an f64-subset model was attempted
+/// and reverted because it required deciding float-ness in three places at once
+/// (declaration by name, temp width, and a per-block pre-pass) and they
+/// disagreed, producing thousands of "expected [f64] but got [i32]" validation
+/// errors. x87 emission therefore remains a known gap; see `docs/roadmap.md`.
+///
+/// Listed here so callers can name them, and so the work has an obvious place to
+/// land.
+pub const X87_LOCALS: &[&str] = &["ST0", "ST1", "ST2", "ST3", "ST4", "ST5", "ST6", "ST7"];
+
+/// Every register seeded as a wasm local, in a fixed order.
+///
+/// `GUEST_LOCALS` first, then the x87 stack. The x87 registers MUST be seeded
+/// here rather than left to discovery order: the emitter types a local from the
+/// register *name*, so an `ST` register that discovery happened to place among
+/// temporaries would sit in a slot other code writes with 32-bit values. Seeding
+/// them at a fixed index range keeps the f64 locals in a block of their own.
+pub fn seeded_registers() -> Vec<String> {
+    GUEST_LOCALS
+        .iter()
+        .chain(X87_LOCALS.iter())
+        .map(|s| s.to_string())
+        .collect()
+}
 
 /// Guest TIB base: the value the loader stores in `FS_OFFSET`.
 pub const TIB_BASE: u64 = 0x7ffd_e000;

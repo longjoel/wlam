@@ -14,6 +14,8 @@ pub fn convert(b: &wlam_sleigh::Block) -> eir::Block {
             eir::Terminator::Conditional { taken: *taken, not_taken: *not_taken }
         }
         wlam_sleigh::Terminator::IndirectJump => eir::Terminator::IndirectJump,
+        wlam_sleigh::Terminator::Call { resume } => eir::Terminator::Call { resume: *resume },
+        wlam_sleigh::Terminator::CallInd { resume } => eir::Terminator::CallInd { resume: *resume },
         wlam_sleigh::Terminator::Return => eir::Terminator::Return,
         wlam_sleigh::Terminator::Trap(a) => eir::Terminator::Trap(*a),
         wlam_sleigh::Terminator::Undecodable(a) => eir::Terminator::Undecodable(*a),
@@ -69,6 +71,20 @@ pub fn to_eir(ir: &sir::IR) -> eir::IR {
             dst: op(dst),
             operands: Box::new((op(&operands.0), op(&operands.1))),
         },
+        sir::IR::Float { op: f, dst, operands } => eir::IR::Float {
+            op: match f {
+                sir::FloatOp::Add => eir::FloatOp::Add,
+                sir::FloatOp::Sub => eir::FloatOp::Sub,
+                sir::FloatOp::Mul => eir::FloatOp::Mul,
+                sir::FloatOp::Div => eir::FloatOp::Div,
+                sir::FloatOp::Eq => eir::FloatOp::Eq,
+                sir::FloatOp::NotEq => eir::FloatOp::NotEq,
+                sir::FloatOp::Less => eir::FloatOp::Less,
+                sir::FloatOp::LessEq => eir::FloatOp::LessEq,
+            },
+            dst: op(dst),
+            operands: Box::new((op(&operands.0), op(&operands.1))),
+        },
         sir::IR::Un { op: u, dst, src } => eir::IR::Un {
             op: match u {
                 sir::UnOp::Neg => eir::UnOp::Neg,
@@ -77,6 +93,15 @@ pub fn to_eir(ir: &sir::IR) -> eir::IR {
                 sir::UnOp::Sext => eir::UnOp::Sext,
                 sir::UnOp::Popcount => eir::UnOp::Popcount,
                 sir::UnOp::Lzcount => eir::UnOp::Lzcount,
+            },
+            dst: op(dst),
+            src: op(src),
+        },
+        sir::IR::Convert { op: c, dst, src } => eir::IR::Convert {
+            op: match c {
+                sir::ConvertOp::IntToFloat => eir::ConvertOp::IntToFloat,
+                sir::ConvertOp::FloatToFloat => eir::ConvertOp::FloatToFloat,
+                sir::ConvertOp::FloatToInt => eir::ConvertOp::FloatToInt,
             },
             dst: op(dst),
             src: op(src),
@@ -114,7 +139,8 @@ pub fn collect_regs(ir: &eir::IR, out: &mut std::collections::BTreeSet<String>) 
         I::Load { dst, addr, .. } => { v(dst, out); v(addr, out); }
         I::Store { addr, value, .. } => { v(addr, out); v(value, out); }
         I::Bin { dst, operands, .. } => { v(dst, out); v(&operands.0, out); v(&operands.1, out); }
-        I::Un { dst, src, .. } | I::Subpiece { dst, src, .. } => { v(dst, out); v(src, out); }
+        I::Float { dst, operands, .. } => { v(dst, out); v(&operands.0, out); v(&operands.1, out); }
+        I::Un { dst, src, .. } | I::Subpiece { dst, src, .. } | I::Convert { dst, src, .. } => { v(dst, out); v(src, out); }
         I::CBranch { cond, target } => { v(cond, out); v(target, out); }
         I::Branch { target } | I::IndirectJump { target } | I::Call { target } | I::CallInd { target } => v(target, out),
         I::Ret { target } => { if let Some(t) = target { v(t, out); } }

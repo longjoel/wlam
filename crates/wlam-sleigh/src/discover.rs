@@ -41,6 +41,10 @@ pub enum Edge {
     FallsTo(u64),
     /// Indirect jump: destination unknown at compile time.
     IndirectJump { site: u64 },
+    /// A call: control leaves for a callee and resumes at `resume`.
+    Call { resume: u64 },
+    /// An indirect call; the callee is chosen at run time.
+    CallInd { resume: u64 },
     /// Return to the caller.
     Return,
     /// Traps by design (`INT3`): the compiler's patch point.
@@ -77,6 +81,17 @@ pub struct Program {
     /// Distinct userops reached, with the mnemonics that produce them.
     userops: BTreeMap<u64, BTreeSet<String>>,
     passes: u32,
+    /// Work items still queued when `max_passes` ran out.
+    ///
+    /// Non-empty means discovery stopped early and the block set is
+    /// incomplete. It is recorded (and surfaced by `wlam analyze`) rather than
+    /// silently dropping the remainder, which is how a pass limit quietly cost
+    /// function coverage.
+    pending: BTreeSet<(u64, &'static str)>,
+    /// Conditions that make the result unusable, e.g. a non-i386 image.
+    ///
+    /// Reported rather than silently producing a partial block set.
+    problems: Vec<String>,
 }
 
 impl Program {
@@ -115,6 +130,29 @@ impl Program {
         self.passes
     }
 
+    /// Addresses left unprocessed because `max_passes` was reached.
+    ///
+    /// Empty when discovery converged. Callers that care about completeness
+    /// must check this: a non-empty result means the block set is partial.
+    pub fn pending(&self) -> &BTreeSet<(u64, &'static str)> {
+        &self.pending
+    }
+
+    /// Whether discovery ran out of passes before the worklist emptied.
+    pub fn incomplete(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// Conditions that make this program unusable (empty means usable).
+    pub fn problems(&self) -> &[String] {
+        &self.problems
+    }
+
+    /// Whether discovery refused the image outright.
+    pub fn refused(&self) -> bool {
+        !self.problems.is_empty()
+    }
+
     pub fn block_count(&self) -> usize {
         self.blocks.len()
     }
@@ -149,11 +187,13 @@ impl Program {
 
 /// Translate a 32-bit image into emittable blocks.
 ///
-/// `max_passes` bounds the fixpoint iteration; discovery normally converges in
-/// two or three rounds. Exceeding the bound is reported, not hidden.
-pub fn discover(pe: &Pe, max_passes: u32) -> Program {
-    let base = pe.image_base as u32;
-    let mut prog = Program {
+/// `max_passes` bounds the fixpoint iteration. It used to converge in two or
+/// three rounds, but once a `call` became a block boundary every call adds a
+/// resume edge, so real images need many more (Uxn32 converges around 20).
+/// Exceeding the bound is reported via [`Program::pending`] rather than
+/// silently truncating the block set.
+fn empty_program() -> Program {
+    Program {
         blocks: BTreeMap::new(),
         functions: BTreeSet::new(),
         jump_table_targets: BTreeSet::new(),
@@ -161,7 +201,26 @@ pub fn discover(pe: &Pe, max_passes: u32) -> Program {
         unresolved: BTreeSet::new(),
         userops: BTreeMap::new(),
         passes: 0,
-    };
+        pending: BTreeSet::new(),
+        problems: Vec::new(),
+    }
+}
+
+pub fn discover(pe: &Pe, max_passes: u32) -> Program {
+    // This toolchain is 32-bit Win32 only. The Sleigh lifter decodes x86-32;
+    // handing it an x86-64 or ARM64 image would decode 64-bit code as 32-bit
+    // and produce plausible-looking nonsense. Refuse loudly instead: an empty
+    // program with a recorded problem, never a wrong answer.
+    if !matches!(pe.machine, wlam_pe::Machine::I386) {
+        let mut prog = empty_program();
+        prog.problems.push(format!(
+            "unsupported machine {:?}: this recompiler targets 32-bit Win32 (i386) only",
+            pe.machine
+        ));
+        return prog;
+    }
+    let base = pe.image_base as u32;
+    let mut prog = empty_program();
     let mut work: BTreeSet<(u64, &'static str)> = BTreeSet::new();
     // Seeds: entry point and exports are unambiguously code.
     work.insert((base as u64 + pe.entry_point_rva as u64, "entry point"));
@@ -240,6 +299,19 @@ pub fn discover(pe: &Pe, max_passes: u32) -> Program {
                     prog.unresolved.insert(block.start);
                     Edge::IndirectJump { site: block.start }
                 }
+                Terminator::CallInd { resume } => {
+                    // Always continue at the return address; whether the
+                    // callee is an IAT import or a guest pointer is decided
+                    // when emitting.
+                    work.insert((*resume, "after indirect call"));
+                    Edge::CallInd { resume: *resume }
+                }
+                Terminator::Call { resume } => {
+                    // The callee is discovered by the call-target sweep below;
+                    // the caller continues at the return address.
+                    work.insert((*resume, "after call"));
+                    Edge::Call { resume: *resume }
+                }
                 Terminator::Return => Edge::Return,
                 Terminator::Trap(t) => Edge::Trap(*t),
                 Terminator::Undecodable(at) => Edge::Bad(*at),
@@ -289,6 +361,7 @@ pub fn discover(pe: &Pe, max_passes: u32) -> Program {
         }
     }
     prog.passes = pass;
+    prog.pending = work;
     prog
 }
 
@@ -354,11 +427,13 @@ pub fn recover_tables_at(pe: &Pe, sites: &[u64]) -> Vec<(u64, Vec<u64>)> {
         unresolved: sites.iter().copied().collect(),
         userops: BTreeMap::new(),
         passes: 0,
+        pending: BTreeSet::new(),
+        problems: Vec::new(),
     };
     // The recovery needs the site's block, so lift just that block.
     let base = pe.image_base as u64;
     for &site in sites {
-        let Ok(rva) = u32::try_from(site.saturating_sub(base)) else { continue };
+        let Some(rva) = rva_of(base, site) else { continue };
         let Some(idx) = pe.section_of(rva) else { continue };
         let sec = &pe.sections[idx];
         let off = (rva - sec.virtual_address) as usize;
@@ -465,12 +540,12 @@ pub(crate) fn recover_jump_tables(pe: &Pe, prog: &Program) -> Vec<(u64, Vec<u64>
         let table = match indexed {
             Some(t) => {
                 // The addend must be a mapped, non-negative address.
-                u32::try_from(t.saturating_sub(base)).ok().filter(|rva| pe.section_of(*rva).is_some()).map(|_| t)
+                rva_of(base, t).filter(|rva| pe.section_of(*rva).is_some()).map(|_| t)
             }
             None => {
                 // `jmp [slot]`: a table starts with pointers into code; an IAT
                 // thunk slot holds a small non-code value (0x411124 -> 0x125da).
-                let Ok(rva) = u32::try_from(target.saturating_sub(base)) else { continue };
+                let Some(rva) = rva_of(base, target) else { continue };
                 let first = pe
                     .read_rva(rva, 4)
                     .map(|b| u64::from(u32::from_le_bytes([b[0], b[1], b[2], b[3]])))
@@ -483,7 +558,7 @@ pub(crate) fn recover_jump_tables(pe: &Pe, prog: &Program) -> Vec<(u64, Vec<u64>
             }
         };
         let Some(table) = table else { continue };
-        let Ok(table_rva) = u32::try_from(table.saturating_sub(base)) else { continue };
+        let Some(table_rva) = rva_of(base, table) else { continue };
         // Tables may live in writable data OR in .text: MSVC places jump tables
         // in .text right after the function (verified: Uxn32's .text has
         // rawsize 0x10000 with .rdata starting at VA 0x11000, so RVA 0x2938 is
@@ -527,10 +602,10 @@ pub(crate) fn recover_jump_tables(pe: &Pe, prog: &Program) -> Vec<(u64, Vec<u64>
 fn scan_back_for_bound(pe: &Pe, site: u64, limit: u64) -> Option<u64> {
     let base = pe.image_base as u64;
     let start = site.saturating_sub(limit);
-    let rva = u32::try_from(start.saturating_sub(base)).ok()?;
+    let rva = rva_of(base, start)?;
     let sec = &pe.sections[pe.section_of(rva)?];
     let off = (rva - sec.virtual_address) as usize;
-    let end = (site.saturating_sub(base) as usize).min(sec.data.len());
+    let end = (rva_of(base, site)? as usize).min(sec.data.len());
     let window = sec.data.get(off..end)?;
     let mut best: Option<u64> = None;
     for i in 0..window.len() {
@@ -555,10 +630,20 @@ fn scan_back_for_bound(pe: &Pe, site: u64, limit: u64) -> Option<u64> {
 }
 
 
+/// Convert a virtual address to an RVA, refusing addresses below the base.
+///
+/// `addr.saturating_sub(base)` is the trap this guards against: an address of
+/// `0x1` with a base of `0x400000` saturates to `0`, which is a perfectly valid
+/// RVA inside `.text`, so a nonsense target validates as code. Checked
+/// subtraction makes "below the base" a distinct outcome instead of silently
+/// becoming "the first byte of the image".
+fn rva_of(base: u64, addr: u64) -> Option<u32> {
+    u32::try_from(addr.checked_sub(base)?).ok()
+}
+
 /// Whether `addr` lands in an executable section of the image.
 fn points_into_code(pe: &Pe, base: u64, addr: u64) -> bool {
-    u32::try_from(addr.saturating_sub(base))
-        .ok()
+    rva_of(base, addr)
         .and_then(|rva| pe.section_of(rva))
         .map(|i| pe.sections[i].is_executable())
         .unwrap_or(false)
@@ -568,7 +653,7 @@ fn points_into_code(pe: &Pe, base: u64, addr: u64) -> bool {
 /// sizes, so this is a targeted re-decode rather than cached IR).
 fn block_ops(pe: &Pe, block: &DiscoveredBlock) -> Vec<IR> {
     let base = pe.image_base as u64;
-    let Ok(rva) = u32::try_from(block.start.saturating_sub(base)) else { return Vec::new() };
+    let Some(rva) = rva_of(base, block.start) else { return Vec::new() };
     let Some(idx) = pe.section_of(rva) else { return Vec::new() };
     let sec = &pe.sections[idx];
     let off = (rva - sec.virtual_address) as usize;
@@ -603,6 +688,23 @@ mod tests {
         Pe::parse(&bytes).ok()
     }
 
+    /// Discovery must reach a fixpoint on a real image, not stop at the pass
+    /// limit. A silent truncation here once cost two function entries when
+    /// calls started ending blocks, so the guard is explicit.
+    #[test]
+    fn discovery_converges_on_the_north_star() {
+        let Some(pe) = uxn32() else {
+            return;
+        };
+        let prog = crate::with_big_stack(move || discover(&pe, 64));
+        assert!(
+            !prog.incomplete(),
+            "discovery stopped early with {} pending item(s), e.g. {:?}",
+            prog.pending().len(),
+            prog.pending().iter().take(3).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn discovers_the_entry_point() {
         let Some(pe) = uxn32() else {
@@ -612,7 +714,7 @@ mod tests {
         let entry_rva = pe.entry_point_rva as u64 + pe.image_base;
         let entry_addr = pe.image_base + pe.entry_point_rva as u64;
         let _ = entry_rva;
-        let prog = crate::with_big_stack(move || discover(&pe, 8));
+        let prog = crate::with_big_stack(move || discover(&pe, 64));
         assert!(prog.block_count() > 0);
         // The entry point must be present and recorded as such. (It is not
         // necessarily the lowest-address block: the address order interleaves
@@ -637,7 +739,7 @@ mod tests {
             return;
         };
         let entries = prologue_candidates(&pe);
-        let prog = crate::with_big_stack(move || discover(&pe, 8));
+        let prog = crate::with_big_stack(move || discover(&pe, 64));
         assert!(prog.functions().len() > 10, "found {} functions", prog.functions().len());
         // A workable partial translation should cover a meaningful slice.
         // Completeness, not just a count: do the function entry points found
@@ -665,7 +767,7 @@ mod tests {
         let Some(pe) = uxn32() else {
             return;
         };
-        let prog = crate::with_big_stack(move || discover(&pe, 4));
+        let prog = crate::with_big_stack(move || discover(&pe, 64));
         // Any indirect jump must either have recovered targets (via the
         // IP-relative scrub) or be listed in `unresolved_indirect`.
         for site in prog.unresolved_indirect() {
@@ -682,7 +784,7 @@ mod tests {
         let Some(pe) = uxn32() else {
             return;
         };
-        let prog = crate::with_big_stack(move || discover(&pe, 8));
+        let prog = crate::with_big_stack(move || discover(&pe, 64));
         let unknown = prog.unknown_userops();
         assert!(unknown.is_empty(), "unknown userops reached: {unknown:?} via {:?}", prog.userops());
     }
@@ -692,7 +794,7 @@ mod tests {
         let Some(pe) = uxn32() else {
             return;
         };
-        let prog = crate::with_big_stack(move || discover(&pe, 8));
+        let prog = crate::with_big_stack(move || discover(&pe, 64));
         let ratio = prog.pcode_ratio();
         assert!(ratio > 1.0 && ratio < 20.0, "pcode/native ratio {ratio}");
     }
@@ -757,5 +859,104 @@ mod table_tests {
         let sites = vec![0x40dde0u64, 0x40ddcbu64];
         let recovered = crate::with_big_stack(move || recover_tables_at(&pe, &sites));
         assert!(recovered.is_empty(), "thunks must not yield tables: {recovered:?}");
+    }
+}
+
+#[cfg(test)]
+mod machine_guard_tests {
+    use super::*;
+
+    /// The guard must fire on a real x86-64 image: decoding 64-bit code with an
+    /// x86-32 lifter would produce plausible nonsense, which is worse than an
+    /// error. Both benchmark builds are present, so this is testable directly.
+    #[test]
+    fn amd64_image_is_refused_not_misdecoded() {
+        let Ok(bytes) = std::fs::read("../../benchmarks/minesweeper/bin/minesweeper-x64.exe") else {
+            return;
+        };
+        let Ok(pe) = Pe::parse(&bytes) else { return };
+        assert_eq!(pe.machine, wlam_pe::Machine::Amd64, "fixture must be the x64 build");
+        let prog = crate::with_big_stack(move || discover(&pe, 8));
+        assert!(prog.refused(), "an amd64 image must be refused");
+        assert!(prog.blocks().count() == 0, "no blocks may be produced");
+        assert!(prog.problems()[0].contains("i386"), "{:?}", prog.problems());
+    }
+
+    #[test]
+    fn i386_image_is_accepted() {
+        let Ok(bytes) = std::fs::read("../../benchmarks/minesweeper/bin/minesweeper-x86.exe") else {
+            return;
+        };
+        let pe = Pe::parse(&bytes).expect("parse");
+        assert_eq!(pe.machine, wlam_pe::Machine::I386);
+        let prog = crate::with_big_stack(move || discover(&pe, 8));
+        assert!(!prog.refused(), "a PE32 image must be accepted: {:?}", prog.problems());
+    }
+
+    /// An address below the image base must not be mistaken for RVA 0.
+    ///
+    /// `0x1.saturating_sub(0x400000)` is `0`, which is a valid RVA inside
+    /// `.text`, so a saturation-based conversion validated nonsense as code and
+    /// discovery produced blocks at `0x1` and `0x2`. Checked subtraction must
+    /// reject it instead.
+    #[test]
+    fn addresses_below_the_image_base_are_not_code() {
+        let Ok(bytes) = std::fs::read("../../north-star/bin/Uxn32.exe") else {
+            eprintln!("skipping: north-star binary not present");
+            return;
+        };
+        let pe = Pe::parse(&bytes).expect("parse");
+        let base = pe.image_base as u64;
+        for below in [0u64, 1, 2, 0x1000, base - 1] {
+            assert_eq!(rva_of(base, below), None, "{below:#x} is below the base");
+            assert!(
+                !points_into_code(&pe, base, below),
+                "{below:#x} must not be treated as executable"
+            );
+        }
+        // The entry point itself must still validate, or the fix would reject
+        // everything and "pass" for the wrong reason.
+        let entry = base + pe.entry_point_rva as u64;
+        assert!(rva_of(base, entry).is_some(), "the entry point must map");
+        assert!(points_into_code(&pe, base, entry), "the entry point is code");
+    }
+
+    /// Discovery must never claim a block outside the image.
+    ///
+    /// This is the end-to-end assertion for the bug above: when Sleigh's
+    /// internal `Const`-space branch labels were read as addresses, Minesweeper
+    /// grew blocks at `0x1`/`0x2` claimed by several unrelated functions.
+    #[test]
+    fn no_discovered_block_lies_outside_the_image() {
+        for path in [
+            "../../north-star/bin/Uxn32.exe",
+            "../../benchmarks/minesweeper/bin/minesweeper-x86.exe",
+        ] {
+            let Ok(data) = std::fs::read(path) else { continue };
+            let Ok(pe) = Pe::parse(&data) else { continue };
+            let base = pe.image_base as u64;
+            // `with_big_stack` requires `'static`, so collect the mapped section
+            // ranges before the image moves into the closure.
+            let mapped: Vec<(u64, u64)> = pe
+                .sections
+                .iter()
+                .map(|s| {
+                    let start = base + s.virtual_address as u64;
+                    (start, start + s.virtual_size as u64)
+                })
+                .collect();
+            let prog = crate::with_big_stack(move || discover(&pe, 64));
+            let strays: Vec<u64> = prog
+                .blocks()
+                .map(|b| b.start)
+                .filter(|a| !mapped.iter().any(|(s, e)| *a >= *s && *a < *e))
+                .collect();
+            assert!(
+                strays.is_empty(),
+                "{path}: {} block(s) outside any section, e.g. {:?}",
+                strays.len(),
+                strays.iter().take(5).collect::<Vec<_>>()
+            );
+        }
     }
 }

@@ -90,6 +90,42 @@ pub enum UnOp {
     Lzcount,
 }
 
+/// Floating-point operators, kept separate from [`BinOp`].
+///
+/// x87 and SSE arithmetic is a distinct domain from integer arithmetic: the
+/// operand types, rounding and NaN/`-0.0` behaviour all differ, and a recompiler
+/// that let the two share an enum would eventually emit `i32.add` where `f64.add`
+/// was meant. `FloatOp` therefore names only real-number operations, and the
+/// emitter is forced to pick a float instruction for each one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    /// IEEE comparison: yields a 1-byte boolean (P-code's `FloatLess` family).
+    Eq,
+    NotEq,
+    Less,
+    LessEq,
+}
+
+/// Numeric conversions between the integer and real-number domains.
+///
+/// Sleigh emits these for x87's `FILD` (`Int2Float`), `FISTP` (`Trunc`), and for
+/// `FSTP m64` (`Float2Float` from an 80-bit `ST` to a 64-bit double). They are
+/// named separately from [`IR::Un`] because each one is a *typed* conversion:
+/// the target type is decided by the operand widths, not by the operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConvertOp {
+    /// Signed integer to real (`Int2Float`, `FILD`).
+    IntToFloat,
+    /// Real to real, narrowing or widening (`Float2Float`).
+    FloatToFloat,
+    /// Real to signed integer, truncating (`Trunc`).
+    FloatToInt,
+}
+
 /// One IR operation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IR {
@@ -97,7 +133,15 @@ pub enum IR {
     Load { dst: Operand, addr: Operand, size: u32 },
     Store { addr: Operand, value: Operand, size: u32 },
     Bin { op: BinOp, dst: Operand, operands: Box<(Operand, Operand)> },
+    /// A floating-point binary operation (`FloatAdd`, `FloatMult`, ...).
+    ///
+    /// Distinct from [`IR::Bin`] so the emitter cannot route it through an
+    /// integer instruction. Operand widths are the *source* precision: a 10-byte
+    /// `ST` register is modelled as `f64` (see the x87 note in `docs/roadmap.md`).
+    Float { op: FloatOp, dst: Operand, operands: Box<(Operand, Operand)> },
     Un { op: UnOp, dst: Operand, src: Operand },
+    /// A typed conversion between integer and real-number domains.
+    Convert { op: ConvertOp, dst: Operand, src: Operand },
     Subpiece { dst: Operand, src: Operand, lsb: u32 },
     Branch { target: Operand },
     IndirectJump { target: Operand },
@@ -166,6 +210,38 @@ pub fn lower(op: &GhidraOp) -> IR {
         P::IntLsr { out, left, right } => bin(BinOp::Rsh, out, left, right),
         P::IntAsr { out, left, right } => bin(BinOp::Asr, out, left, right),
         P::IntNeg { out, input } => un(UnOp::Neg, out, input),
+        // Floating point. Before these arms existed every x87 arithmetic
+        // instruction lowered to `Nop`, so `FMUL ST1` computed nothing and the
+        // guest silently read the stale ST0 -- wrong in a way that looks like a
+        // working program. They are a separate `IR::Float` variant rather than
+        // `IR::Bin` so the emitter must choose an f64 instruction.
+        P::FloatAdd { out, left, right } => flt(FloatOp::Add, out, left, right),
+        P::FloatSub { out, left, right } => flt(FloatOp::Sub, out, left, right),
+        P::FloatMult { out, left, right } => flt(FloatOp::Mul, out, left, right),
+        P::FloatDiv { out, left, right } => flt(FloatOp::Div, out, left, right),
+        P::FloatEq { out, left, right } => flt(FloatOp::Eq, out, left, right),
+        P::FloatNotEq { out, left, right } => flt(FloatOp::NotEq, out, left, right),
+        P::FloatLess { out, left, right } => flt(FloatOp::Less, out, left, right),
+        P::FloatLessEq { out, left, right } => flt(FloatOp::LessEq, out, left, right),
+        // Typed conversions. `FSTP m64` lowers to `Float2Float ST0(80) ->
+        // tmp(64)`, so without these the store receives an untyped temp and the
+        // emitter refuses it with "i64 store".
+        P::Int2Float { out, input } => IR::Convert {
+            op: ConvertOp::IntToFloat,
+            dst: operand(out),
+            src: operand(input),
+        },
+        P::Float2Float { out, input } => IR::Convert {
+            op: ConvertOp::FloatToFloat,
+            dst: operand(out),
+            src: operand(input),
+        },
+        P::Trunc { out, input } => IR::Convert {
+            op: ConvertOp::FloatToInt,
+            dst: operand(out),
+            src: operand(input),
+        },
+
         // Flag support ops: counts and boolean operators. These are part of
         // ordinary flag computation, not exotic.
         P::Popcount { out, input } => IR::Un { op: UnOp::Popcount, dst: operand(out), src: operand(input) },
@@ -200,3 +276,88 @@ fn un(op: UnOp, out: &GhidraVarnode, input: &GhidraVarnode) -> IR {
     IR::Un { op, dst: operand(out), src: operand(input) }
 }
 
+fn flt(op: FloatOp, out: &GhidraVarnode, left: &GhidraVarnode, right: &GhidraVarnode) -> IR {
+    IR::Float { op, dst: operand(out), operands: Box::new((operand(left), operand(right))) }
+}
+
+
+#[cfg(test)]
+mod subpiece_tests {
+    use crate::pcode_ir::{AddressSpaceId, PcodeOp};
+    use crate::{with_big_stack, Architecture, Decoder};
+
+    /// `SUBPIECE`'s `lsb` is "the number of least significant bytes of input0
+    /// to be thrown away" (Ghidra P-Code Reference Manual). For a dword `MUL`
+    /// the two halves must therefore report different values: EAX discards 0,
+    /// EDX discards 4.
+    ///
+    /// This was an OPEN BUG (see docs/sleigh-notes.md): rsleigh's codegen
+    /// divided the `trunk` byte count by 8 as if it were bits, so `tmp(4)`
+    /// produced `lsb = 0` and EDX became indistinguishable from EAX -- i.e.
+    /// every `MUL` computed EDX = EAX. Fixed in
+    /// `rsleigh/src/codegen/.../constructor/execution.rs`.
+    #[test]
+    fn mul_halves_report_distinct_lsb() {
+        // The decoder needs an 8 MiB stack; see docs/sleigh-notes.md.
+        let mut halves = with_big_stack(|| {
+            let mut dec = Decoder::new(Architecture::X86_32);
+            let insn = dec.decode(&[0xF7, 0xE3], 0x1000).expect("MUL EBX decodes");
+            let mut halves: Vec<(u64, u32, u32)> = Vec::new();
+            for op in &insn.ops {
+                if let PcodeOp::Subpiece { out, input, lsb } = op {
+                    if input.space == AddressSpaceId::Unique && input.size == 8 {
+                        halves.push((out.offset, input.size, *lsb));
+                    }
+                }
+            }
+            halves
+        });
+        halves.sort();
+        assert_eq!(halves.len(), 2, "MUL yields two halves: {halves:?}");
+        // EAX is at register-file offset 0x0 and discards nothing.
+        assert_eq!((halves[0].0, halves[0].2), (0x0, 0), "EAX = low half");
+        // EDX is at 0x8 and discards the 4 low bytes to yield the high half.
+        assert_eq!(
+            (halves[1].0, halves[1].2),
+            (0x8, 4),
+            "EDX must discard 4 bytes (SUBPIECE lsb = bytes discarded)"
+        );
+    }
+
+    /// The same units rule for a byte-count that is not a multiple of 8, which
+    /// the old `/ 8` silently collapsed to zero.
+    #[test]
+    fn trunk_lsb_is_a_byte_count_not_a_bit_count() {
+        // `AX = tmp(2)` style truncation: 2 bytes discarded must stay 2.
+        // IMUL rm16: tmp:4 = sext(AX) * sext(rm16); DX = tmp(2); AX = tmp(0)
+        let code = [0x66, 0xF7, 0xEB]; // IMUL BX (16-bit)
+        let lsbs: Vec<u32> = with_big_stack(move || {
+            let mut dec = Decoder::new(Architecture::X86_32);
+            let Some(insn) = dec.decode(&code, 0x1000).ok() else {
+                return Vec::new(); // form not lifted in this build
+            };
+            insn.ops
+                .iter()
+                .filter_map(|op| match op {
+                    PcodeOp::Subpiece { input, lsb, .. }
+                        if input.space == AddressSpaceId::Unique && input.size == 4 =>
+                    {
+                        Some(*lsb)
+                    }
+                    _ => None,
+                })
+                .collect()
+        });
+        if lsbs.is_empty() {
+            return; // form not lifted in this build
+        }
+        assert!(
+            lsbs.contains(&2) || lsbs.contains(&0),
+            "16-bit IMUL halves should discard 2 and 0 bytes, got {lsbs:?}"
+        );
+        assert!(
+            !lsbs.contains(&1),
+            "a discarded byte count of 2 must not be divided by 8 to 0/1: {lsbs:?}"
+        );
+    }
+}

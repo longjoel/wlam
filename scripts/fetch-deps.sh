@@ -34,6 +34,27 @@ fetch_rsleigh() {
         git clone --depth 1 https://github.com/ShaneBreazeale/rsleigh
     fi
     cd rsleigh
+    # Local fixes to rsleigh live here as patches, because this directory is a
+    # throwaway clone and everything in it is gitignored. Without this step a
+    # fresh checkout silently loses them.
+    #
+    # 0001: SUBPIECE's `lsb` is a byte count, but the codegen divided the
+    #       `trunk` value by 8 as if it were bits, so `tmp(4)` became `lsb = 0`
+    #       and both halves of a dword MUL collapsed onto the low half
+    #       (EDX = EAX). See docs/sleigh-notes.md.
+    for patch in "$ROOT/scripts/patches"/*.patch; do
+        [ -e "$patch" ] || continue
+        if git apply --reverse --check "$patch" 2>/dev/null; then
+            echo "rsleigh: already applied $(basename "$patch")"
+        else
+            echo "rsleigh: applying $(basename "$patch")"
+            git apply "$patch" || {
+                echo "rsleigh: FAILED to apply $(basename "$patch")" >&2
+                echo "  the upstream commit probably moved; re-derive the patch" >&2
+                exit 1
+            }
+        fi
+    done
     export CARGO_HOME="$TOOLCHAIN/cargo"
     export RUSTUP_HOME="$TOOLCHAIN/rustup"
     export PATH="$TOOLCHAIN/cargo/bin:$PATH"

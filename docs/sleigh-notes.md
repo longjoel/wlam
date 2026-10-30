@@ -158,3 +158,60 @@ The last group is the one tempting shortcut: "the addend is the table". It is
 not, at least not for MSVC's `jmp [reg*4 + X]` form with these functions. A
 correct rule will need to locate the table from the *load* that feeds the jump
 rather than from the jump's address arithmetic alone.
+
+## FIXED: `MUL` lost the high-half `SUBPIECE` offset
+
+**Status: fixed.** Was a wrong-answer bug; now covered by
+`ir::subpiece_tests`.
+
+### Symptom
+
+For `F7 E3` (`MUL EBX`) the decoder reported `lsb = 0` for *both* halves of the
+product, making EDX indistinguishable from EAX — so every `MUL` computed
+`EDX = EAX`. The reference interpreter (`interp.rs`) and the emitter both do
+`src >> (lsb * 8)`, so two independent implementations were wrong in the same
+way and the differential gate never noticed.
+
+### Root cause: a bytes-vs-bits units bug in the code generator
+
+SLASPEC truncation syntax `expr(n)` is measured in **bytes**, and the semantic
+layer stores that as `Unary::TrunkLsb { trunk }` with `trunk` already a byte
+count. The codegen then did:
+
+```rust
+// toolchain/rsleigh/src/codegen/builder/disassembler/constructor/execution.rs
+let lsb = (*trunk / 8) as u32;      // BUG: treated bytes as bits
+```
+
+so `tmp(4)` became `lsb = 0` instead of `4`. The adjacent `TakeLsb` arm
+correctly converts the other way (`len * 8` -> bits), which is what made the
+error easy to miss.
+
+The Ghidra spec is unambiguous — `SUBPIECE`'s `input1` is *"the number of least
+significant bytes of input0 to be thrown away"* — and the vendored
+`x86/data/languages/ia.sinc` line 4113 says exactly `EDX = tmp(4)`.
+
+### Fix
+
+```rust
+let lsb = *trunk as u32;            // trunk is already a byte count
+```
+
+then regenerate the tables:
+
+```sh
+cd toolchain/rsleigh
+cargo build --release -p rsleigh-generate
+./target/release/rsleigh-generate x86-32
+```
+
+Result: `EDX` now lifts with `lsb = 4`, `EAX` with `lsb = 0`.
+
+### Lesson
+
+This is the third defect in this project where two implementations agreed and
+were both wrong (cf. the `br_table` mapping and the probe/production convention
+mismatches). Agreement between implementations is *not* corroboration when they
+share an assumption. The guard that caught it was a test asserting real
+arithmetic (`0x10000 * 0x10000` -> `EAX=0, EDX=1`) against a cited external
+spec, not against our own other implementation.

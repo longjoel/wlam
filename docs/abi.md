@@ -26,6 +26,39 @@ PE, and the compat matrix maps one-to-one onto generated imports.
 - `RET` at the end of a lifted block returns to the caller's resume PC, which
   the emitted dispatch uses to select the continuation.
 
+## Guest address space layout
+
+The guest's absolute addresses mean what they say, so every region is fixed and
+the module's linear memory must cover all of them.
+
+The module reserves the **whole 4 GiB** (65536 pages) unconditionally:
+reservation is virtual, so it costs address space rather than RAM, and a PE32
+program is entitled to address anything below 4 GiB.
+
+| Region | Range | Notes |
+| --- | --- | --- |
+| Register snapshot | `0x8000` | `REG_SNAPSHOT_BASE`; `GUEST_LOCALS` order |
+| Loader stack | grows down from `0x70000` | the harness seeds ESP here |
+| TIB / SEH head | `0x60000` | `FS_OFFSET`; `fs:[0] = 0xFFFFFFFF` |
+| Image | its PE `ImageBase` (`0x400000` for PE32) | headers + every section |
+| Heap region | `0x1000_0000 .. 0x1_0000_0000` | where `HeapAlloc` hands out blocks |
+
+Note the exclusive limit 2^32 does not fit in a `u32`; arena bookkeeping uses
+`u64` for the limit and `u32` for addresses.
+
+The heap region is the one entry that appears in **two** crates, because
+`wlam-host` does not depend on `wlam-emit`:
+
+- `wlam_emit::chain::HEAP_REGION_BASE` / `HEAP_REGION_SIZE` decide how much
+  memory the module declares (`pages_for_image`), and
+- `wlam_host::heap::HEAP_REGION_BASE` / `HEAP_REGION_SIZE` decide where blocks
+  come from.
+
+If they disagree, `HeapAlloc` returns an address outside the memory and the
+guest traps on its first store through it — reported as a wild pointer in guest
+code, not as a layout bug. `crates/wlam-sleigh/tests/heap_abi.rs` asserts the
+two agree and that the region does not overlap the image or the stack.
+
 ## Host call semantics
 
 - Host functions take **guest pointers** and validate them against the guest's

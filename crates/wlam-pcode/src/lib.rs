@@ -10,6 +10,8 @@
 //! ends at any control transfer; the emitter turns [`Op::Branch`] into a jump
 //! to the target block's function.
 
+pub mod regfile;
+
 use std::fmt;
 
 /// Number of bytes of the breakpoint we inject as the unique terminator of

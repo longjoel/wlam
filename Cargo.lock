@@ -265,6 +265,8 @@ name = "wlam-harness"
 version = "0.1.0"
 dependencies = [
  "wasmi",
+ "wlam-host",
+ "wlam-pe",
 ]
 
 [[package]]

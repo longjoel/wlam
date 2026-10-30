@@ -72,6 +72,34 @@ pub enum UnOp {
     Lzcount,
 }
 
+/// Floating-point operators the emitter understands.
+///
+/// Mirrors `wlam_sleigh::ir::FloatOp`. Kept separate from [`BinOp`] so a float
+/// operation can never reach an integer instruction: the two enums share no
+/// variants, and the emitter must handle `IR::Float` explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Eq,
+    NotEq,
+    Less,
+    LessEq,
+}
+
+/// Typed integer <-> real conversions. Mirrors `wlam_sleigh::ir::ConvertOp`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConvertOp {
+    /// Signed integer to real (`FILD`).
+    IntToFloat,
+    /// Real to real, narrowing or widening (`FSTP m64` from an x87 register).
+    FloatToFloat,
+    /// Real to signed integer, truncating (`FISTP`).
+    FloatToInt,
+}
+
 /// One IR operation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IR {
@@ -94,8 +122,23 @@ pub enum IR {
         dst: Operand,
         operands: Box<(Operand, Operand)>,
     },
+    /// A real-number binary operation (x87 `FADD`/`FMUL`/...).
+    ///
+    /// Operands are `f64` locals for x87 `ST` registers; a 1-byte destination
+    /// means the operation was a comparison yielding a boolean.
+    Float {
+        op: FloatOp,
+        dst: Operand,
+        operands: Box<(Operand, Operand)>,
+    },
     Un {
         op: UnOp,
+        dst: Operand,
+        src: Operand,
+    },
+    /// A typed conversion between integer and real domains.
+    Convert {
+        op: ConvertOp,
         dst: Operand,
         src: Operand,
     },
@@ -144,6 +187,10 @@ pub enum Terminator {
     Conditional { taken: Option<u64>, not_taken: u64 },
     /// Indirect jump (computed goto / jump table).
     IndirectJump,
+    /// A `call`: control leaves for a callee and resumes at `resume`.
+    Call { resume: u64 },
+    /// An indirect `call`: control leaves for a target computed at run time.
+    CallInd { resume: u64 },
     /// Return to the guest caller.
     Return,
     /// A trap by design (`INT3`), carrying the address after the instruction.

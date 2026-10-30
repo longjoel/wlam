@@ -15,3 +15,12 @@ wlam-pe = { path = "../wlam-pe" }
 wlam-emit = { path = "../wlam-emit" }
 rsleigh-api = { path = "../../toolchain/rsleigh/rsleigh-api" }
 pcode-ir = { path = "../../toolchain/rsleigh/pcode-ir" }
+
+[dev-dependencies]
+wlam-host = { path = "../wlam-host" }
+wlam-harness = { path = "../wlam-harness" }
+# iced-x86 is a *test-only* cross-check: it decodes the same bytes with an
+# independent decoder so Sleigh's control-flow facts can be validated. It must
+# never be used by the production lifter -- Sleigh stays the semantic source of
+# truth. A dev-dependency enforces that: shipping code cannot reach it.
+iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "std", "instr_info", "intel"] }

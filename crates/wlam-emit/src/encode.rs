@@ -72,6 +72,26 @@ impl Encoder {
         }
     }
 
+    /// Signed 64-bit LEB128, for `i64.const`.
+    ///
+    /// Shifts an `i64` *arithmetically*. The previous hand-written version in
+    /// `push_value` shifted a `u64` logically, so a negative constant never
+    /// reached the `u64::MAX` terminator and kept emitting 10-byte groups; the
+    /// validator rejected the module with "unable to read i64 leb128".
+    pub fn s64(&mut self, v: i64) {
+        let mut value = v;
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            let sign_clear = (byte & 0x40) == 0;
+            if (value == 0 && sign_clear) || (value == -1 && !sign_clear) {
+                self.buf.push(byte);
+                return;
+            }
+            self.buf.push(byte | 0x80);
+        }
+    }
+
     /// Write a vector: its length, then each item via `f`.
     pub fn vec<T>(&mut self, items: &[T], mut f: impl FnMut(&mut Encoder, &T)) {
         self.u32(items.len() as u32);
@@ -94,6 +114,26 @@ impl Encoder {
 pub fn leb_u32(v: u32) -> Vec<u8> {
     let mut e = Encoder::new();
     e.u32(v);
+    e.into_bytes()
+}
+
+/// Signed LEB128 as an `i32`, for `i32.const` operands.
+///
+/// wasm's `i32.const` takes a *signed* LEB128. Encoding a negative value as
+/// unsigned produces the right bits but the wrong length: `-4` became
+/// `fc ff ff ff 0f` (5 bytes) instead of `7c` (1 byte), and the extra bytes
+/// overran into the following instruction -- the module then failed to
+/// validate with "unable to read i32 leb128: i32.const value".
+pub fn leb_s32(v: i32) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.s32(v);
+    e.into_bytes()
+}
+
+/// Signed 64-bit LEB128 bytes.
+pub fn leb_s64(v: i64) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.s64(v);
     e.into_bytes()
 }
 

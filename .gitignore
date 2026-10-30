@@ -2,9 +2,20 @@
 **/target
 /toolchain/cargo
 /toolchain/rustup
+# A stray copy of the cargo registry appeared under crates/wlam-emit/ when a
+# command ran from the wrong directory; ignore the pattern so it cannot be
+# committed by accident again.
+**/toolchain/cargo
+**/toolchain/rustup
 /toolchain/wabt-src
 /toolchain/tools
 /toolchain/smoke
 /toolchain/ghidra
 /toolchain/rsleigh
 /toolchain/probe
+
+# Debug dumps from `--example dump_module` / lift probes.
+.scratch/
+
+# Module kept for inspection after a failed validation (`KEEP_WASM=1`).
+.scratch-out.wasm

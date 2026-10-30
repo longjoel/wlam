@@ -6,3 +6,5 @@ license.workspace = true
 
 [dependencies]
 wasmi.workspace = true
+wlam-host = { path = "../wlam-host" }
+wlam-pe = { path = "../wlam-pe" }
