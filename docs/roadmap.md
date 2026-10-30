@@ -375,6 +375,60 @@ Two options, in order of honesty:
 Do not stub these with a plausible value: a wrong `ST0` silently corrupts every
 subsequent x87 result, which is the class of bug this whole round was about.
 
+## Minesweeper validation: 6255 -> 2 errors
+
+Minesweeper now emits and gets within **two** validation errors of a valid
+module. Uxn32 emits a valid module (`RESULT: OK`) throughout.
+
+Errors eliminated this round, in the order they surfaced:
+
+| Errors | Cause |
+|---|---|
+| 6255 | `FSINCOS` userop results feeding `ST0`; float ops never lifted |
+| 21 | x87 loads emitted as `i64.load` into an f64 local |
+| 12 | `IntToFloat` destinations declared i64; f64 widened as integer |
+| 10 | left operand of a mixed-width binary op left as i32 |
+| 6 | f64 destination converted as if integer |
+| 2 | *(remaining)* |
+
+**The remaining 2** are one shape, at `0x6e1ab` and `0x76701`:
+
+```text
+local.get 4     ; i32
+local.set 57    ; 57 declared i32 ... but receives an i64
+local.get 57
+local.get 58
+i64.sub         ; expects [i64, i64]
+```
+
+`i64.sub` is selected because `push_value` reported 8 for an operand whose
+local is declared i32. The local map is shared across the block functions of a
+guest function (`chain.rs` saves and re-clones it), so a temp's width can be
+established in one block and used in another. Fixing this needs the width to
+follow the *value*, not the local.
+
+Two approaches were tried and reverted, both because they made things worse:
+
+- a `stack: Vec<u32>` recording every pushed width (45 and 171 errors): `emit_bin`
+  and `emit_float` push several values and pop them in ways the tracking did not
+  follow.
+- a single `last_pushed: u32` field (45 / 149): same drift, one slot instead of
+  a stack.
+
+The next attempt should make the width an explicit part of the operand the
+emitter sees (e.g. resolve `Operand::Temp` to its declared width at the point the
+IR is converted for the emitter), rather than inferring it during emission.
+
+### Method note
+
+The bug that took longest to find was an `if self.operand_is_x87(dst)` branch
+that had been **deleted by an earlier edit**, so every x87 load fell through to
+`(8, _) => I64_LOAD`. Instrumenting `push_value`/`pop_into` with a width trace
+found it in one run; several rounds of reasoning from disassembly had not.
+
+Also: stripping debug code with a regex silently broke two functions. Add and
+remove instrumentation by hand.
+
 ## Next round: what is actually in the way
 
 Ordered by what the measurements say blocks progress, not by what looks topical.
