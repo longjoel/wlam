@@ -126,10 +126,7 @@ impl LocalMap {
             m.next += 1;
             m.widths.insert(idx, width);
             if is_x87_register(&name) {
-                if std::env::var("POPX").is_ok() { eprintln!("SEED {name} -> idx {idx}"); }
                 m.x87.insert(idx);
-            } else if std::env::var("POPX").is_ok() && idx >= 10 && idx <= 20 {
-                eprintln!("SEEDN {name} -> idx {idx}");
             }
             m.regs.insert(name, idx);
         }
@@ -373,9 +370,6 @@ impl BlockEmitter {
     }
 
     fn local(&mut self, byte: u8, idx: u32) {
-        if std::env::var("POPX").is_ok() && byte == op::LOCAL_SET && (12..=19).contains(&idx) {
-            eprintln!("LOCALSET idx={idx}");
-        }
         self.body.push(byte);
         self.body.extend_from_slice(&leb_u32(idx));
     }
@@ -488,15 +482,6 @@ impl BlockEmitter {
     /// `mov [slot], edx` stores the *stale* EDX. That is exactly the Uxn32 bug
     /// where `GetVersion` succeeds but the guest records major version 0.
     fn pop_into(&mut self, dst: &Operand) -> Result<(), TranslateError> {
-        if std::env::var("POPX").is_ok() {
-            if let Operand::Reg { name, .. } = dst {
-                if let Some(i) = self.locals.reg(name) {
-                    if self.locals.is_x87(i) {
-                        eprintln!("POPSET x87 reg={name}");
-                    }
-                }
-            }
-        }
         match dst {
             Operand::Reg { name, size } => {
                 // A wider-than-4-byte register (x87, 8-byte) has no parent.
@@ -512,7 +497,7 @@ impl BlockEmitter {
                     .ok_or_else(|| TranslateError::UnknownRegister(name.to_string()))?;
                 self.local(op::LOCAL_SET, idx);
             }
-            Operand::Temp { offset, .. } => {
+            Operand::Temp { offset, size } => {
                 // A temp's wasm type is fixed when it is first allocated, but
                 // Sleigh reuses one temp at different widths (a narrow flag
                 // written into a wide scratch, or vice versa). Convert to the
@@ -522,9 +507,21 @@ impl BlockEmitter {
                 // failures.
                 let idx = self.locals.temp(*offset, dst.size());
                 let declared = self.locals.width(idx);
-                if declared == 8 && dst.size() != 8 {
+                // An f64 destination takes the value as-is: `IntToFloat` already
+                // produced a double, and widening it as if it were an integer is
+                // the "i64.extend_i32_u on an f64" error.
+                if self.locals.is_x87(idx) {
+                    self.local(op::LOCAL_SET, idx);
+                    return Ok(());
+                }
+                // Use the width of the value actually on the stack. `dst.size()`
+                // is what the P-code nominally says, and a `Copy` from a 32-bit
+                // register into a qword temp pushes an i32 while claiming 8 --
+                // comparing nominal to declared then finds them equal and emits
+                // no conversion, leaving an i64 value in an i32 slot.
+                if declared == 8 && *size != 8 {
                     self.op(op::I64_EXTEND_I32_U);
-                } else if declared != 8 && dst.size() == 8 {
+                } else if declared != 8 && *size == 8 {
                     self.op(op::I32_WRAP_I64);
                 }
                 self.local(op::LOCAL_SET, idx);
@@ -747,7 +744,19 @@ impl BlockEmitter {
             IR::Float { op: fop, dst, operands } => {
                 self.emit_float(*fop, dst, &operands.0, &operands.1)
             }
-            IR::Convert { op: cop, dst, src } => self.emit_convert(*cop, dst, src),
+            IR::Convert { op: cop, dst, src } => {
+                // A conversion into the real domain makes its destination an
+                // f64. Marking only `FloatToFloat` left `IntToFloat` (FILD)
+                // destinations declared i64, so the emitted f64 was then widened
+                // as if it were an integer.
+                if matches!(
+                    cop,
+                    crate::ir::ConvertOp::IntToFloat | crate::ir::ConvertOp::FloatToFloat
+                ) {
+                    self.mark_float_dest(dst);
+                }
+                self.emit_convert(*cop, dst, src)
+            }
             // x87 transcendentals. wasm has no sin/cos, so these become host
             // calls carrying the double through guest memory.
             IR::Userop { id, args, dst: Some(d) }
@@ -945,6 +954,25 @@ impl BlockEmitter {
         }
     }
 
+    /// Mark a conversion destination as holding an `f64`.
+    ///
+    /// Allocates the temp at 8 bytes if it does not exist yet, so the type is
+    /// fixed before anything writes to it.
+    fn mark_float_dest(&mut self, dst: &Operand) {
+        match dst {
+            Operand::Temp { offset, .. } => {
+                let idx = self.locals.temp(*offset, 8);
+                self.locals.mark_x87(idx);
+            }
+            Operand::Reg { name, .. } => {
+                if let Some(idx) = self.locals.reg(name) {
+                    self.locals.mark_x87(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Whether an operand is an x87 stack register.
     fn operand_is_x87(&self, op: &Operand) -> bool {
         match op {
@@ -1082,13 +1110,18 @@ impl BlockEmitter {
         // local, and a scratch local gets one fixed width that then has to match
         // both uses. Sleigh knows the right operand's declared width statically,
         // so decide from that instead.
-        if self.operand_declared_width(rhs) == 8 && lw != 8 {
+        // Never widen a real-number operand: an x87 value pushes an f64, and
+        // `i64.extend_i32_u` on an f64 is a type error. Float mixing is handled
+        // by IR::Float, which promotes to f64 instead.
+        let rhs_float = self.operand_is_x87(rhs);
+        if !rhs_float && self.operand_declared_width(rhs) == 8 && lw != 8 && !self.operand_is_x87(lhs)
+        {
             self.op(op::I64_EXTEND_I32_U);
             lw = 8;
         }
         let rw = self.push_value(rhs)?;
         // rhs is on top, so widening it in place is always safe.
-        if (lw == 8 || rw == 8) && rw != 8 {
+        if (lw == 8 || rw == 8) && rw != 8 && !self.operand_is_x87(rhs) {
             self.op(op::I64_EXTEND_I32_U);
         }
         let wide = lw == 8 || rw == 8;
