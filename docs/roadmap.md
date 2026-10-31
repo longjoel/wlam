@@ -9,9 +9,9 @@ optimistic narration. Update it whenever a claim would otherwise be stale.
 - `wlam-pe`: PE32/PE32+ parsing; 1,461-image corpus at zero failures.
 - `wlam analyze`: import inventory and compat matrix (ordinal resolution via
   reference DLL export tables, with provenance).
-- `wlam-sleigh`: x86-32 lifting via Ghidra's Sleigh (71 tests, including the
-  iced-x86 boundary cross-check). Measured on Uxn32: P-U/P-T = 4.0, five userops,
-  60 registers.
+- `wlam-sleigh`: x86-32 lifting via Ghidra's Sleigh (79 tests, including the
+  iced-x86 boundary cross-check and `tests/resume_address.rs`). Measured on
+  Uxn32: P-U/P-T = 4.0, five userops, 60 registers.
 - Discovery: 3,108 blocks / 74 functions on Uxn32; jump tables recovered for 16 of
   18 indirect sites. No block is claimed outside the image (see the fix below).
 - `wlam-emit` translator: IR → wasm for straight-line code. Differential gate
@@ -20,8 +20,11 @@ optimistic narration. Update it whenever a claim would otherwise be stale.
   `GetVersionExA`, `GetStartupInfoA`, `SetHandleCount`, and the heap family
   (`HeapCreate`, `GetProcessHeap`, `HeapAlloc`, `HeapFree`, `HeapReAlloc`,
   `HeapSize`, `HeapDestroy`), each refusing when an argument cannot be honoured.
-- `scripts/loop.sh` now scoreboards **two** images (Uxn32 gates the exit code;
-  Minesweeper is reported with its blocking reason).
+- **Both benchmark images emit modules that validate**: Uxn32 (3,108 blocks,
+  74 functions) and Minesweeper (4,201 blocks, 89 functions). Validation is
+  not execution; see "This round" for where the guest actually stops.
+- `scripts/loop.sh` scoreboards **two** images (Uxn32 gates the exit code;
+  Minesweeper is reported, and a regression to BLOCKED is announced).
 
 ## Working (chaining, added this round)
 
@@ -497,6 +500,80 @@ Ordered by what the measurements say blocks progress, not by what looks topical.
    asks for after that boundary moves; guessing now would repeat the mistake of
    implementing APIs that no execution path reaches yet.
 
+## This round: both images emit; the guest still stops inside its entry block
+
+Minesweeper is no longer blocked: it **emits a module that validates**
+(4,201 blocks, 89 functions, 664,608 bytes). Uxn32 does too (3,108 blocks,
+74 functions, 475,623 bytes). Validation is not running, though, and the guest
+still stops -- so the rest of this section is about *where*, with the
+instrument that answers the question.
+
+### The instrument: `examples/probe_loop.rs`
+
+"All fuel consumed" says nothing about a cause: it means the guest executed a
+billion instructions, which is either a loop or a busy program. The probe runs
+the guest **one block at a time**: every discovered block is emitted on its own
+(`module_with_snapshot`), the snapshot area is the only state, and the probe
+decides the successor from the block's terminator (`Call`/`Ret`/`CallInd` are
+followed with its own small stack; an IAT call is reported as a host call and
+treated as returning). Slow, and exactly what was needed: it turns "it spins"
+into "it stops here, with these registers".
+
+First finding, before any other work: the run stops at **step 0**, inside
+Uxn32's entry block `0x40ccb2..0x40ccde`, with a memory trap. Every register
+reads back at its seed value -- but `module_with_snapshot` only writes
+registers back at the *end* of the module, so a trap anywhere earlier leaves
+them at their seeds and the readback says nothing about where the fault was.
+The trap is somewhere in the block's own body, which leaves the stack writes
+above the seeded `ESP` and the `fs:[0]` store as candidates; the exact access
+is still unidentified. `PROBE_WASM=1` writes the block's module to
+`.scratch/probe_block.wasm`, so a runtime that reports the trapping offset
+finishes the job in one run.
+
+### Fixed this round
+
+- **`fs:[disp32]` lost its segment base.** The vendored x86 Sleigh spec adds
+  the base only for the `seg:[base+index*ss+disp]` forms; `MOV dword ptr
+  FS:[0x0], ESP` (Uxn32's SEH prologue at 0x40ccc8) decodes as `seg:disp32`
+  and the base was dropped, so the store went to **address 0** instead of the
+  TIB. With the unpatched spec the probe lists that store's fixed address as
+  `0x0`; with the patch the store disappears from the fixed-address list
+  because it is now `FS_OFFSET + 0`. The spec is patched in place
+  (`LOCAL PATCH (wlam)` in `ia.sinc`, committed in the vendored tree) and
+  regenerating the tables is part of the build recipe in `docs/sleigh-notes.md`
+  -- **a tree that regenerates without the patch reintroduces the bug**,
+  which `an_fs_store_goes_through_the_tib` catches.
+- **A call adopted the callee's `EIP` and `ESP`.** `reload_registers` after a
+  call pulled every register out of the snapshot, including the `EIP` the
+  callee had just popped (so the caller's own `ret` returned to an address
+  that was never the caller's) and a halted callee's `ESP`. Calls now adopt
+  everything except those two.
+- **One `Decoder` per instruction.** Blocks are no longer decoded with a single
+  decoder shared across instructions. On both benchmark images this changed
+  the block model by nothing, so it is a robustness change rather than a fix;
+  `tests/resume_address.rs` checks every indirect call's resume address against
+  iced-x86 and would fail if that stopped being true.
+- The loader's poison page is `0xFF`-filled: a poisoned IAT slot used to read
+  back as `0` (a NULL function pointer) because memory is zero by default.
+- Guest functions are exported by address (`g_40xxxxxx`) so a probe can call
+  one directly; `module_with_snapshot` now handles x87 locals.
+
+### What is next, in order
+
+1. **Name the trapping access in the entry block's body.** The probe narrows
+   it to the block's own code; `PROBE_WASM=1` dumps the module to
+   `.scratch/probe_block.wasm`, and any runtime that reports the trapping
+   offset names the instruction. Until then the hosted run cannot get past
+   step 0 and every other measurement is downstream of it.
+2. **The `0x405b00` emitter gap.** That block's module fails to validate with
+   `expected i32, found i64` inside the *emitted block body*, i.e. a genuine
+   emitter type bug that happens to be around the entry path. It was well
+   hidden: the full module currently fails validation too, so nothing pointed
+   at it only because the probe tried the block on its own.
+3. Only then the host API surface. The startup set is still unreached on the
+   Uxn32 run, and implementing more APIs before the guest gets to the first
+   call would repeat the earlier mistake of implementing what nothing calls.
+
 ## Working (process startup APIs, added this round)
 
 - **`GetStartupInfoA`** (`wlam-host/src/startup.rs`), writing a full
@@ -740,16 +817,15 @@ EDX:EAX) and 10-byte operands are the x87 FPU stack (`ST0`-`ST7`, 80-bit).
 
 ## Not working
 
-- **x87 (80-bit)**: `unsupported operand width 10 bytes`. Measured with
-  `examples/probe_x87.rs` on Minesweeper after the phantom-block fix: **35 blocks
-  (0.8% of 4,203)** contain a 10-byte operand, totalling **1,160** such operands.
-  The blocks are real x87 (`FLD double ptr [0x426388]`, `FSTP double ptr
-  [ESP+0x24]` at `0x40190f`), not garbage. This is the last blocker for emitting
-  Minesweeper.
-
-  An earlier revision of this file claimed "580 operands across 158 of 4,319
-  blocks (3.7%)". That figure is superseded: it was measured against the buggy
-  block set that included 116 phantom blocks. Re-measure rather than quoting it.
+- **x87 emission: resolved, not verified by running.** It used to be the
+  blocker (`unsupported operand width 10 bytes`). The 80-bit subset now lifts
+  and emits, and Minesweeper's module validates. Nothing has executed float
+  code yet, so "x87 works" is a claim about *emitted shape*, not numbers.
+- **The guest stops at step 0 of its entry block** (see "This round"): an
+  out-of-bounds snapshot store inside `0x40ccb2..0x40ccde` whose register is
+  still unidentified. That is the first thing in the way.
+- **`0x405b00` does not validate on its own** (`expected i32, found i64`), an
+  emitter type bug the whole-module validator currently masks.
 - **`wlam-sleigh` is outside the workspace.** It has its own `Cargo.lock` and
   `target/`, so `cargo test` at the repository root never compiles it and
   `loop.sh` builds it separately. A bug in this crate can therefore exist without

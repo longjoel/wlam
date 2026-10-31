@@ -272,6 +272,33 @@ fn main() {
             for n in ["EAX", "ECX", "EDX", "ESP", "EIP"] {
                 println!("    after: {n}={:#x}", get(n));
             }
+            // A trap out of bounds is uninformative on its own: the address
+            // that was out of range is the finding. Every memory op in the
+            // block module is `offset=0` plus an `i32.const` address, so the
+            // last constant before the failing op is a strong hint -- print it
+            // alongside the block's own displacement constants so a wrong
+            // address can be recognised as wrong rather than as "memory".
+            let blk = &sr_blocks[&cur];
+            println!("    block instructions:");
+            for ins in &blk.instructions {
+                let mem_addrs: Vec<u64> = ins
+                    .ops
+                    .iter()
+                    .filter_map(|op| match op {
+                        sir::IR::Store { addr: sir::Operand::Const { value, .. }, .. }
+                        | sir::IR::Load { addr: sir::Operand::Const { value, .. }, .. } => Some(*value),
+                        _ => None,
+                    })
+                    .collect();
+                if !mem_addrs.is_empty() {
+                    println!(
+                        "      {:#x} {:<40} fixed addr {}",
+                        ins.address,
+                        ins.disassembly,
+                        mem_addrs.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>().join(", ")
+                    );
+                }
+            }
             print_window(&path, &visits, &sr_blocks, &snap, &slot_of);
             return;
         }

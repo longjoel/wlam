@@ -1547,6 +1547,9 @@ pub fn module_with_snapshot(
         body.push(op::LOCAL_SET);
         body.extend_from_slice(&leb_u32(idx));
     }
+    // Write every register back, so the caller sees the block's result. The
+    // differential gate compares exactly this, so it stays unconditional: a
+    // switch here would let the gate and the probe measure different modules.
     for &(idx, at) in &slot {
         let is_x87 = locals.is_x87(idx);
         body.push(op::I32_CONST);

@@ -578,6 +578,28 @@ mod tests {
     }
 
     #[test]
+    fn every_fs_slot_is_relative_to_the_tib() {
+        // Address 0 is the DOS interrupt vector area and 0x7FFE0000 is a real
+        // x86 system page. Both are absolute displacements, and both are
+        // exactly the places a Windows program addresses through fs:.
+        for disp in [0x0000_0000u32, 0x7FFE_0000] {
+            let bytes = [0x64, 0x8b, 0x05, disp.to_le_bytes()[0], disp.to_le_bytes()[1], disp.to_le_bytes()[2], disp.to_le_bytes()[3]];
+            let ops = lift(&bytes, 0x1000);
+            let (addr, _) = ops
+                .iter()
+                .find_map(|o| match o {
+                    IR::Load { addr, size: 4, .. } => Some((addr.clone(), ())),
+                    _ => None,
+                })
+                .expect("a Load");
+            assert!(
+                address_uses(&ops, &addr, "FS_OFFSET"),
+                "fs:[{disp:#x}] must be relative to the TIB: {ops:?}"
+            );
+        }
+    }
+
+    #[test]
     fn an_absolute_store_is_not_redirected_to_address_zero() {
         // mov dword ptr [0x41106c], eax (89 05 6c 10 41 00). With a zero DS
         // base the result must still be the literal address -- the patch must
