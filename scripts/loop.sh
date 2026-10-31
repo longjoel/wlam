@@ -40,19 +40,15 @@ bench=benchmarks/minesweeper/bin/minesweeper-x86.exe
 if [[ -f "$bench" ]]; then
   bout=$(cd crates/wlam-sleigh && cargo run -q --example progress -- "../../$bench" 2>/dev/null)
   echo "BENCH: $(echo "$bout" | grep -E 'RESULT|REASON' | tr '\n' ' ')"
-  # x87 (80-bit) operands are the documented blocker. If the reason changes,
-  # say so loudly: it means the blocker moved and the roadmap needs updating.
-  if echo "$bout" | grep -q "RESULT: BLOCKED"; then
+  # Minesweeper used to be blocked on x87 (80-bit) operands. It now emits and
+  # validates, so the interesting failure is a regression: if it goes back to
+  # BLOCKED, say so loudly rather than letting the reason drift silently.
+  if echo "$bout" | grep -q "RESULT: OK"; then
+    echo "BENCH NOTE: Minesweeper emits a valid module"
+  elif echo "$bout" | grep -q "RESULT: BLOCKED"; then
     reason=$(echo "$bout" | grep -m1 "REASON:" | sed 's/^REASON: //')
-    case "$reason" in
-      *"unsupported operand width 10 bytes"*)
-        echo "BENCH NOTE: still blocked on x87 (80-bit), as documented in docs/roadmap.md" ;;
-      *)
-        echo "BENCH NOTE: blocking reason CHANGED -> $reason"
-        echo "            (update docs/roadmap.md; this is not the documented x87 gap)" ;;
-    esac
-  else
-    echo "BENCH NOTE: Minesweeper now emits -- x87 gap appears to be closed"
+    echo "BENCH NOTE: REGRESSED to BLOCKED -> $reason"
+    echo "            (Minesweeper emitted a valid module before; see docs/roadmap.md)"
   fi
 fi
 exit $fail

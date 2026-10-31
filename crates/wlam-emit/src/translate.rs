@@ -1523,27 +1523,37 @@ pub fn module_with_snapshot(
     body.pop(); // drop the trailing `end`
                 // Prologue: load the initial register values from the snapshot area into
                 // the locals, so the function starts from a known machine state.
-    for (i, name) in registers.iter().enumerate() {
-        let Some(idx) = locals.reg(name) else {
-            continue;
-        };
+    //
+    // Slot layout, in register order: integer registers take 4 bytes each, and
+    // the x87 stack follows them at 8 bytes each. The x87 registers are f64
+    // locals, so they must be loaded and stored as doubles -- emitting
+    // `i32.load` into an f64 local is the type error a validator reports as
+    // "expected f64, found i32", which is how the first version of this
+    // function failed on real Minesweeper blocks.
+    let mut next = REG_SNAPSHOT_BASE;
+    let mut slot: Vec<(u32, u64)> = Vec::with_capacity(registers.len());
+    for name in registers {
+        let Some(idx) = locals.reg(name) else { continue };
+        slot.push((idx, next));
+        next += if locals.is_x87(idx) { 8 } else { 4 };
+    }
+    for &(idx, at) in &slot {
+        let is_x87 = locals.is_x87(idx);
         body.push(op::I32_CONST);
-        body.extend_from_slice(&leb_u32((REG_SNAPSHOT_BASE + (i as u64) * 4) as u32));
-        body.push(op::I32_LOAD);
+        body.extend_from_slice(&leb_u32(at as u32));
+        body.push(if is_x87 { op::F64_LOAD } else { op::I32_LOAD });
         body.push(0);
         body.push(0);
         body.push(op::LOCAL_SET);
         body.extend_from_slice(&leb_u32(idx));
     }
-    for (i, name) in registers.iter().enumerate() {
-        let Some(idx) = locals.reg(name) else {
-            continue;
-        };
+    for &(idx, at) in &slot {
+        let is_x87 = locals.is_x87(idx);
         body.push(op::I32_CONST);
-        body.extend_from_slice(&leb_u32((REG_SNAPSHOT_BASE + (i as u64) * 4) as u32));
+        body.extend_from_slice(&leb_u32(at as u32));
         body.push(op::LOCAL_GET);
         body.extend_from_slice(&leb_u32(idx));
-        body.push(op::I32_STORE);
+        body.push(if is_x87 { op::F64_STORE } else { op::I32_STORE });
         body.push(0);
         body.push(0);
     }

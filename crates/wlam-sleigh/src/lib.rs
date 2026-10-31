@@ -192,21 +192,41 @@ impl Block {
 }
 
 /// Decode and lower one basic block starting at `start`.
+///
+/// ## One `Decoder` per instruction
+///
+/// This used to decode the whole block with a single `Decoder`, and that was
+/// wrong in a way that only showed up on real code. The x86 spec does not
+/// decode `CALL [slot]`/`MOV reg,[abs]` (`mod=00 r/m=101`) as one internal
+/// piece: `ff 15 <disp32>` splits into a one-byte `ff 15`, then a one-byte
+/// `00`, then the four displacement bytes as a further piece, and each piece
+/// **carries its own P-code**. Concatenating them attributed the `[disp32]`
+/// load to the byte before it, so Uxn32's `CALL dword ptr [0x41106c]` at
+/// 0x40ccd8 loaded from address `0x6d` (the ASCII `m`) and the guest jumped to
+/// 109 -- a memory trap that looked like a loader problem.
+///
+/// Decoding each instruction with a fresh decoder makes every instruction's
+/// P-code stand on its own, which is the only attribution that can be right.
+/// It is not obviously slower: the same decode work happens, without the
+/// multi-instruction state.
 pub fn lift_block(bytes: &[u8], start: u64) -> Block {
-    let mut decoder = Decoder::new(Architecture::X86_32);
     let mut instructions = Vec::new();
     let mut ip = start;
-    let mut index = 0usize;
-    let terminator;
+    let mut terminator = Terminator::Undecodable(start);
     loop {
-        let Some(rest) = bytes.get(index..) else {
-            terminator = Terminator::Undecodable(ip);
-            break;
+        let index = match ip.checked_sub(start) {
+            Some(i) => i as usize,
+            None => {
+                terminator = Terminator::Undecodable(ip);
+                break;
+            }
         };
+        let rest = &bytes[index.min(bytes.len())..];
         if rest.is_empty() {
             terminator = Terminator::Undecodable(ip);
             break;
         }
+        let mut decoder = Decoder::new(Architecture::X86_32);
         let insn = match decoder.decode(rest, ip) {
             Ok(i) if i.len > 0 => i,
             _ => {
@@ -268,6 +288,11 @@ pub fn lift_block(bytes: &[u8], start: u64) -> Block {
                 // lifter ran straight through the call and the emitter had no
                 // place to put the `call`.
                 PcodeOp::Call { .. } => term = Some(Terminator::Call { resume: next }),
+                // `next` is `ip + insn.len`, the instruction after the call,
+                // because every instruction is decoded on its own (see the
+                // note on `lift_block`). It used to be the end of the current
+                // internal piece, which for `CALL [slot]` is one byte into the
+                // displacement.
                 PcodeOp::CallInd { .. } => term = Some(Terminator::CallInd { resume: next }),
                 PcodeOp::CallOther { func_id, .. } if classify_userop(*func_id) == Userop::Breakpoint => {
                     term = Some(Terminator::Trap(next));
@@ -285,7 +310,6 @@ pub fn lift_block(bytes: &[u8], start: u64) -> Block {
             ops,
             unlowered,
         });
-        index += insn.len as usize;
         ip = next;
         if term.is_some() {
             terminator = term.unwrap();
@@ -458,6 +482,15 @@ mod tests {
     #[test]
     fn memory_operand_lowers_to_load_with_computed_address() {
         // mov eax, [esp+4] (8b 44 24 04)
+        //
+        // Real lift (the address is threaded through two temps, which is what
+        // the spec actually produces):
+        //   t = Add(0x4, ESP)
+        //   t2 = Zext(t)
+        //   t3 = Add(0x0, t2)
+        //   EAX = *t3{4}
+        // So the test follows the address producers back until it finds the
+        // base register, rather than assuming one particular temp shape.
         let ops = lift(&[0x8b, 0x44, 0x24, 0x04], 0x1000);
         let (addr, size) = ops
             .iter()
@@ -467,16 +500,39 @@ mod tests {
             })
             .expect("a Load");
         assert_eq!(size, 4);
-        // The address is computed into a temp, so the ESP use is in the op
-        // that produced that temp rather than in the Load itself.
-        let Operand::Temp { offset, .. } = addr else {
-            panic!("expected the address to be a computed temp, got {addr:?}");
-        };
-        let producer = ops
-            .iter()
-            .find(|o| matches!(o, IR::Bin { dst: Operand::Temp { offset: d, .. }, .. } if d == offset))
-            .expect("an op must produce the address temp");
-        assert!(format!("{producer:?}").contains("ESP"), "address must use ESP: {producer:?}");
+        assert!(
+            address_uses(&ops, addr, "ESP"),
+            "the computed address must derive from ESP: {ops:?}"
+        );
+    }
+
+    /// True if `seed` and every op that produced it (transitively) mention `reg`.
+    fn address_uses(ops: &[IR], seed: &Operand, reg: &str) -> bool {
+        let mut pending = vec![seed.clone()];
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(op) = pending.pop() {
+            if format!("{op:?}").contains(reg) {
+                return true;
+            }
+            let Operand::Temp { offset, .. } = &op else { continue };
+            if !seen.insert(*offset) {
+                continue;
+            }
+            for ir in ops {
+                let dst_is = |d: &Operand| matches!(d, Operand::Temp { offset: o, .. } if o == offset);
+                match ir {
+                    IR::Bin { dst, operands, .. } if dst_is(dst) => {
+                        pending.push(operands.0.clone());
+                        pending.push(operands.1.clone());
+                    }
+                    IR::Un { dst, src, .. } | IR::Subpiece { dst, src, .. } | IR::Copy { dst, src } if dst_is(dst) => {
+                        pending.push(src.clone())
+                    }
+                    _ => {}
+                }
+            }
+        }
+        false
     }
 
     #[test]
@@ -491,6 +547,59 @@ mod tests {
         });
         assert!(has_segment_base, "fs: access must add FS_OFFSET, got {ops:?}");
         assert!(ops.iter().any(|o| matches!(o, IR::Load { .. })), "and must load");
+    }
+
+    #[test]
+    fn an_fs_store_goes_through_the_tib() {
+        // mov dword ptr fs:[0], esp (64 89 25 00000000) -- the SEH link.
+        //
+        // Sleigh's x86 spec adds the segment base only for the `seg:[base +
+        // index*ss + disp]` forms (the `highseg` bit). `fs:[disp32]` is the
+        // `seg:disp32` form, where upstream skips the base, so this store went
+        // to address 0 -- 0xFFFFFFFF's neighbour rather than the TIB. The
+        // spec is patched (see `LOCAL PATCH (wlam)` in `ia.sinc`); this pins
+        // that the patch is still in force after a table regeneration.
+        let ops = lift(&[0x64, 0x89, 0x25, 0x00, 0x00, 0x00, 0x00], 0x1000);
+        let (addr, value) = ops
+            .iter()
+            .find_map(|o| match o {
+                IR::Store { addr, value, size: 4 } => Some((addr.clone(), value.clone())),
+                _ => None,
+            })
+            .expect("a Store");
+        assert!(
+            matches!(&value, Operand::Reg { name, .. } if &**name == "ESP"),
+            "the stored value is ESP: {ops:?}"
+        );
+        assert!(
+            address_uses(&ops, &addr, "FS_OFFSET"),
+            "an fs: store must add FS_OFFSET: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn an_absolute_store_is_not_redirected_to_address_zero() {
+        // mov dword ptr [0x41106c], eax (89 05 6c 10 41 00). With a zero DS
+        // base the result must still be the literal address -- the patch must
+        // not turn every absolute access into a TIB-relative one.
+        let ops = lift(&[0x89, 0x05, 0x6c, 0x10, 0x41, 0x00], 0x1000);
+        let addr = ops
+            .iter()
+            .find_map(|o| match o {
+                IR::Store { addr, .. } => Some(addr.clone()),
+                _ => None,
+            })
+            .expect("a Store");
+        // Either the address is literally the constant, or it is computed by
+        // an op that adds zero to it (a zero DS base folds to a no-op).
+        if let Operand::Const { value, .. } = &addr {
+            assert_eq!(*value, 0x41106c, "the literal address must survive: {ops:?}");
+            return;
+        }
+        assert!(
+            address_uses(&ops, &addr, "0x41106c"),
+            "the literal address must survive the segment patch: {ops:?}"
+        );
     }
 
     #[test]

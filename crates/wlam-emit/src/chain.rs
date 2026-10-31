@@ -68,7 +68,12 @@ mod op {
     pub const BR: u8 = 0x0c;
     pub const CALL: u8 = 0x10;
     pub const CALL_INDIRECT: u8 = 0x11;
+    // Opcode table, checked against the spec: a wrong value here is rejected by
+    // the validator only when the type context happens to differ, so an error
+    // that survives validation shows up as misbehaviour instead.
+    //   i32.lt_u 0x49   i32.eqz 0x45   br_table 0x0e   br 0x0c   return 0x0f
     pub const I32_LT_U: u8 = 0x49;
+    pub const I32_EQZ: u8 = 0x45;
     pub const BR_TABLE: u8 = 0x0e;
     pub const RETURN: u8 = 0x0f;
     pub const UNREACHABLE: u8 = 0x00;
@@ -500,9 +505,40 @@ fn spill_registers(out: &mut Vec<u8>, prog: &Program) {
     }
 }
 
+/// Take over the callee's final machine state after a `call`.
+///
+/// The callee spilled every register on `ret`, which is how a caller normally
+/// reads it back -- but not for the two registers the *emitter* uses to find
+/// the callee's `ret` in the first place:
+///
+///   * `EIP` still holds the return address the callee popped. Reloading it
+///     would overwrite the caller's own `EIP` -- and the caller's `ret` later
+///     pops its return address from the stack into `EIP`, so that value is
+///     live. Losing it sent a block back to its own entry: Uxn32's
+///     `GetVersion` call at 0x40ccd8 resumed with `EIP` = 0x40ccb2 and ran the
+///     whole function again, which is the infinite loop that burned the fuel.
+///   * `ESP` after a *halted* callee (a block ending in `unreachable`, e.g.
+///     one the emitter could not lower) still holds the callee's final stack,
+///     so the caller would continue with the wrong frame. The caller's own
+///     `ESP` is correct: the callee's `ret` already restored it.
+///
+/// Everything else comes from the spill, so the callee's results are still
+/// adopted rather than guessed.
+fn adopt_callee_state(out: &mut Vec<u8>, prog: &Program) {
+    reload_registers_except(out, prog, &["EIP", "ESP"]);
+}
+
 /// Reload every register local from the shared snapshot area.
 fn reload_registers(out: &mut Vec<u8>, prog: &Program) {
+    reload_registers_except(out, prog, &[]);
+}
+
+/// `reload_registers`, leaving the named registers alone.
+fn reload_registers_except(out: &mut Vec<u8>, prog: &Program, skip: &[&str]) {
     for (i, name) in prog.registers.iter().enumerate() {
+        if skip.contains(&name.as_str()) {
+            continue;
+        }
         let Some(local) = prog.locals.reg(name) else {
             continue;
         };
@@ -519,6 +555,7 @@ fn reload_registers(out: &mut Vec<u8>, prog: &Program) {
         out.extend_from_slice(&leb_u32(local));
     }
 }
+
 
 /// The callee address of a direct `call` in this block.
 ///
@@ -773,7 +810,10 @@ pub fn build_module_with_memory(
         b.u32(memory_pages);
     });
     e.section(section_id::EXPORT, |b| {
-        b.u32(2);
+        // Every guest function is exported under a stable name so a debugger or
+        // probe can call one directly (e.g. to step a starved guest block by
+        // block). `entry` stays first so existing callers are unaffected.
+        b.u32(2 + prog.functions.len() as u32);
         b.u32(5);
         b.raw(b"entry");
         b.push(0x00);
@@ -782,6 +822,13 @@ pub fn build_module_with_memory(
         b.raw(b"memory");
         b.push(0x02);
         b.u32(0);
+        for (i, func) in prog.functions.iter().enumerate() {
+            let name = format!("g_{:08x}", func.entry as u32);
+            b.u32(name.len() as u32);
+            b.raw(name.as_bytes());
+            b.push(0x00);
+            b.u32(import_count + i as u32);
+        }
     });
     // Table slot i holds guest function i. The element segment needs ABSOLUTE
     // function indices, so every guest index is shifted past the imports --
@@ -951,6 +998,15 @@ fn emit_case(
     // GetVersion even though the call itself worked. Small fixtures hid it
     // because a short branch often still reached code that dispatched again.
     let depth_to_loop = index;
+    // `Exit::Ret` is emitted as `return` when this block is the function's own
+    // entry. Check the opcodes that branch decision rests on once, here, so a
+    // mistyped constant in `mod op` cannot silently turn "this is the entry"
+    // into "this is not the entry" for every block at once.
+    debug_assert!(
+        op::CALL == 0x10 && op::RETURN == 0x0f && op::BR == 0x0c && op::BR_TABLE == 0x0e,
+        "opcode table is wrong: {:02x?}",
+        (op::CALL, op::RETURN, op::BR, op::BR_TABLE)
+    );
     let Some(block) = blocks.get(&addr) else {
         out.push(op::UNREACHABLE);
         return Ok(());
@@ -1024,8 +1080,7 @@ fn emit_case(
             spill_registers(out, prog);
             out.push(op::CALL);
             out.extend_from_slice(&leb_u32(callee + import_count));
-            // The callee spilled its own final state on return; adopt it.
-            reload_registers(out, prog);
+            adopt_callee_state(out, prog);
             // The callee's `ret` popped the return address into EIP. Dispatch
             // on the resume block here; if the guest rewrote the return address
             // the id lookup simply fails and we trap rather than silently
@@ -1065,7 +1120,7 @@ fn emit_case(
             out.push(op::ELSE);
             out.push(op::UNREACHABLE);
             out.push(op::END);
-            reload_registers(out, prog);
+            adopt_callee_state(out, prog);
             let resume_id = func.ids.get(&resume).copied().ok_or(
                 TranslateError::Unsupported("call resume block is outside its function"),
             )?;

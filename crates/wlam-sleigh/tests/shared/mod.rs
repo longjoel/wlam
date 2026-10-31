@@ -148,3 +148,26 @@ pub fn collect_regs(ir: &eir::IR, out: &mut std::collections::BTreeSet<String>) 
         I::Nop => {}
     }
 }
+
+/// Drop the `Branch`/`CBranch`/`Call`/`Ret` ops from a block, leaving the data
+/// ops, so the block can be emitted as a straight-line sequence.
+///
+/// The terminator (not the ops) decides where the block goes next, so these ops
+/// duplicate a fact the caller already has. Indirect transfers are dropped too:
+/// the caller is the one that knows where they went (it resolved the target
+/// itself), and a stripped `call_ind` leaves nothing that needs a table.
+pub fn strip_control_flow(ops: Vec<eir::IR>) -> Vec<eir::IR> {
+    ops.into_iter()
+        .filter(|ir| {
+            !matches!(
+                ir,
+                eir::IR::Branch { .. }
+                    | eir::IR::CBranch { .. }
+                    | eir::IR::Call { .. }
+                    | eir::IR::Ret { .. }
+                    | eir::IR::IndirectJump { .. }
+                    | eir::IR::CallInd { .. }
+            )
+        })
+        .collect()
+}

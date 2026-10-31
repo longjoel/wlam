@@ -299,17 +299,27 @@ pub fn load_image(
             // that CALLs one traps on the nullish page instead of silently
             // calling address 0; a guest that merely reads it sees a value that
             // is obviously not an address.
+            // Only poison slots whose value can survive the load. Writing
+            // 0xFFFF_FFFF over a slot that then reads back as 0 defeats the
+            // point, so the page holding the pointers is `0xFF` too and the
+            // slot is either fully in it or not poisoned at all.
+            let page_start = (POISON_PAGE as usize).min(mem.len());
+            let page_end = (POISON_PAGE as usize + POISON_PAGE_SIZE as usize).min(mem.len());
+            for b in &mut mem[page_start..page_end] {
+                *b = 0xFF;
+            }
             for imp in &pe.imports {
                 if !imp.iat_slot_verified {
                     continue;
                 }
-                let addr = base.wrapping_add(imp.iat_rva) as usize;
+                let va = base.wrapping_add(imp.iat_rva);
+                let addr = va as usize;
                 // Straddling writes are ignored: an unmapped slot is a PE
                 // parsing problem, not a loader one.
                 if addr + 4 <= mem.len() {
                     mem[addr..addr + 4].copy_from_slice(&POISON_THUNK.to_le_bytes());
                     out.push(Loaded {
-                        start: base.wrapping_add(imp.iat_rva),
+                        start: va,
                         len: 4,
                         kind: LoadedKind::IatThunk,
                     });
@@ -325,6 +335,27 @@ pub fn load_image(
 /// `0xFFFFFFFF` is not a valid call target in any guest, so a call through a
 /// poisoned slot traps rather than running whatever happens to be at address 0.
 pub const POISON_THUNK: u32 = 0xFFFF_FFFF;
+
+/// Size of the poison page mapped by [`IatPolicy::Poison`].
+pub const POISON_PAGE_SIZE: u32 = 0x10000;
+
+/// The page [`IatPolicy::Poison`] reserves for poisoned IAT slots.
+///
+/// Chosen at the top of the address range, where nothing else lives: the host's
+/// heap region starts at `0x1000_0000` and grows up, so the last 64 KiB stays
+/// free in practice -- and if the guest ever does allocate into it, the
+/// poisoned slots are told so rather than being silently unmapped.
+///
+/// Why a page at all: wasm access to memory the guest has not declared is not a
+/// trap, it is zero. A poisoned slot read back as `0` is the value of a NULL
+/// function pointer, so a `call [slot]` would jump to address 0 and quietly run
+/// whatever is at the image base. Mapping one page of `0xFF` makes the same
+/// mistake produce a trap at a named address instead -- the property the cruise
+/// existed to buy.
+pub const POISON_PAGE: u32 = GUEST_POISON_PAGE_BASE;
+
+/// Base address of [`POISON_PAGE`].
+pub const GUEST_POISON_PAGE_BASE: u32 = 0xFFFF_0000;
 
 /// What the loader does with import address table slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
