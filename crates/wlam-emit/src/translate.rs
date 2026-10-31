@@ -1278,35 +1278,91 @@ impl BlockEmitter {
         rhs: &Operand,
         dst: &Operand,
     ) -> Result<(), TranslateError> {
-        let a = self.locals.temp(u64::MAX - 7, 4);
-        let b = self.locals.temp(u64::MAX - 8, 4);
-        let r = self.locals.temp(u64::MAX - 9, 4);
-        self.push_value(lhs)?;
-        self.local(op::LOCAL_SET, a);
-        self.push_value(rhs)?;
+        // Borrow is the classic `(a ^ (a - b)) & (a ^ b)` sign trick, valid at
+        // either width; only the opcode family and the sign-bit position differ.
+        // The scratch slots used to be fixed 4-byte i32 locals, so a qword
+        // operand (CMPXCHG8B's 64-bit subtract) was stored into an i32 slot.
+        //
+        // The width has to come from what `push_value` actually pushes --
+        // deciding from the operands' nominal sizes picked i64 for an i32 value.
+        // Both slot sets are pre-allocated so the choice can be made after the
+        // first push; the unused pair simply goes undeclared.
+        let (a32, b32, r32) = (
+            self.locals.temp(u64::MAX - 7, 4),
+            self.locals.temp(u64::MAX - 8, 4),
+            self.locals.temp(u64::MAX - 9, 4),
+        );
+        let (a64, b64, r64) = (
+            self.locals.temp(u64::MAX - 10, 8),
+            self.locals.temp(u64::MAX - 11, 8),
+            self.locals.temp(u64::MAX - 12, 8),
+        );
+        let lw = self.push_value(lhs)?;
+        // `wide` cannot be decided from the left operand alone: the DPX-style
+        // `borrow from EAX - qword` has an i32 left and an i64 right. Push both
+        // and widen whichever is narrow, so the pair always matches the slot
+        // width. Parking happens in the i64 slots; a 32-bit result is narrowed
+        // afterwards by `normalize`.
+        let rw = self.push_value(rhs)?;
+        let wide = lw == 8 || rw == 8;
+        let (a, b, r) = if wide { (a64, b64, r64) } else { (a32, b32, r32) };
+        // rhs is on top: widen it, park it, then widen and park lhs.
+        if wide && rw != 8 {
+            self.op(op::I64_EXTEND_I32_U);
+        }
         self.local(op::LOCAL_SET, b);
+        if wide && lw != 8 {
+            self.op(op::I64_EXTEND_I32_U);
+        }
+        self.local(op::LOCAL_SET, a);
         self.local(op::LOCAL_GET, a);
         self.local(op::LOCAL_GET, b);
-        self.op(op::I32_SUB);
+        self.op(step(wide, op::I32_SUB, op::I64_SUB));
         self.local(op::LOCAL_SET, r);
         self.local(op::LOCAL_GET, a);
         self.local(op::LOCAL_GET, b);
-        self.op(op::I32_XOR);
+        self.op(step(wide, op::I32_XOR, op::I64_XOR));
         self.local(op::LOCAL_GET, a);
         self.local(op::LOCAL_GET, r);
-        self.op(op::I32_XOR);
-        self.op(op::I32_AND);
+        self.op(step(wide, op::I32_XOR, op::I64_XOR));
+        self.op(step(wide, op::I32_AND, op::I64_AND));
         self.local(op::LOCAL_GET, a);
-        self.op(op::I32_XOR);
-        self.op(op::I32_CONST);
-        self.body.extend_from_slice(&crate::encode::leb_s32(31));
-        self.op(op::I32_SHR_S);
-        self.op(op::I32_CONST);
-        self.body.extend_from_slice(&leb_u32(1));
-        self.op(op::I32_AND);
+        self.op(step(wide, op::I32_XOR, op::I64_XOR));
+        if wide {
+            self.op(op::I64_CONST);
+            self.body.extend_from_slice(&crate::encode::leb_s64(63));
+            self.op(op::I64_SHR_S);
+        } else {
+            self.op(op::I32_CONST);
+            self.push_i32_const(31);
+            self.op(op::I32_SHR_S);
+        }
+        // Mask off everything above the sign bit. This must match the width the
+        // shift produced: leaving it as `i32.and` put a 32-bit operator on the
+        // i64 the wide path leaves on the stack.
+        if wide {
+            self.op(op::I64_CONST);
+            self.body.extend_from_slice(&leb_u32(1));
+            self.op(op::I64_AND);
+        } else {
+            self.op(op::I32_CONST);
+            self.body.extend_from_slice(&leb_u32(1));
+            self.op(op::I32_AND);
+        }
+        // The wide path leaves an i64; flags are 1-2 bytes, so narrow it before
+        // `normalize` applies `i32.extend8_s`/`extend16_s`, which have no i64
+        // form.
+        if wide {
+            self.op(op::I32_WRAP_I64);
+        }
         self.normalize(dst)?;
         self.pop_into(dst)
     }
+}
+
+/// Pick the i32 or i64 form of an opcode.
+fn step(wide: bool, i32_op: u8, i64_op: u8) -> u8 {
+    if wide { i64_op } else { i32_op }
 }
 
 /// Translate a sequence of IR ops into one wasm function body.
