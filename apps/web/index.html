@@ -1,11 +1,54 @@
 <!doctype html>
-<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>Win32 guest runner</title>
-<style>body{font:16px system-ui;background:#182029;color:#e3ebf2;max-width:880px;margin:48px auto;padding:0 24px}input{width:100%;box-sizing:border-box;margin:8px 0 16px;padding:10px}button{padding:9px 18px;margin-right:8px}#resize-controls{display:flex;align-items:end;gap:12px;margin-top:16px}#resize-controls label{display:grid;gap:4px}#resize-controls input{width:110px;margin:0}canvas{display:block;image-rendering:pixelated;width:640px;max-width:100%;height:auto;background:#000;margin:24px 0;outline:2px solid #526779}canvas:focus{outline-color:#72dcbd}pre{white-space:pre-wrap;color:#ffb8a8}#status{margin-top:20px}</style>
-<h1>Win32 guest runner</h1><p>Click the image to focus and send mouse and keyboard input to the guest. Resize the guest surface with the width and height controls. Close guest requests a normal shutdown; Stop ends execution immediately.</p>
-<label>Bundle manifest<input id="manifest" value="/target/interactive/bundle/manifest.json"></label>
-<button id="start">Start / Restart</button><button id="stop" disabled>Stop</button><button id="close" disabled>Close guest</button>
-<div id="resize-controls"><label>Guest width<input id="guest-width" type="number" min="1" max="4096" value="400"></label><label>Guest height<input id="guest-height" type="number" min="1" max="4096" value="300"></label><button id="resize-guest" disabled>Resize guest</button></div>
-<div id="status" role="status">Ready</div><canvas id="screen" width="32" height="24" tabindex="0" aria-label="Guest window"></canvas><pre id="error"></pre>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#14202c">
+<title>Win32 guest desktop</title>
+<style>
+:root{color-scheme:dark;font:14px "Segoe UI",system-ui,sans-serif;--bar-height:48px;--panel:rgba(17,29,42,.92);--line:rgba(225,240,255,.19);--text:#e7f0f8;--muted:#a9bac9;--accent:#56d6bd}
+*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;color:var(--text)}body{background:#14202c}
+button,input{font:inherit}button{color:inherit;background:#26394a;border:1px solid #486075;border-radius:6px;padding:7px 11px;cursor:pointer}button:hover:not(:disabled){background:#345169}button:disabled{opacity:.45;cursor:not-allowed}input{color:var(--text);background:#172635;border:1px solid #4b6174;border-radius:5px;padding:6px}
+#desktop{position:fixed;inset:0 0 var(--bar-height);overflow:hidden;background:radial-gradient(ellipse at 50% 12%,#31546a 0,#1b3447 38%,#142331 100%)}
+#desktop:before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.18;background-image:linear-gradient(120deg,transparent 48%,rgba(170,220,235,.12) 49%,transparent 50%),radial-gradient(ellipse at 10% 100%,#61a5a0 0,transparent 45%)}
+#desktop-icons{position:absolute;left:16px;top:18px;display:grid;gap:14px;z-index:0}.desktop-icon{width:86px;display:grid;justify-items:center;gap:5px;padding:8px 4px;border:1px solid transparent;border-radius:8px;color:#f1f7fc;text-shadow:0 1px 3px #000;text-align:center}.desktop-icon .glyph{font-size:30px;line-height:1}.desktop-icon:hover{background:#ffffff14;border-color:#ffffff25}
+#window-layer{position:absolute;inset:0;pointer-events:none}.app-window{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(880px,calc(100vw - 36px));height:min(650px,calc(100% - 36px));min-width:min(320px,calc(100vw - 16px));min-height:230px;display:flex;flex-direction:column;pointer-events:auto;background:#101a25;border:1px solid #7c94a6;border-radius:9px;box-shadow:0 22px 70px #050b10a8;overflow:hidden;resize:none}
+.app-window.is-maximized{left:8px;top:8px;transform:none;width:calc(100% - 16px)!important;height:calc(100% - 16px)!important;border-radius:7px}.app-window.is-minimized{display:none}
+.titlebar{height:38px;flex:0 0 38px;display:flex;align-items:center;gap:10px;padding-left:12px;background:linear-gradient(#30485b,#24384a);border-bottom:1px solid #53697a;user-select:none;touch-action:none}.title-icon{font-size:17px}.title-text{font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.window-controls{height:100%;display:flex}.window-controls button{width:43px;height:100%;padding:0;border:0;border-radius:0;background:transparent;font-size:16px}.window-controls button:hover{background:#ffffff20}.window-controls #window-close:hover{background:#c43d4a}.window-body{flex:1;min-height:0;display:flex;flex-direction:column;overflow:auto;background:#dce5eb;color:#17232d}
+#toolbar{display:grid;grid-template-columns:minmax(180px,1fr) auto;gap:8px 12px;align-items:center;padding:10px 12px;background:#edf2f5;border-bottom:1px solid #aebdc7}#manifest-label{grid-column:1/-1;display:flex;align-items:center;gap:8px;color:#344a5b;font-size:12px}#manifest{min-width:0;flex:1;color:#192936;background:white;border-color:#aab9c4;padding:5px 8px;font-size:12px}#main-controls{display:flex;gap:6px;flex-wrap:wrap}#main-controls button{color:#eaf5fb;background:#29475d;border-color:#456980;padding:6px 10px}#resize-controls{display:flex;align-items:center;gap:6px;color:#425867;font-size:12px}#resize-controls label{display:flex;align-items:center;gap:4px}#resize-controls input{width:69px;color:#1b2b36;background:#fff;border-color:#aab9c4;padding:5px}
+#status-line{display:flex;align-items:center;gap:8px;min-height:28px;padding:4px 12px;background:#f5f7f9;color:#3c5362;border-bottom:1px solid #d2dce2;font-size:12px}#status-dot{width:8px;height:8px;border-radius:50%;background:#8195a4}#status-dot.live{background:#16a678;box-shadow:0 0 8px #16a67888}#status{font-weight:600}#error{margin:0;padding:0 12px;color:#a82e32;font:12px ui-monospace,monospace;white-space:pre-wrap}#error:not(:empty){padding-top:5px;padding-bottom:5px}
+#screen-wrap{flex:1;min-height:100px;display:flex;align-items:center;justify-content:center;overflow:auto;padding:12px;background:radial-gradient(ellipse at center,#f1f5f7,#c4d1d9)}canvas{display:block;image-rendering:pixelated;max-width:100%;max-height:100%;width:auto;height:auto;background:#000;outline:1px solid #647c8d;box-shadow:0 3px 12px #15222e35;touch-action:none}canvas:focus{outline:2px solid #1b9d91}
+#debugger{flex:0 0 auto;padding:6px 12px;background:#edf2f5;color:#354957;font-size:12px}#debugger summary{cursor:pointer}#debugger p{margin:7px 0}#debugger pre{max-height:100px;overflow:auto;white-space:pre-wrap;margin:5px 0;color:#9b3737}#guest-dialog{color:#17232d;border:0;border-radius:10px;box-shadow:0 20px 70px #0009;max-width:min(480px,90vw)}#guest-dialog::backdrop{background:#07111dbb}#dialog-buttons{display:flex;justify-content:flex-end;gap:8px}
+#resize-grip{position:absolute;z-index:4;right:0;bottom:0;width:18px;height:18px;cursor:nwse-resize;touch-action:none}#resize-grip:after{content:"";position:absolute;right:4px;bottom:4px;width:8px;height:8px;border-right:2px solid #7890a1;border-bottom:2px solid #7890a1}
+#taskbar{position:fixed;inset:auto 0 0;height:var(--bar-height);display:flex;align-items:center;gap:9px;padding:5px 10px;background:rgba(9,17,25,.9);border-top:1px solid #ffffff20;backdrop-filter:blur(18px);z-index:10}.start-button{height:36px;min-width:84px;border-radius:7px;background:linear-gradient(#34b9a8,#178f8b);border:1px solid #68dbcb;color:white;font-weight:700}.start-button .start-mark{font-size:17px;margin-right:6px}.task-app{height:36px;min-width:170px;display:flex;align-items:center;gap:9px;text-align:left;background:#ffffff12;border-color:#ffffff1d}.task-app.active{background:#ffffff20;border-bottom:2px solid var(--accent)}#task-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.task-spacer{flex:1}.task-clock{min-width:74px;text-align:center;color:#d9e5ed;font-variant-numeric:tabular-nums}.start-menu{position:absolute;left:10px;bottom:calc(var(--bar-height) + 8px);width:min(320px,calc(100vw - 20px));padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--panel);box-shadow:0 16px 50px #0008;backdrop-filter:blur(22px);display:none}.start-menu.open{display:block}.menu-head{padding:8px 8px 13px;border-bottom:1px solid var(--line);font-weight:700}.menu-item{width:100%;display:flex;align-items:center;gap:10px;margin-top:8px;text-align:left;background:#ffffff0b;border-color:#ffffff12}.menu-item .glyph{font-size:19px}.menu-foot{margin-top:10px;padding:9px 8px 2px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+@media(max-width:650px){:root{--bar-height:48px}.app-window{left:8px;top:8px;transform:none;width:calc(100% - 16px);height:calc(100% - 16px)}#toolbar{grid-template-columns:1fr;padding:8px}#manifest-label{grid-column:auto}#resize-controls{flex-wrap:wrap}.task-app{min-width:0;flex:1}.task-clock{display:none}#desktop-icons{left:6px;top:6px}.desktop-icon{width:72px}}
+</style>
+</head>
+<body>
+<main id="desktop" aria-label="Guest desktop">
+  <div id="desktop-icons" aria-label="Desktop shortcuts"><button class="desktop-icon" id="desktop-launch"><span class="glyph" aria-hidden="true">🖥️</span><span>Guest Runner</span></button></div>
+  <div id="window-layer">
+    <section class="app-window" id="app-window" aria-label="Guest Runner window">
+      <header class="titlebar" id="titlebar"><span class="title-icon" aria-hidden="true">🖥️</span><span class="title-text">Win32 Guest Runner</span><div class="window-controls"><button id="window-minimize" aria-label="Minimize window" title="Minimize">—</button><button id="window-maximize" aria-label="Maximize window" title="Maximize">□</button><button id="window-close" aria-label="Close guest window" title="Close">×</button></div></header>
+      <div class="window-body">
+        <div id="toolbar">
+          <label id="manifest-label">Bundle manifest <input id="manifest" value="/target/interactive/bundle/manifest.json" autocomplete="off"></label>
+          <div id="main-controls"><button id="start">Start / Restart</button><button id="stop" disabled>Stop</button><button id="close" disabled>Close guest</button></div>
+          <div id="resize-controls"><span>Guest:</span><label>W <input id="guest-width" type="number" min="1" max="4096" value="400"></label><label>H <input id="guest-height" type="number" min="1" max="4096" value="300"></label><button id="resize-guest" disabled>Apply</button></div>
+        </div>
+        <div id="status-line" role="status"><span id="status-dot"></span><span id="status">Ready</span></div><pre id="error" role="alert"></pre>
+        <div id="screen-wrap"><canvas id="screen" width="32" height="24" tabindex="0" aria-label="Guest application display"></canvas></div>
+        <details id="debugger"><summary>Guest diagnostics</summary>
+          <p>Save a debug log to share the failure, recent API calls, guest registers and stack. Frame candidates may be incomplete when guest code omits frame pointers.</p>
+          <button id="download-debug" disabled>Download debug log</button><pre id="debug-summary">No run captured.</pre>
+          <details><summary>Full report</summary><pre id="debug-report"></pre></details>
+        </details>
+      </div><div id="resize-grip" role="button" tabindex="0" aria-label="Resize guest window. Use arrow keys to resize." title="Drag or use arrow keys to resize"></div>
+    </section>
+  </div>
+</main>
+<footer id="taskbar"><button class="start-button" id="start-menu-button" aria-expanded="false"><span class="start-mark" aria-hidden="true">⊞</span>Start</button><button class="task-app active" id="task-app"><span aria-hidden="true">🖥️</span><span id="task-label">Win32 Guest Runner</span></button><span class="task-spacer"></span><time class="task-clock" id="task-clock"></time></footer>
+<nav class="start-menu" id="start-menu" aria-label="Start menu"><div class="menu-head">WasmLeanAndMean</div><button class="menu-item" id="menu-runner"><span class="glyph" aria-hidden="true">🖥️</span><span>Win32 Guest Runner</span></button><button class="menu-item" id="menu-restart"><span class="glyph" aria-hidden="true">↻</span><span>Restart guest</span></button><div class="menu-foot">Local guest desktop</div></nav>
 <dialog id="guest-dialog" aria-labelledby="dialog-title"><h2 id="dialog-title"></h2><p id="dialog-text" style="white-space:pre-wrap"></p><div id="dialog-buttons"></div></dialog>
-<script type="module" src="./page.mjs"></script></html>
+<script type="module" src="./page.mjs"></script>
+</body></html>

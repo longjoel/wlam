@@ -79,7 +79,113 @@ impl Dib {
             palette,
         })
     }
-    /// Read one bounded row, converting Windows BGRX to opaque RGBA.
+    /// Store opaque RGBA pixels in a DIB, preserving row padding and orientation.
+    pub fn write_rgba_row(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        x: u32,
+        y: u32,
+        pixels: &[u8],
+    ) -> Result<(), RasterError> {
+        if pixels.len() % 4 != 0
+            || y >= self.height
+            || x as u64 + (pixels.len() / 4) as u64 > self.width as u64
+        {
+            return Err(RasterError::InvalidDimensions);
+        }
+        let row = if self.top_down {
+            y
+        } else {
+            self.height - 1 - y
+        };
+        let address = self.bits as u64
+            + row as u64 * self.stride as u64
+            + x as u64 * (self.bit_count / 8) as u64;
+        let address = u32::try_from(address).map_err(|_| RasterError::InvalidDimensions)?;
+        let output: Vec<u8> = if self.bit_count == 32 {
+            pixels
+                .chunks_exact(4)
+                .flat_map(|p| [p[2], p[1], p[0], 0])
+                .collect()
+        } else {
+            let mut indices = std::collections::BTreeMap::new();
+            pixels
+                .chunks_exact(4)
+                .map(|pixel| {
+                    let key = [pixel[0], pixel[1], pixel[2]];
+                    *indices.entry(key).or_insert_with(|| {
+                        self.palette
+                            .iter()
+                            .enumerate()
+                            .min_by_key(|(_, color)| {
+                                (0..3)
+                                    .map(|i| (color[i] as i32 - pixel[i] as i32).pow(2))
+                                    .sum::<i32>()
+                            })
+                            .map(|(index, _)| index as u8)
+                            .unwrap_or(0)
+                    })
+                })
+                .collect()
+        };
+        memory.write(address, &output)?;
+        Ok(())
+    }
+    /// Fill a clipped DIB rectangle, mapping black/white to indexed colors.
+    pub fn fill_rect(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        white: bool,
+    ) -> Result<(), RasterError> {
+        if width < 0 || height < 0 {
+            return Err(RasterError::InvalidDimensions);
+        }
+        let left = (x as i64).max(0).min(self.width as i64);
+        let right = (x as i64 + width as i64).max(0).min(self.width as i64);
+        let top = (y as i64).max(0).min(self.height as i64);
+        let bottom = (y as i64 + height as i64).max(0).min(self.height as i64);
+        if left >= right || top >= bottom {
+            return Ok(());
+        }
+        let color = if white { 255u8 } else { 0u8 };
+        let bytes_per_pixel = (self.bit_count / 8) as usize;
+        let mut row = vec![color; (right - left) as usize * bytes_per_pixel];
+        if self.bit_count == 8 {
+            let index = self
+                .palette
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, rgb)| {
+                    rgb[..3]
+                        .iter()
+                        .map(|v| (*v as i32 - color as i32).pow(2))
+                        .sum::<i32>()
+                })
+                .ok_or(RasterError::UnsupportedFormat)?
+                .0 as u8;
+            row.fill(index);
+        }
+        for py in top..bottom {
+            let physical = if self.top_down {
+                py as u32
+            } else {
+                self.height - 1 - py as u32
+            };
+            let address = self.bits as u64
+                + physical as u64 * self.stride as u64
+                + left as u64 * bytes_per_pixel as u64;
+            memory.write(
+                u32::try_from(address).map_err(|_| RasterError::InvalidDimensions)?,
+                &row,
+            )?;
+        }
+        Ok(())
+    }
+    /// Read one bounded row, converting Windows BGRX or indexed RGB to RGBA.
     pub fn rgba_row(
         &self,
         memory: &dyn MemoryAccess,
@@ -127,6 +233,36 @@ impl Dib {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn indexed_pixels_use_rgb_table_and_fills_preserve_padding_and_orientation() {
+        for height in [2i32, -2] {
+            let mut bytes = vec![0xaa; 1200];
+            bytes[..40].fill(0);
+            bytes[..4].copy_from_slice(&40u32.to_le_bytes());
+            bytes[4..8].copy_from_slice(&3i32.to_le_bytes());
+            bytes[8..12].copy_from_slice(&height.to_le_bytes());
+            bytes[12..14].copy_from_slice(&1u16.to_le_bytes());
+            bytes[14..16].copy_from_slice(&8u16.to_le_bytes());
+            // Full 256-entry RGBQUAD table. Black is deliberately at index 9.
+            bytes[40..1064].fill(255);
+            bytes[40 + 9 * 4..44 + 9 * 4].fill(0);
+            bytes[40 + 200 * 4..44 + 200 * 4].copy_from_slice(&[30, 20, 10, 0]);
+            bytes[1100..1108].copy_from_slice(&[200, 200, 200, 0xee, 200, 200, 200, 0xdd]);
+            let mut memory = crate::GuestMemory::new(&mut bytes);
+            let dib = Dib::from_header(&memory, 0, 1100).unwrap();
+            let mut pixels = [0; 12];
+            dib.rgba_row(&memory, 0, 0, &mut pixels).unwrap();
+            assert_eq!(pixels, [10, 20, 30, 255].repeat(3).as_slice());
+            dib.fill_rect(&mut memory, -1, 0, 2, 1, false).unwrap();
+            dib.rgba_row(&memory, 0, 0, &mut pixels).unwrap();
+            assert_eq!(pixels, [0, 0, 0, 255, 10, 20, 30, 255, 10, 20, 30, 255]);
+            let mut padding = [0];
+            memory.read(1103, &mut padding).unwrap();
+            assert_eq!(padding, [0xee]);
+            memory.read(1107, &mut padding).unwrap();
+            assert_eq!(padding, [0xdd]);
+        }
+    }
     #[test]
     fn dib_orientation_color_and_bounds() {
         for height in [2i32, -2] {

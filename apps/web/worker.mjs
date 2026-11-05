@@ -10,6 +10,9 @@ self.onmessage=async({data})=>{
       fetchBytes(new URL(manifest.module,manifestURL)),fetchBytes(new URL(manifest.image,manifestURL)),fetchBytes(new URL(data.hostURL,self.location.href)),
       Promise.all((manifest.files??[]).map(async file=>({path:file.path,bytes:await fetchBytes(new URL(file.url,manifestURL))}))),
     ]);
+    const artifacts=Object.fromEntries(await Promise.all(Object.entries({guest:moduleBytes,image:imageBytes,host:hostBytes}).map(async([name,bytes])=>[
+      name,{bytes:bytes.byteLength,sha256:Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),byte=>byte.toString(16).padStart(2,'0')).join('')},
+    ])));
     runBundle({manifest,moduleBytes,imageBytes,hostBytes,files,input:data.input,gpuOnly:Boolean(data.webgl),
       onFrame:frame=>self.postMessage({type:'frame',...frame},[frame.pixels.buffer]),
       ...(data.webgl?{onGpuFrame:frame=>{
@@ -18,7 +21,8 @@ self.onmessage=async({data})=>{
         Atomics.wait(gpuPacing,0,sequence);
       }}:{}),
       onStatus:status=>self.postMessage({type:'status',...status}),
+      onDiagnostic:report=>self.postMessage({type:'diagnostic',report:{...report,artifacts}}),
       onDialog:dialog=>{self.postMessage({type:'dialog',...dialog});},
     });
-  }catch(error){self.postMessage({type:'error',message:error.stack??String(error)});}
+  }catch(error){self.postMessage({type:'error',message:error.message??String(error),stack:error.stack??String(error)});}
 };

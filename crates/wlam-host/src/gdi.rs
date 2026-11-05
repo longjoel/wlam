@@ -28,29 +28,92 @@ pub struct Surface {
     pub rgba: Vec<u8>,
     pub dirty: bool,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
     pub left: i32,
     pub top: i32,
     pub right: i32,
     pub bottom: i32,
 }
+fn rop3(table: u8, pattern: u8, source: u8, destination: u8) -> u8 {
+    let mut result = 0;
+    for index in 0..8 {
+        if table & (1 << index) != 0 {
+            result |= (if index & 4 != 0 { pattern } else { !pattern })
+                & (if index & 2 != 0 { source } else { !source })
+                & (if index & 1 != 0 {
+                    destination
+                } else {
+                    !destination
+                });
+        }
+    }
+    result
+}
+fn intersect(a: Rect, b: Rect) -> Rect {
+    Rect {
+        left: a.left.max(b.left),
+        top: a.top.max(b.top),
+        right: a.right.min(b.right),
+        bottom: a.bottom.min(b.bottom),
+    }
+}
 #[derive(Debug)]
 enum Object {
-    Brush { color: u32 },
-    Pen { style: u32, width: u32, color: u32 },
-    Bitmap { dib: Dib, selected: Option<u32> },
-    Font { height: i32, width: i32, weight: u32, italic: bool, selected: Option<u32> },
+    Brush {
+        color: u32,
+        null: bool,
+    },
+    Pen {
+        style: u32,
+        width: u32,
+        color: u32,
+    },
+    Bitmap {
+        dib: Dib,
+    },
+    Font {
+        height: i32,
+        width: i32,
+        weight: u32,
+        italic: bool,
+    },
     StockBitmap,
-    MemoryDc { bitmap: u32, stock: u32 },
-    WindowDc { window: u32, clip: Rect },
+    MemoryDc {
+        stock: u32,
+    },
+    WindowDc {
+        window: u32,
+        clip: Rect,
+    },
+}
+#[derive(Debug, Clone)]
+pub struct DcState {
+    pub text_color: u32,
+    pub background_color: u32,
+    pub background_mode: u32,
+    pub text_align: u32,
+    pub stretch_mode: u32,
+    pub rop2: u32,
+    pub current_position: (i32, i32),
+    pub clip: Option<Rect>,
+    pub bitmap: Option<u32>,
+    pub palette: Option<u32>,
+    pub brush: u32,
+    pub pen: u32,
+    pub font: u32,
+}
+#[derive(Debug)]
+struct Dc {
+    state: DcState,
+    saved: Vec<DcState>,
 }
 #[derive(Debug)]
 pub struct Gdi {
     objects: Handles<Object>,
     surfaces: BTreeMap<u32, Surface>,
     stock_objects: BTreeMap<u32, u32>,
-    selected_fonts: BTreeMap<u32, u32>,
+    dcs: BTreeMap<u32, Dc>,
 }
 impl Default for Gdi {
     fn default() -> Self {
@@ -58,7 +121,7 @@ impl Default for Gdi {
             objects: Handles::with_namespace(2),
             surfaces: BTreeMap::new(),
             stock_objects: BTreeMap::new(),
-            selected_fonts: BTreeMap::new(),
+            dcs: BTreeMap::new(),
         }
     }
 }
@@ -81,7 +144,10 @@ impl Gdi {
                     index => index,
                 };
                 self.objects
-                    .insert(Object::Brush { color })
+                    .insert(Object::Brush {
+                        color,
+                        null: index == 5,
+                    })
                     .ok_or(Error::Exhausted)?
             }
             6 => self
@@ -108,7 +174,15 @@ impl Gdi {
                     color: 0,
                 })
                 .ok_or(Error::Exhausted)?,
-            17 => self.objects.insert(Object::Font {height:-14,width:0,weight:400,italic:false,selected:None}).ok_or(Error::Exhausted)?,
+            10..=14 | 16 | 17 => self
+                .objects
+                .insert(Object::Font {
+                    height: -14,
+                    width: 0,
+                    weight: 400,
+                    italic: false,
+                })
+                .ok_or(Error::Exhausted)?,
             _ => return Err(Error::InvalidHandle),
         };
         self.stock_objects.insert(index, handle);
@@ -276,11 +350,25 @@ impl Gdi {
         self.objects
             .insert(Object::Brush {
                 color: color & 0xffffff,
+                null: false,
             })
             .ok_or(Error::Exhausted)
     }
-    pub fn font(&mut self,height:i32,width:i32,weight:u32,italic:bool)->Result<u32,Error>{
-        self.objects.insert(Object::Font {height,width,weight,italic,selected:None}).ok_or(Error::Exhausted)
+    pub fn font(
+        &mut self,
+        height: i32,
+        width: i32,
+        weight: u32,
+        italic: bool,
+    ) -> Result<u32, Error> {
+        self.objects
+            .insert(Object::Font {
+                height,
+                width,
+                weight,
+                italic,
+            })
+            .ok_or(Error::Exhausted)
     }
     pub fn is_dc(&self, handle: u32) -> bool {
         matches!(
@@ -358,27 +446,82 @@ impl Gdi {
         self.surfaces.remove(&window).ok_or(Error::InvalidHandle)?;
         Ok(())
     }
+    fn init_dc(&mut self, handle: u32, bitmap: Option<u32>) -> Result<u32, Error> {
+        let brush = self.stock_object(0)?;
+        let pen = self.stock_object(7)?;
+        let font = self.stock_object(13)?;
+        self.dcs.insert(
+            handle,
+            Dc {
+                state: DcState {
+                    text_color: 0,
+                    background_color: 0xffffff,
+                    background_mode: 2,
+                    text_align: 0,
+                    stretch_mode: 1,
+                    rop2: 13,
+                    current_position: (0, 0),
+                    clip: None,
+                    bitmap,
+                    palette: None,
+                    brush,
+                    pen,
+                    font,
+                },
+                saved: Vec::new(),
+            },
+        );
+        Ok(handle)
+    }
+    pub fn dc_state(&self, handle: u32) -> Result<&DcState, Error> {
+        self.dcs
+            .get(&handle)
+            .map(|dc| &dc.state)
+            .ok_or(Error::InvalidHandle)
+    }
+    pub fn dc_state_mut(&mut self, handle: u32) -> Result<&mut DcState, Error> {
+        self.dcs
+            .get_mut(&handle)
+            .map(|dc| &mut dc.state)
+            .ok_or(Error::InvalidHandle)
+    }
+    pub fn save_dc(&mut self, handle: u32) -> Result<u32, Error> {
+        let dc = self.dcs.get_mut(&handle).ok_or(Error::InvalidHandle)?;
+        dc.saved.push(dc.state.clone());
+        Ok(dc.saved.len() as u32)
+    }
+    pub fn restore_dc(&mut self, handle: u32, level: i32) -> Result<bool, Error> {
+        let dc = self.dcs.get_mut(&handle).ok_or(Error::InvalidHandle)?;
+        let index = if level < 0 {
+            dc.saved.len() as i64 + level as i64
+        } else {
+            level as i64 - 1
+        };
+        if index < 0 || index >= dc.saved.len() as i64 {
+            return Ok(false);
+        }
+        dc.state = dc.saved[index as usize].clone();
+        dc.saved.truncate(index as usize);
+        Ok(true)
+    }
     pub fn memory_dc(&mut self) -> Result<u32, Error> {
         let stock = self
             .objects
             .insert(Object::StockBitmap)
             .ok_or(Error::Exhausted)?;
-        match self.objects.insert(Object::MemoryDc {
-            bitmap: stock,
-            stock,
-        }) {
-            Some(dc) => Ok(dc),
-            None => {
-                self.objects.remove(stock);
-                Err(Error::Exhausted)
-            }
-        }
+        let handle = self
+            .objects
+            .insert(Object::MemoryDc { stock })
+            .ok_or(Error::Exhausted)?;
+        self.init_dc(handle, Some(stock))
     }
     pub fn paint_dc(&mut self, window: u32, clip: Rect) -> Result<u32, Error> {
         self.surfaces.get(&window).ok_or(Error::InvalidHandle)?;
-        self.objects
+        let handle = self
+            .objects
             .insert(Object::WindowDc { window, clip })
-            .ok_or(Error::Exhausted)
+            .ok_or(Error::Exhausted)?;
+        self.init_dc(handle, None)
     }
     pub fn bitmap(
         &mut self,
@@ -388,83 +531,361 @@ impl Gdi {
     ) -> Result<u32, Error> {
         let dib = Dib::from_header(memory, header, bits)?;
         self.objects
-            .insert(Object::Bitmap {
-                dib,
-                selected: None,
-            })
+            .insert(Object::Bitmap { dib })
             .ok_or(Error::Exhausted)
     }
-    pub fn select(&mut self, dc: u32, bitmap: u32) -> Result<u32, Error> {
-        if matches!(self.objects.get(dc),Some(Object::MemoryDc {..}|Object::WindowDc {..}))
-            && matches!(self.objects.get(bitmap),Some(Object::Font {..})) {
-            let default=self.stock_object(17)?;
-            let previous=self.selected_fonts.get(&dc).copied().unwrap_or(default);
-            if previous!=bitmap {
-                if let Some(Object::Font {selected,..})=self.objects.get_mut(previous){*selected=None;}
-                if let Some(Object::Font {selected,..})=self.objects.get_mut(bitmap){*selected=Some(dc);}
-                self.selected_fonts.insert(dc,bitmap);
-            }
-            return Ok(previous)
-        }
-        let (previous, stock) = match self.objects.get(dc) {
-            Some(Object::MemoryDc { bitmap, stock }) => (*bitmap, *stock),
+    fn state_references(state: &DcState, object: u32) -> bool {
+        state.bitmap == Some(object)
+            || state.palette == Some(object)
+            || [state.brush, state.pen, state.font].contains(&object)
+    }
+    pub fn select(&mut self, dc: u32, object: u32) -> Result<u32, Error> {
+        self.dc_state(dc)?;
+        let kind = match self.objects.get(object) {
+            Some(Object::Brush { .. }) => 0,
+            Some(Object::Pen { .. }) => 1,
+            Some(Object::Font { .. }) => 2,
+            Some(Object::Bitmap { .. } | Object::StockBitmap) => 3,
             _ => return Err(Error::WrongType),
         };
-        if bitmap == previous {
-            return Ok(previous);
+        if kind == 3 {
+            let Some(Object::MemoryDc { stock }) = self.objects.get(dc) else {
+                return Err(Error::WrongType);
+            };
+            if matches!(self.objects.get(object), Some(Object::StockBitmap)) && object != *stock {
+                return Err(Error::WrongType);
+            }
+            if self.dcs.iter().any(|(handle, value)| {
+                *handle != dc
+                    && (value.state.bitmap == Some(object)
+                        || value.saved.iter().any(|state| state.bitmap == Some(object)))
+            }) {
+                return Err(Error::SelectedObject);
+            }
         }
-        match self.objects.get(bitmap) {
-            Some(Object::Bitmap { selected: None, .. }) => {}
-            Some(Object::StockBitmap) if bitmap == stock => {}
-            Some(Object::Bitmap { .. }) => return Err(Error::SelectedObject),
-            _ => return Err(Error::WrongType),
-        }
-        if let Some(Object::Bitmap { selected, .. }) = self.objects.get_mut(previous) {
-            *selected = None;
-        }
-        if let Some(Object::Bitmap { selected, .. }) = self.objects.get_mut(bitmap) {
-            *selected = Some(dc);
-        }
-        if let Some(Object::MemoryDc {
-            bitmap: current, ..
-        }) = self.objects.get_mut(dc)
-        {
-            *current = bitmap;
-        }
-        Ok(previous)
+        let state = self.dc_state_mut(dc)?;
+        let slot = match kind {
+            0 => &mut state.brush,
+            1 => &mut state.pen,
+            2 => &mut state.font,
+            _ => return Ok(state.bitmap.replace(object).unwrap()),
+        };
+        Ok(std::mem::replace(slot, object))
     }
-    pub fn delete_object(&mut self, bitmap: u32) -> Result<(), Error> {
-        match self.objects.get(bitmap) {
-            Some(Object::Brush { .. } | Object::Pen { .. }) => {}
-            Some(Object::Font { selected: None, .. }) => {}
-            Some(Object::Font { .. }) => return Err(Error::SelectedObject),
-            Some(Object::Bitmap { selected: None, .. }) => {}
-            Some(Object::Bitmap { .. }) => return Err(Error::SelectedObject),
-            _ => return Err(Error::WrongType),
+    pub fn delete_object(&mut self, object: u32) -> Result<(), Error> {
+        if self.stock_objects.values().any(|handle| *handle == object) {
+            return Ok(());
         }
-        self.objects.remove(bitmap);
+        if !matches!(
+            self.objects.get(object),
+            Some(
+                Object::Brush { .. }
+                    | Object::Pen { .. }
+                    | Object::Font { .. }
+                    | Object::Bitmap { .. }
+            )
+        ) {
+            return Err(Error::WrongType);
+        }
+        if self.dcs.values().any(|dc| {
+            Self::state_references(&dc.state, object)
+                || dc
+                    .saved
+                    .iter()
+                    .any(|state| Self::state_references(state, object))
+        }) {
+            return Err(Error::SelectedObject);
+        }
+        self.objects.remove(object);
         Ok(())
     }
     pub fn delete_dc(&mut self, dc: u32) -> Result<(), Error> {
         match self.objects.get(dc) {
-            Some(Object::MemoryDc { bitmap, stock }) => {
-                let (bitmap, stock) = (*bitmap, *stock);
-                if let Some(Object::Bitmap { selected, .. }) = self.objects.get_mut(bitmap) {
-                    *selected = None;
-                }
+            Some(Object::MemoryDc { stock }) => {
+                let stock = *stock;
                 self.objects.remove(stock);
             }
             Some(Object::WindowDc { .. }) => {}
             _ => return Err(Error::WrongType),
         }
+        self.dcs.remove(&dc);
         self.objects.remove(dc);
         Ok(())
     }
-    /// First interactive slice: a selected DIB copied into a clipped window DC.
-    /// Unsupported destinations are refused rather than silently approximated.
+    pub fn references_object(&self, object: u32) -> bool {
+        self.dcs.values().any(|dc| {
+            Self::state_references(&dc.state, object)
+                || dc
+                    .saved
+                    .iter()
+                    .any(|state| Self::state_references(state, object))
+        })
+    }
+    fn target_bounds(&self, dc: u32) -> Result<Rect, Error> {
+        match self.objects.get(dc) {
+            Some(Object::WindowDc { window, clip }) => {
+                let surface = self.surfaces.get(window).ok_or(Error::InvalidHandle)?;
+                Ok(intersect(
+                    *clip,
+                    Rect {
+                        left: 0,
+                        top: 0,
+                        right: surface.width as i32,
+                        bottom: surface.height as i32,
+                    },
+                ))
+            }
+            Some(Object::MemoryDc { .. }) => {
+                let bitmap = self.dc_state(dc)?.bitmap.ok_or(Error::WrongType)?;
+                match self.objects.get(bitmap) {
+                    Some(Object::Bitmap { dib }) => Ok(Rect {
+                        left: 0,
+                        top: 0,
+                        right: dib.width as i32,
+                        bottom: dib.height as i32,
+                    }),
+                    _ => Err(Error::UnsupportedOperation),
+                }
+            }
+            _ => Err(Error::InvalidHandle),
+        }
+    }
+    pub fn clip_bounds(&self, dc: u32) -> Result<Rect, Error> {
+        let bounds = self.target_bounds(dc)?;
+        Ok(self
+            .dc_state(dc)?
+            .clip
+            .map_or(bounds, |clip| intersect(bounds, clip)))
+    }
+    pub fn intersect_clip(&mut self, dc: u32, rect: Rect) -> Result<u32, Error> {
+        let clip = intersect(self.clip_bounds(dc)?, rect);
+        self.dc_state_mut(dc)?.clip = Some(clip);
+        Ok(if clip.left >= clip.right || clip.top >= clip.bottom {
+            1
+        } else {
+            2
+        })
+    }
+    fn read_row(
+        &self,
+        memory: &dyn MemoryAccess,
+        dc: u32,
+        x: u32,
+        y: u32,
+        output: &mut [u8],
+    ) -> Result<(), Error> {
+        match self.objects.get(dc) {
+            Some(Object::WindowDc { window, .. }) => {
+                let surface = self.surfaces.get(window).ok_or(Error::InvalidHandle)?;
+                let offset = (y as usize * surface.width as usize + x as usize) * 4;
+                output.copy_from_slice(
+                    surface
+                        .rgba
+                        .get(offset..offset + output.len())
+                        .ok_or(Error::InvalidDimensions)?,
+                );
+                Ok(())
+            }
+            Some(Object::MemoryDc { .. }) => {
+                let Some(Object::Bitmap { dib }) = self
+                    .objects
+                    .get(self.dc_state(dc)?.bitmap.ok_or(Error::WrongType)?)
+                else {
+                    return Err(Error::UnsupportedOperation);
+                };
+                Ok(dib.rgba_row(memory, x, y, output)?)
+            }
+            _ => Err(Error::InvalidHandle),
+        }
+    }
+    fn write_row(
+        &mut self,
+        memory: &mut dyn MemoryAccess,
+        dc: u32,
+        x: u32,
+        y: u32,
+        pixels: &[u8],
+    ) -> Result<(), Error> {
+        match self.objects.get(dc) {
+            Some(Object::WindowDc { window, .. }) => {
+                let surface = self.surfaces.get_mut(window).ok_or(Error::InvalidHandle)?;
+                let offset = (y as usize * surface.width as usize + x as usize) * 4;
+                surface
+                    .rgba
+                    .get_mut(offset..offset + pixels.len())
+                    .ok_or(Error::InvalidDimensions)?
+                    .copy_from_slice(pixels);
+                surface.dirty = true;
+                Ok(())
+            }
+            Some(Object::MemoryDc { .. }) => {
+                let Some(Object::Bitmap { dib }) = self
+                    .objects
+                    .get(self.dc_state(dc)?.bitmap.ok_or(Error::WrongType)?)
+                else {
+                    return Err(Error::UnsupportedOperation);
+                };
+                Ok(dib.write_rgba_row(memory, x, y, pixels)?)
+            }
+            _ => Err(Error::InvalidHandle),
+        }
+    }
+    pub fn fill_dc(
+        &mut self,
+        memory: &mut dyn MemoryAccess,
+        dc: u32,
+        rect: Rect,
+        color: u32,
+    ) -> Result<(), Error> {
+        let rect = intersect(self.clip_bounds(dc)?, rect);
+        if rect.left >= rect.right || rect.top >= rect.bottom {
+            return Ok(());
+        }
+        let pixel = [
+            (color & 255) as u8,
+            ((color >> 8) & 255) as u8,
+            ((color >> 16) & 255) as u8,
+            255,
+        ];
+        let row = pixel.repeat((rect.right - rect.left) as usize);
+        for y in rect.top..rect.bottom {
+            self.write_row(memory, dc, rect.left as u32, y as u32, &row)?;
+        }
+        Ok(())
+    }
+    pub fn text_out(
+        &mut self,
+        memory: &mut dyn MemoryAccess,
+        dc: u32,
+        x: i32,
+        y: i32,
+        text: &[u8],
+        options: u32,
+        rect: Option<Rect>,
+        advances: Option<&[i32]>,
+    ) -> Result<(), Error> {
+        if options & !6 != 0 || (options != 0 && rect.is_none()) {
+            return Err(Error::UnsupportedOperation);
+        }
+        if advances.is_some_and(|values| values.len() != text.len()) {
+            return Err(Error::InvalidDimensions);
+        }
+        let state = self.dc_state(dc)?.clone();
+        let (mut x, mut y) = if state.text_align & 1 != 0 {
+            state.current_position
+        } else {
+            (x, y)
+        };
+        let widths: Vec<i32> = advances.map_or_else(
+            || {
+                text.iter()
+                    .map(|byte| crate::font::extent(&[*byte]).0 as i32)
+                    .collect()
+            },
+            |values| values.to_vec(),
+        );
+        let width = widths
+            .iter()
+            .try_fold(0i32, |sum, value| sum.checked_add(*value))
+            .ok_or(Error::InvalidDimensions)?;
+        match state.text_align & 6 {
+            0 => {}
+            2 => x = x.checked_sub(width).ok_or(Error::InvalidDimensions)?,
+            6 => x = x.checked_sub(width / 2).ok_or(Error::InvalidDimensions)?,
+            _ => return Err(Error::UnsupportedOperation),
+        }
+        let metrics = crate::font::metrics();
+        let height = crate::font::extent(b"").1 as i32;
+        let ascent = u32::from_le_bytes(metrics[4..8].try_into().unwrap()) as i32;
+        match state.text_align & 24 {
+            0 => {}
+            8 => y = y.checked_sub(height).ok_or(Error::InvalidDimensions)?,
+            24 => y = y.checked_sub(ascent).ok_or(Error::InvalidDimensions)?,
+            _ => return Err(Error::UnsupportedOperation),
+        }
+        if options & 2 != 0 {
+            self.fill_dc(memory, dc, rect.unwrap(), state.background_color)?;
+        }
+        let mut clip = self.clip_bounds(dc)?;
+        if options & 4 != 0 {
+            clip = intersect(clip, rect.unwrap());
+        }
+        let text_right = x.checked_add(width).ok_or(Error::InvalidDimensions)?;
+        let text_bottom = y.checked_add(height).ok_or(Error::InvalidDimensions)?;
+        // Paint only the text background through ETO_CLIPPED; ETO_OPAQUE's
+        // explicit rectangle is independent of the glyph bounding box.
+        if state.background_mode == 2 && options & 2 == 0 {
+            self.fill_dc(
+                memory,
+                dc,
+                intersect(
+                    clip,
+                    Rect {
+                        left: x,
+                        top: y,
+                        right: text_right,
+                        bottom: text_bottom,
+                    },
+                ),
+                state.background_color,
+            )?;
+        }
+        let fg = [
+            (state.text_color & 255) as u8,
+            ((state.text_color >> 8) & 255) as u8,
+            ((state.text_color >> 16) & 255) as u8,
+            255,
+        ];
+        let mut cursor = x;
+        for (byte, advance) in text.iter().zip(widths) {
+            let glyph = crate::font::glyph(*byte);
+            for gy in 0..16i32 {
+                let py = y as i64 + gy as i64;
+                let left = (cursor as i64).max(clip.left as i64);
+                let right = (cursor as i64 + 16).min(clip.right as i64);
+                if py < clip.top as i64 || py >= clip.bottom as i64 || left >= right {
+                    continue;
+                }
+                let mut row = vec![0; (right - left) as usize * 4];
+                self.read_row(memory, dc, left as u32, py as u32, &mut row)?;
+                for (gx, pixel) in row.chunks_exact_mut(4).enumerate() {
+                    if glyph[gy as usize * 16 + (left - cursor as i64) as usize + gx] >= 128 {
+                        pixel.copy_from_slice(&fg);
+                    }
+                }
+                self.write_row(memory, dc, left as u32, py as u32, &row)?;
+            }
+            cursor = cursor
+                .checked_add(advance)
+                .ok_or(Error::InvalidDimensions)?;
+        }
+        if state.text_align & 1 != 0 {
+            self.dc_state_mut(dc)?.current_position.0 = text_right;
+        }
+        Ok(())
+    }
+    /// Solid black/white raster operations for DIB and window DCs.
+    pub fn pat_blt(
+        &mut self,
+        memory: &mut dyn MemoryAccess,
+        dc: u32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        rop: u32,
+    ) -> Result<(), Error> {
+        let table = (rop >> 16) as u8;
+        if rop == 0 || rop & 0xff00_0000 != 0 || (table & 0x33) != ((table >> 2) & 0x33) {
+            return Err(Error::UnsupportedOperation);
+        }
+        self.bit_blt(memory, dc, x, y, width, height, dc, x, y, rop)
+    }
+    /// Copy through a ternary raster operation. Snapshot the source first so
+    /// overlapping copies within a DIB or window do not smear their own input.
     pub fn bit_blt(
         &mut self,
-        memory: &dyn MemoryAccess,
+        memory: &mut dyn MemoryAccess,
         dst: u32,
         x: i32,
         y: i32,
@@ -475,75 +896,225 @@ impl Gdi {
         sy: i32,
         rop: u32,
     ) -> Result<(), Error> {
-        if rop != SRCCOPY {
+        if rop == 0 || rop & 0xff00_0000 != 0 {
             return Err(Error::UnsupportedOperation);
         }
         if width < 0 || height < 0 {
             return Err(Error::InvalidDimensions);
         }
-        let bitmap = match self.objects.get(src) {
-            Some(Object::MemoryDc { bitmap, .. }) => *bitmap,
-            _ => return Err(Error::WrongType),
+        let bounds = self.clip_bounds(dst)?;
+        let table = (rop >> 16) as u8;
+        let needs_source = (table & 0x33) != ((table >> 2) & 0x33);
+        let source = if needs_source {
+            if let Some(Object::WindowDc { window, .. }) = self.objects.get(src) {
+                let surface = self.surfaces.get(window).ok_or(Error::InvalidHandle)?;
+                Rect {
+                    left: 0,
+                    top: 0,
+                    right: surface.width as i32,
+                    bottom: surface.height as i32,
+                }
+            } else {
+                self.target_bounds(src)?
+            }
+        } else {
+            Rect {
+                left: i32::MIN,
+                top: i32::MIN,
+                right: i32::MAX,
+                bottom: i32::MAX,
+            }
         };
-        let dib = match self.objects.get(bitmap) {
-            Some(Object::Bitmap { dib, .. }) => dib.clone(),
-            _ => return Err(Error::UnsupportedOperation),
-        };
-        let (window, clip) = match self.objects.get(dst) {
-            Some(Object::WindowDc { window, clip }) => (*window, *clip),
-            _ => return Err(Error::UnsupportedOperation),
-        };
-        let surface = self.surfaces.get(&window).ok_or(Error::InvalidHandle)?;
         let left = 0i64
-            .max(-(x as i64))
-            .max(-(sx as i64))
-            .max(clip.left as i64 - x as i64);
+            .max(bounds.left as i64 - x as i64)
+            .max(source.left as i64 - sx as i64);
         let top = 0i64
-            .max(-(y as i64))
-            .max(-(sy as i64))
-            .max(clip.top as i64 - y as i64);
+            .max(bounds.top as i64 - y as i64)
+            .max(source.top as i64 - sy as i64);
         let right = (width as i64)
-            .min(surface.width as i64 - x as i64)
-            .min(dib.width as i64 - sx as i64)
-            .min(clip.right as i64 - x as i64);
+            .min(bounds.right as i64 - x as i64)
+            .min(source.right as i64 - sx as i64);
         let bottom = (height as i64)
-            .min(surface.height as i64 - y as i64)
-            .min(dib.height as i64 - sy as i64)
-            .min(clip.bottom as i64 - y as i64);
+            .min(bounds.bottom as i64 - y as i64)
+            .min(source.bottom as i64 - sy as i64);
         if left >= right || top >= bottom {
             return Ok(());
         }
         let stride = (right - left) as usize * 4;
-        let length = stride
+        let len = stride
             .checked_mul((bottom - top) as usize)
             .ok_or(Error::InvalidDimensions)?;
         let mut pixels = Vec::new();
         pixels
-            .try_reserve_exact(length)
+            .try_reserve_exact(len)
             .map_err(|_| Error::Exhausted)?;
-        pixels.resize(length, 0);
+        pixels.resize(len, 0);
         for (row, output) in pixels.chunks_exact_mut(stride).enumerate() {
-            dib.rgba_row(
-                memory,
-                (sx as i64 + left) as u32,
-                (sy as i64 + top + row as i64) as u32,
-                output,
-            )?;
+            if needs_source {
+                self.read_row(
+                    memory,
+                    src,
+                    (sx as i64 + left) as u32,
+                    (sy as i64 + top + row as i64) as u32,
+                    output,
+                )?;
+            }
         }
-        let surface = self.surfaces.get_mut(&window).unwrap();
+        let needs_pattern = (table & 15) != (table >> 4);
+        let pattern = if needs_pattern {
+            match self.objects.get(self.dc_state(dst)?.brush) {
+                Some(Object::Brush { color, null: false }) => [
+                    (color & 255) as u8,
+                    ((color >> 8) & 255) as u8,
+                    ((color >> 16) & 255) as u8,
+                ],
+                _ => return Err(Error::UnsupportedOperation),
+            }
+        } else {
+            [0; 3]
+        };
+        let mut destination = vec![0; stride];
         for (row, input) in pixels.chunks_exact(stride).enumerate() {
-            let at = (((y as i64 + top) as usize + row) * surface.width as usize
-                + (x as i64 + left) as usize)
-                * 4;
-            surface.rgba[at..at + stride].copy_from_slice(input);
+            let dx = (x as i64 + left) as u32;
+            let dy = (y as i64 + top + row as i64) as u32;
+            self.read_row(memory, dst, dx, dy, &mut destination)?;
+            for (source, target) in input.chunks_exact(4).zip(destination.chunks_exact_mut(4)) {
+                for channel in 0..3 {
+                    target[channel] =
+                        rop3(table, pattern[channel], source[channel], target[channel]);
+                }
+                target[3] = 255;
+            }
+            self.write_row(memory, dst, dx, dy, &destination)?;
         }
-        surface.dirty = true;
         Ok(())
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn saved_selections_keep_objects_alive_and_fonts_can_be_shared() {
+        let mut bytes = vec![0; 128];
+        bytes[0..4].copy_from_slice(&40u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&2u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&(-1i32).to_le_bytes());
+        bytes[12..14].copy_from_slice(&1u16.to_le_bytes());
+        bytes[14..16].copy_from_slice(&32u16.to_le_bytes());
+        let memory = crate::GuestMemory::new(&mut bytes);
+        let mut gdi = Gdi::default();
+        let a = gdi.memory_dc().unwrap();
+        let b = gdi.memory_dc().unwrap();
+        let font = gdi.font(-14, 0, 400, false).unwrap();
+        let old_a = gdi.select(a, font).unwrap();
+        let old_b = gdi.select(b, font).unwrap();
+        assert_eq!(gdi.delete_object(font), Err(Error::SelectedObject));
+        gdi.select(a, old_a).unwrap();
+        assert_eq!(gdi.delete_object(font), Err(Error::SelectedObject));
+        gdi.select(b, old_b).unwrap();
+        gdi.delete_object(font).unwrap();
+        let bitmap = gdi.bitmap(&memory, 0, 64).unwrap();
+        let stock = gdi.select(a, bitmap).unwrap();
+        let saved = gdi.save_dc(a).unwrap();
+        gdi.select(a, stock).unwrap();
+        assert_eq!(gdi.delete_object(bitmap), Err(Error::SelectedObject));
+        assert_eq!(gdi.select(b, bitmap), Err(Error::SelectedObject));
+        assert!(gdi.restore_dc(a, saved as i32).unwrap());
+        assert_eq!(gdi.dc_state(a).unwrap().bitmap, Some(bitmap));
+        assert!(!gdi.restore_dc(a, 0).unwrap());
+        assert!(!gdi.restore_dc(a, -1).unwrap());
+        gdi.select(a, stock).unwrap();
+        gdi.select(b, bitmap).unwrap();
+        gdi.delete_dc(b).unwrap();
+        gdi.delete_object(bitmap).unwrap();
+    }
+    #[test]
+    fn text_opaque_and_clipped_glyphs_agree_on_window_and_dib_targets() {
+        let mut bytes = vec![0; 4096];
+        bytes[0..4].copy_from_slice(&40u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&16u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&(-16i32).to_le_bytes());
+        bytes[12..14].copy_from_slice(&1u16.to_le_bytes());
+        bytes[14..16].copy_from_slice(&32u16.to_le_bytes());
+        let mut memory = crate::GuestMemory::new(&mut bytes);
+        let mut gdi = Gdi::default();
+        gdi.create_surface(1, 16, 16).unwrap();
+        let window = gdi
+            .paint_dc(
+                1,
+                Rect {
+                    left: 0,
+                    top: 0,
+                    right: 16,
+                    bottom: 16,
+                },
+            )
+            .unwrap();
+        let dc = gdi.memory_dc().unwrap();
+        let bitmap = gdi.bitmap(&memory, 0, 64).unwrap();
+        gdi.select(dc, bitmap).unwrap();
+        let rect = Rect {
+            left: 2,
+            top: 2,
+            right: 8,
+            bottom: 10,
+        };
+        for target in [window, dc] {
+            let state = gdi.dc_state_mut(target).unwrap();
+            state.text_color = 0xffffff;
+            state.background_color = 0x0000ff00;
+            gdi.text_out(&mut memory, target, 0, 0, b"M", 6, Some(rect), None)
+                .unwrap();
+        }
+        let mut rgba = [0; 64];
+        for y in 0..16 {
+            gdi.read_row(&memory, dc, 0, y, &mut rgba).unwrap();
+            assert_eq!(
+                &rgba,
+                &gdi.surface(1).unwrap().rgba[y as usize * 64..y as usize * 64 + 64]
+            );
+            for x in 0..16 {
+                if !(2..8).contains(&x) || !(2..10).contains(&y) {
+                    assert_eq!(&rgba[x as usize * 4..x as usize * 4 + 4], &[0, 0, 0, 255]);
+                }
+            }
+        }
+        assert!(gdi
+            .surface(1)
+            .unwrap()
+            .rgba
+            .chunks_exact(4)
+            .any(|pixel| pixel == [255, 255, 255, 255]));
+    }
+    #[test]
+    fn solid_pat_blt_respects_window_clip_and_rejects_other_rops() {
+        let mut bytes = vec![0; 1];
+        let mut memory = crate::GuestMemory::new(&mut bytes);
+        let mut gdi = Gdi::default();
+        gdi.create_surface(1, 2, 1).unwrap();
+        let dc = gdi
+            .paint_dc(
+                1,
+                Rect {
+                    left: 1,
+                    top: 0,
+                    right: 2,
+                    bottom: 1,
+                },
+            )
+            .unwrap();
+        gdi.pat_blt(&mut memory, dc, -1, 0, 5, 1, 0xff0062).unwrap();
+        assert_eq!(
+            gdi.surface(1).unwrap().rgba,
+            [0, 0, 0, 255, 255, 255, 255, 255]
+        );
+        assert_eq!(
+            gdi.pat_blt(&mut memory, dc, 0, 0, 2, 1, SRCCOPY),
+            Err(Error::UnsupportedOperation)
+        );
+        gdi.pat_blt(&mut memory, dc, 0, 0, 2, 1, 0x42).unwrap();
+        assert_eq!(gdi.surface(1).unwrap().rgba, [0, 0, 0, 255, 0, 0, 0, 255]);
+    }
     #[test]
     fn clipped_dib_blit_and_object_lifetimes() {
         let mut bytes = vec![0; 128];
@@ -553,7 +1124,7 @@ mod tests {
         bytes[12..14].copy_from_slice(&1u16.to_le_bytes());
         bytes[14..16].copy_from_slice(&32u16.to_le_bytes());
         bytes[64..72].copy_from_slice(&[1, 2, 3, 0, 4, 5, 6, 0]);
-        let memory = crate::GuestMemory::new(&mut bytes);
+        let mut memory = crate::GuestMemory::new(&mut bytes);
         let mut gdi = Gdi::default();
         gdi.create_surface(1, 2, 1).unwrap();
         let src = gdi.memory_dc().unwrap();
@@ -573,11 +1144,11 @@ mod tests {
             .unwrap();
         gdi.acknowledge_present(1).unwrap();
         assert_eq!(
-            gdi.bit_blt(&memory, dst, 0, 0, 2, 1, src, 0, 0, 0),
+            gdi.bit_blt(&mut memory, dst, 0, 0, 2, 1, src, 0, 0, 0),
             Err(Error::UnsupportedOperation)
         );
         assert!(!gdi.surface(1).unwrap().dirty);
-        gdi.bit_blt(&memory, dst, 0, 0, 2, 1, src, 0, 0, SRCCOPY)
+        gdi.bit_blt(&mut memory, dst, 0, 0, 2, 1, src, 0, 0, SRCCOPY)
             .unwrap();
         assert_eq!(gdi.surface(1).unwrap().rgba, [3, 2, 1, 255, 0, 0, 0, 255]);
         gdi.select(src, stock).unwrap();

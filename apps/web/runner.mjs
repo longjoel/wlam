@@ -1,8 +1,18 @@
 import {dequeue,waitForInput,RESIZE_GUEST_WINDOW} from './queue.mjs';
 import {dialogButtons,DIALOG_RESPONSE} from './dialog.mjs';
-export function runBundle({manifest,moduleBytes,imageBytes,hostBytes,files=[],input,onFrame,onGpuFrame,gpuOnly=false,onStatus,onTrace,onDialog,onCallback,onApi}) {
+import {guestSnapshot} from './diagnostics.mjs';
+export function runBundle({manifest,moduleBytes,imageBytes,hostBytes,files=[],input,onFrame,onGpuFrame,gpuOnly=false,onStatus,onTrace,onDialog,onCallback,onApi,onDiagnostic}) {
   if(manifest.version!==1)throw Error('Unsupported bundle version');
   let guest,host,window=0,depth=0;
+  const recentApis=[],recentCallbacks=[];
+  let failedApi=null,faultSnapshot=null;
+  function diagnostic(kind,reason=null){
+    return {version:1,time:new Date().toISOString(),kind,reason,failedApi,
+      guest:faultSnapshot??guestSnapshot(guest.memory,manifest.registers),
+      recentApis:recentApis.map(api=>({...api})),recentCallbacks:[...recentCallbacks],
+      imageBase:manifest.imageBase,display:manifest.display??{bitsPerPixel:32},
+      limitations:'EBP frames are unverified candidates; optimized code may omit frame pointers. This log is not an instruction trace.'};
+  }
   const deferredInput=[];
   const image=new Uint8Array(imageBytes);
   const decode=(p,n)=>new TextDecoder().decode(new Uint8Array(host.memory.buffer,p,n));
@@ -17,6 +27,10 @@ export function runBundle({manifest,moduleBytes,imageBytes,hostBytes,files=[],in
     read_guest:(a,p,n)=>copy(a,p,n,false),write_guest:(a,p,n)=>copy(a,p,n,true),guest_length:()=>BigInt(guest.memory.buffer.byteLength),
   }}).exports;
   host.initialize(manifest.imageBase);
+  if(manifest.display?.bitsPerPixel!==undefined){
+    if(!host.set_display_bits)throw Error('Host does not support display profiles');
+    if(host.set_display_bits(manifest.display.bitsPerPixel)!==1)throw error();
+  }
   if(gpuOnly&&host.set_gpu_mode)host.set_gpu_mode(1);
   else if(onGpuFrame&&host.set_gpu_capture)host.set_gpu_capture(1);
   const apis=new Map();
@@ -81,6 +95,7 @@ export function runBundle({manifest,moduleBytes,imageBytes,hostBytes,files=[],in
         const vector=0x20000+depth*256;
         const data=new DataView(guest.memory.buffer);args.forEach((v,i)=>data.setUint32(vector+i*4,v,true));
         onCallback?.({procedure,args});
+        recentCallbacks.push({procedure,args});if(recentCallbacks.length>32)recentCallbacks.shift();
         let result;try{result=guest.invoke_guest(procedure,args.length,vector);}finally{depth--;}
         onCallback?.({procedure,result});
         kind=host.resume(token,result);continue;
@@ -91,6 +106,7 @@ export function runBundle({manifest,moduleBytes,imageBytes,hostBytes,files=[],in
         // animation frame. Keep the redraw behavior for CPU-backed canvases.
         if(!gpuOnly)present();
         onStatus({state:'waiting',window});
+        onDiagnostic?.(diagnostic('waiting'));
         const event=deferredInput.shift()??waitForInput(input,host.wait_timeout?.()??Infinity);
         if(event){
           if(event.message===RESIZE_GUEST_WINDOW){
@@ -136,13 +152,22 @@ export function runBundle({manifest,moduleBytes,imageBytes,hostBytes,files=[],in
           const bytes=new Uint8Array(view.buffer,pointer,Math.min(1024,view.byteLength-pointer)),end=bytes.indexOf(0);
           return end>0&&bytes.slice(0,end).every(b=>b===9||b===10||b===13||b>=32&&b<127)?new TextDecoder().decode(bytes.slice(0,end)):'';
         });
+        failedApi??={library:entry.library,name:entry.name,args:words,argumentCountKnown:false,returnAddress:at>=4?view.getUint32(at-4,true):null,status:'unsupported'};
+        faultSnapshot??=guestSnapshot(guest.memory,manifest.registers);
         throw Error(`Unsupported import ${entry.library}!${entry.name} (arguments at 0x${at.toString(16)}: ${words.map(w=>'0x'+w.toString(16)).join(', ')}; strings: ${JSON.stringify(strings)})`);
       }
       const count=Math.max(0,((entry.returnPop??4)-4)/4);
       const view=new DataView(guest.memory.buffer),at=args>>>0;
       const api={library:entry.library,name:entry.name,args:Array.from({length:count},(_,i)=>view.getUint32(at+i*4,true)),returnAddress:at>=4?view.getUint32(at-4,true):0,registers:Object.fromEntries(['EIP','ESP','EBP','ESI','EDI'].flatMap(name=>{const r=manifest.registers.find(r=>r.name===name);return r?[[name,view.getUint32(r.address,true)]]:[]}))};
       if(entry.name==='OpenFile'||entry.name==='CreateFileA') {const p=api.args[0],end=new Uint8Array(view.buffer,p,Math.min(260,view.byteLength-p)).indexOf(0);api.path=new TextDecoder().decode(new Uint8Array(view.buffer,p,end<0?260:end));}
-      const result=invoke(index,args>>>0,entry.name);
+      const event={...api,status:'entered'};
+      recentApis.push(event);if(recentApis.length>64)recentApis.shift();
+      let result;
+      try{result=invoke(index,args>>>0,entry.name);event.result=result;event.status='returned';}
+      catch(cause){
+        if(cause!==exit){event.status='failed';failedApi??={...event};faultSnapshot??=guestSnapshot(guest.memory,manifest.registers);}
+        throw cause;
+      }
       // The optional second argument is available to in-process diagnostics
       // that need to decode pointer-backed API parameters. Existing callbacks
       // consume the event object only, so browser worker messages stay small.
@@ -186,6 +211,7 @@ export function runBundle({manifest,moduleBytes,imageBytes,hostBytes,files=[],in
   onStatus({state:'running'});
   try{guest.entry();}catch(cause){
     if(cause!==exit){
+      onDiagnostic?.(diagnostic('failure',cause.message??String(cause)));
       const view=new DataView(guest.memory.buffer);
       const registers=manifest.registers.filter(r=>/^E(AX|BX|CX|DX|SI|DI|BP|SP|IP)$/.test(r.name));
       const state=registers.map(r=>`${r.name}=0x${view.getUint32(r.address,true).toString(16)}`).join(' ');
@@ -207,5 +233,6 @@ export function runBundle({manifest,moduleBytes,imageBytes,hostBytes,files=[],in
     }
   }
   onStatus({state:'exited',code:exitCode});
+  onDiagnostic?.(diagnostic('exited'));
   return {exitCode};
 }

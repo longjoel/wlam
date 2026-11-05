@@ -151,14 +151,19 @@ OpenGL 1.1 or extensions until their required behavior is covered.
 
 ### Rendering strategy and current progress
 
-The current TOLYMPIC path uses a host-side fixed-function state machine and CPU
-rasterizer, rather than forwarding immediate mode to browser WebGL. It handles
-the target's immediate-mode vertex and normal submission, display list, matrix
+The guest GL calls are handled by a host-side fixed-function state machine.
+The default path rasterizes on the CPU; the optional
+`?renderer=webgl&manifest=/target/tolympic/bundle/manifest.json` path sends
+ordered transformed batches to a browser WebGL renderer. The demonstrated
+subset covers TOLYMPIC's triangles and quad strips. Both paths handle the
+target's immediate-mode vertex and normal submission, display list, matrix
 helpers, depth, culling, lighting, material colors, blending, fog and basic
-surface presentation. An external TOLYMPIC bundle now executes in Chromium and
+surface presentation. An external TOLYMPIC bundle executes in Chromium and
 produces the settled five-ring layout after the guest's Space-triggered offsets
-decay to zero. See the captured frame in
+decay to zero. See the CPU capture in
 [`benchmarks/glint/tolympic-settled.png`](../benchmarks/glint/tolympic-settled.png).
+The WebGL frame-90 capture is in
+[`benchmarks/glint/tolympic-webgl-frame90.png`](../benchmarks/glint/tolympic-webgl-frame90.png).
 The CPU rasterizer applies inverse-transpose normal transformation and
 perspective-correct interpolation for smooth colors and fog distance. It
 respects the default disabled `GL_NORMALIZE` state and supports enabling normal

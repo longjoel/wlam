@@ -34,5 +34,6 @@ for name in ("hover.hlp", "hover.cnt", "hovrread.txt", "wavemix.inf"):
 manifest_path = bundle / "manifest.json"
 manifest = json.loads(manifest_path.read_text())
 manifest["files"] = assets
+manifest["display"] = {"bitsPerPixel": 8}
 manifest_path.write_text(json.dumps(manifest, separators=(",", ":")))
 print(f"Packaged {len(assets)} Hover data files")

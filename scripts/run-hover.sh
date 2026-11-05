@@ -40,7 +40,7 @@ else
 fi
 
 echo "Opening $url"
-echo "Select Start / Restart, then acknowledge Hover's display warning."
+echo "Select Start / Restart, focus the canvas, then press F2 to enter Start Game."
 if command -v xdg-open >/dev/null 2>&1; then
   xdg-open "$url" >/dev/null 2>&1 || true
 elif command -v open >/dev/null 2>&1; then

@@ -7,6 +7,23 @@ use crate::{
 use std::collections::BTreeMap;
 pub const DESKTOP_WINDOW: u32 = 0x10000001;
 
+const DEFAULT_PALETTE_COLORS: [u32; 20] = [
+    0x000000, 0x800000, 0x008000, 0x808000, 0x000080, 0x800080, 0x008080,
+    0xc0c0c0, 0xc0dcc0, 0xa6caf0, 0xfffbf0, 0xa0a0a4, 0x808080, 0xff0000,
+    0x00ff00, 0xffff00, 0x0000ff, 0xff00ff, 0x00ffff, 0xffffff,
+];
+fn initial_system_palette() -> [[u8; 4]; 256] {
+    let mut colors = [[0; 4]; 256];
+    for (index, color) in colors.iter_mut().enumerate() {
+        *color = [index as u8, index as u8, index as u8, 0];
+    }
+    for (index, rgb) in DEFAULT_PALETTE_COLORS.into_iter().enumerate() {
+        colors[if index < 10 { index } else { index + 236 }] =
+            [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, 0];
+    }
+    colors
+}
+
 fn classic_window_margins(style: u32, has_menu: bool) -> (i32, i32, i32, i32) {
     const WS_BORDER: u32 = 0x0080_0000;
     const WS_DLGFRAME: u32 = 0x0040_0000;
@@ -49,6 +66,8 @@ pub enum Effect {
 #[derive(Debug)]
 enum Finish {
     Plain,
+    Accelerator,
+    Redraw { window: u32, dc: u32 },
     Create(u32),
     Destroy(u32),
     Update,
@@ -178,7 +197,9 @@ pub struct Runtime {
     icons: crate::objects::Handles<(u32, u32)>,
     shared_icons: BTreeMap<(u32, u32), u32>,
     palettes: crate::objects::Handles<Vec<[u8; 4]>>,
-    selected_palettes: BTreeMap<u32, u32>,
+    default_palette: Option<u32>,
+    display_bits: u32,
+    system_palette: [[u8; 4]; 256],
     callbacks: BTreeMap<u64, CallbackPending>,
     callback_stack: Vec<u64>,
     next_callback: u64,
@@ -234,7 +255,9 @@ impl Default for Runtime {
             icons: crate::objects::Handles::with_namespace(9),
             shared_icons: BTreeMap::new(),
             palettes: crate::objects::Handles::with_namespace(11),
-            selected_palettes: BTreeMap::new(),
+            default_palette: None,
+            display_bits: 32,
+            system_palette: initial_system_palette(),
             callbacks: BTreeMap::new(),
             callback_stack: Vec::new(),
             next_callback: 1 << 63,
@@ -385,6 +408,13 @@ impl Runtime {
 
     pub fn register_file(&mut self, path: &[u8], bytes: Vec<u8>) {
         self.files.insert(path, bytes);
+    }
+    /// Select the guest display profile before executing the program. Browser
+    /// presentation remains RGBA, including for the indexed guest display.
+    pub fn set_display_bits(&mut self, bits: u32) -> Result<(), String> {
+        if !matches!(bits, 8 | 32) { return Err("display depth must be 8 or 32".into()); }
+        self.display_bits = bits;
+        Ok(())
     }
     pub fn next_timer_delay(&self) -> u32 {
         self.timers
@@ -927,7 +957,14 @@ impl Runtime {
                             .remove_surface(window)
                             .map_err(|e| format!("{e:?}"))?;
                     }
-                    Finish::Update => return Ok(Effect::Return(1)),
+                    Finish::Redraw { window, dc } => {
+                        self.gdi.delete_dc(dc).map_err(|e| format!("redraw DC: {e:?}"))?;
+                        self.common_dcs.remove(&dc);
+                        let action = self.windows.send(Message { window, message: 15, wparam: 0, lparam: 0 })
+                            .map_err(|e| format!("redraw paint: {e:?}"))?;
+                        return self.action(action, Finish::Update);
+                    }
+                    Finish::Update | Finish::Accelerator => return Ok(Effect::Return(1)),
                     _ => {}
                 }
                 Ok(Effect::Return(value))
@@ -1628,7 +1665,34 @@ impl Runtime {
                 if a(1) > 0xffff { return Err("LoadAcceleratorsA: named accelerator resources are unsupported".into()); }
                 self.resources.named(9, a(1)).map_or_else(|| { self.thread.last_error = 1813; 0 }, |resource| resource.address)
             }
-            ("user32", "TranslateAcceleratorA") => 0,
+            ("user32", "TranslateAcceleratorA") => {
+                let message = read(memory, a(2) + 4)?;
+                if !matches!(message, 0x100 | 0x104 | 0x102 | 0x106) {
+                    return Ok(Effect::Return(0));
+                }
+                let key = read(memory, a(2) + 8)?;
+                let table = self.resources.at_address(9, a(1))
+                    .ok_or("TranslateAcceleratorA: invalid accelerator table")?;
+                if table.size % 8 != 0 { return Err("malformed accelerator table".into()); }
+                let modifiers = [(16, 4), (17, 8), (18, 16)].into_iter()
+                    .fold(0, |flags, (key, flag)| flags | if self.keys[key] & 0x80 != 0 { flag } else { 0 });
+                for offset in (0..table.size).step_by(8) {
+                    let entry = table.address.checked_add(offset).ok_or("accelerator address overflow")?;
+                    let flags_key = read(memory, entry)?;
+                    let flags = flags_key & 0xffff;
+                    let virtual_key = flags & 1 != 0;
+                    if flags_key >> 16 == key && flags & 0x1c == modifiers
+                        && virtual_key == matches!(message, 0x100 | 0x104) {
+                        let command = read(memory, entry + 4)? & 0xffff;
+                        let action = self.windows.send(Message {
+                            window: a(0), message: 0x111, wparam: command | 0x10000, lparam: 0,
+                        }).map_err(|e| format!("accelerator dispatch: {e:?}"))?;
+                        return self.action(action, Finish::Accelerator);
+                    }
+                    if flags & 0x80 != 0 { break; }
+                }
+                0
+            }
             ("user32", "SetWindowsHookExA") => {
                 if !matches!(a(0), u32::MAX | 5)
                     || a(3) != 1
@@ -1731,18 +1795,40 @@ impl Runtime {
                     return Err("invalid DC or palette handle".into());
                 }
                 if a(1) == 0 {
-                    return Ok(Effect::Return(self.selected_palettes.get(&a(0)).copied().unwrap_or(0)));
+                    return Ok(Effect::Return(0));
                 }
                 if self.palettes.get(a(1)).is_none() {
                     return Err("invalid DC or palette handle".into());
                 }
-                self.selected_palettes.insert(a(0), a(1)).unwrap_or(0)
+                let Effect::Return(default) = self.call("gdi32", "GetStockObject", &[15], memory)? else { unreachable!() };
+                self.gdi.dc_state_mut(a(0)).map_err(|e| format!("palette DC: {e:?}"))?.palette.replace(a(1)).unwrap_or(default)
             }
             ("gdi32", "RealizePalette") => {
                 if !self.gdi.is_dc(a(0)) {
                     return Err("invalid palette DC".into());
                 }
-                0 // The virtual display is true-color; it has no realizable system palette.
+                if self.display_bits != 8 { return Ok(Effect::Return(0)); }
+                let Some(handle) = self.gdi.dc_state(a(0)).map_err(|e| format!("palette DC: {e:?}"))?.palette else { return Ok(Effect::Return(0)); };
+                let entries = self.palettes.get(handle).ok_or("invalid selected palette")?;
+                let mut used = [false; 256];
+                let mut changed = 0;
+                for entry in entries {
+                    // PC_EXPLICIT entries name a physical palette index rather
+                    // than an RGB color. Static system colors stay reserved.
+                    if entry[3] & 2 != 0 { continue; }
+                    if entry[3] & 5 == 0 {
+                        if let Some(index) = self.system_palette.iter().position(|color| color[..3] == entry[..3]) {
+                            used[index] = true;
+                            continue;
+                        }
+                    }
+                    let Some(next) = (10..246).find(|index| !used[*index]) else { break; };
+                    let color = [entry[0], entry[1], entry[2], 0];
+                    if self.system_palette[next] != color { changed += 1; }
+                    self.system_palette[next] = color;
+                    used[next] = true;
+                }
+                changed
             }
             ("gdi32", "GetPaletteEntries") => {
                 let entries = self.palettes.get(a(0)).ok_or("invalid palette handle")?;
@@ -1796,7 +1882,13 @@ impl Runtime {
                 if !self.gdi.is_dc(a(0)) {
                     return Err("invalid palette DC".into());
                 }
-                0
+                if self.display_bits != 8 { return Ok(Effect::Return(0)); }
+                if a(3) == 0 { return Ok(Effect::Return(256)); }
+                let start = (a(1) as usize).min(256);
+                let count = (a(2) as usize).min(256 - start);
+                let bytes: Vec<u8> = self.system_palette[start..start + count].iter().flatten().copied().collect();
+                memory.write(a(3), &bytes).map_err(|e| format!("system palette output: {e:?}"))?;
+                count as u32
             }
             ("user32", "GetSysColor") => {
                 const CLASSIC: [u32; 25] = [
@@ -1812,6 +1904,60 @@ impl Runtime {
                 .gdi
                 .solid_brush(a(0))
                 .map_err(|e| format!("solid brush: {e:?}"))?,
+            ("gdi32", "SaveDC") => self.gdi.save_dc(a(0)).map_err(|e| format!("SaveDC: {e:?}"))?,
+            ("gdi32", "RestoreDC") => self.gdi.restore_dc(a(0), a(1) as i32).map_err(|e| format!("RestoreDC: {e:?}"))? as u32,
+            ("gdi32", "GetTextColor" | "GetBkColor" | "GetBkMode" | "GetTextAlign" | "GetStretchBltMode" | "GetROP2"
+                | "SetTextColor" | "SetBkColor" | "SetBkMode" | "SetTextAlign" | "SetStretchBltMode" | "SetROP2") => {
+                let state = self.gdi.dc_state_mut(a(0)).map_err(|e| format!("DC attribute: {e:?}"))?;
+                let value = if name.starts_with("Set") { a(1) } else { 0 };
+                let slot = match name {
+                    "GetTextColor" | "SetTextColor" => &mut state.text_color,
+                    "GetBkColor" | "SetBkColor" => &mut state.background_color,
+                    "GetBkMode" | "SetBkMode" => {
+                        if name.starts_with("Set") && !matches!(value, 1 | 2) { return Ok(Effect::Return(0)); }
+                        &mut state.background_mode
+                    }
+                    "GetTextAlign" | "SetTextAlign" => {
+                        if name.starts_with("Set") && (value & !31 != 0 || !matches!(value & 6, 0 | 2 | 6) || !matches!(value & 24, 0 | 8 | 24)) { return Err("unsupported text alignment".into()); }
+                        &mut state.text_align
+                    }
+                    "GetStretchBltMode" | "SetStretchBltMode" => {
+                        if name.starts_with("Set") && !(1..=4).contains(&value) { return Ok(Effect::Return(0)); }
+                        &mut state.stretch_mode
+                    }
+                    _ => {
+                        if name.starts_with("Set") && !(1..=16).contains(&value) { return Ok(Effect::Return(0)); }
+                        &mut state.rop2
+                    }
+                };
+                if name.starts_with("Set") {
+                    if matches!(name, "SetTextColor" | "SetBkColor") && value & 0xff000000 != 0 { return Err("palette-index COLORREF not yet supported".into()); }
+                    std::mem::replace(slot, value)
+                } else { *slot }
+            }
+            ("gdi32", "IntersectClipRect") => self.gdi.intersect_clip(a(0), Rect { left: a(1) as i32, top: a(2) as i32, right: a(3) as i32, bottom: a(4) as i32 }).map_err(|e| format!("clip: {e:?}"))?,
+            ("gdi32", "GetClipBox") => {
+                let clip = self.gdi.clip_bounds(a(0)).map_err(|e| format!("clip: {e:?}"))?;
+                write_rect(memory, a(1), [clip.left, clip.top, clip.right, clip.bottom])?;
+                if clip.left >= clip.right || clip.top >= clip.bottom { 1 } else { 2 }
+            }
+            ("gdi32", "TextOutA" | "ExtTextOutA") => {
+                let extended = name == "ExtTextOutA";
+                let (pointer, count) = if extended { (a(5), a(6)) } else { (a(3), a(4)) };
+                if count > 8192 { return Err("text output exceeds 8192 bytes".into()); }
+                let mut text = vec![0; count as usize];
+                memory.read(pointer, &mut text).map_err(|e| format!("text input: {e:?}"))?;
+                let options = if extended { a(3) } else { 0 };
+                let rect = if extended && a(4) != 0 {
+                    let [left, top, right, bottom] = read_rect(memory, a(4))?;
+                    Some(Rect { left, top, right, bottom })
+                } else { None };
+                let advances = if extended && a(7) != 0 {
+                    Some((0..count).map(|i| read(memory, a(7).checked_add(i * 4).ok_or("text advance overflow")?).map(|v| v as i32)).collect::<Result<Vec<_>, String>>()?)
+                } else { None };
+                self.gdi.text_out(memory, a(0), a(1) as i32, a(2) as i32, &text, options, rect, advances.as_deref()).map_err(|e| format!("text output: {e:?}"))?;
+                1
+            }
             ("gdi32", "GetTextExtentPointA") => {
                 if !self.gdi.is_dc(a(0)) {
                     return Err("text extent: invalid DC".into());
@@ -1976,12 +2122,14 @@ impl Runtime {
                     6 => 127,
                     8 => 640,
                     10 => 480,
-                    12 | 108 => 32,
+                    12 => self.display_bits,
+                    108 => 32,
                     14 => 1,
-                    24 => u32::MAX,
-                    38 => 0x41,
+                    24 => if self.display_bits == 8 { 20 } else { u32::MAX },
+                    38 => 0x41 | if self.display_bits == 8 { 0x100 } else { 0 },
                     88 | 90 => 96,
-                    104 | 106 => 0,
+                    104 => if self.display_bits == 8 { 256 } else { 0 },
+                    106 => if self.display_bits == 8 { 20 } else { 0 },
                     index => return Err(format!("unsupported virtual display capability {index}")),
                 }
             }
@@ -2385,6 +2533,9 @@ impl Runtime {
             ("winmm", "waveOutGetNumDevs" | "midiOutGetNumDevs") => 0,
             ("winmm", "joyGetDevCapsA" | "joyGetPos") => 6,
             ("winmm", "timeGetTime") => self.clock_ms as u32,
+            // No multimedia timer can have ID zero. Applications commonly
+            // cancel their zero-initialized timer during game reset.
+            ("winmm", "timeKillEvent") if a(0) == 0 => 97, // TIMERR_NOCANDO
             ("kernel32", "GetTickCount") => self.clock_ms as u32,
             ("wlam.x87", "sin" | "cos" | "tan") => {
                 let mut input = [0; 8];
@@ -2543,7 +2694,7 @@ impl Runtime {
             (
                 "kernel32",
                 "GetLastError" | "SetLastError" | "GetCurrentThread" | "GetCurrentProcess"
-                | "GetCurrentThreadId" | "TlsAlloc" | "TlsFree" | "TlsGetValue" | "TlsSetValue",
+                | "GetCurrentThreadId" | "SetThreadPriority" | "TlsAlloc" | "TlsFree" | "TlsGetValue" | "TlsSetValue",
             ) => self.thread.call(name, args)?,
             ("kernel32", "ExitProcess") => return Ok(Effect::Exit(a(0))),
             ("user32", "RegisterClassA" | "RegisterClassExA") => {
@@ -3334,6 +3485,12 @@ impl Runtime {
             ("user32", "IsWindowVisible") => {
                 self.windows.is_visible(a(0)) as u32
             }
+            ("user32", "IsWindowEnabled") => {
+                self.windows.get(a(0)).is_ok_and(|window| {
+                    let style = self.window_data.get(&a(0)).map_or(window.style, |data| data.style);
+                    style & 0x0800_0000 == 0 // WS_DISABLED
+                }) as u32
+            }
             ("user32", "DefWindowProcA") => {
                 if a(1) == crate::window::WM_PAINT {
                     self.windows.validate_paint(a(0));
@@ -3361,6 +3518,25 @@ impl Runtime {
                 self.windows
                     .invalidate(a(0))
                     .map_err(|e| format!("invalidate: {e:?}"))?;
+                1
+            }
+            ("user32", "RedrawWindow") => {
+                if a(1) != 0 || a(2) != 0 || a(3) & !0x105 != 0
+                    || (a(3) & 4 != 0 && a(3) & 0x101 != 0x101) {
+                    return Err("RedrawWindow: only whole-window invalidation and immediate update supported".into());
+                }
+                if a(3) & 1 != 0 {
+                    self.windows.invalidate(a(0)).map_err(|e| format!("redraw: {e:?}"))?;
+                }
+                if a(3) & 0x100 != 0 {
+                    if a(3) & 5 == 5 {
+                        let Effect::Return(dc) = self.call("user32", "GetDC", &[a(0)], memory)? else { unreachable!() };
+                        let action = self.windows.send(Message { window: a(0), message: 20, wparam: dc, lparam: 0 })
+                            .map_err(|e| format!("redraw erase: {e:?}"))?;
+                        return self.action(action, Finish::Redraw { window: a(0), dc });
+                    }
+                    return self.call("user32", "UpdateWindow", &[a(0)], memory);
+                }
                 1
             }
             ("user32", "UpdateWindow") => {
@@ -3543,6 +3719,13 @@ impl Runtime {
                     .memory_dc()
                     .map_err(|e| format!("create DC: {e:?}"))?
             }
+            ("gdi32", "GetStockObject") if a(0) == 15 => {
+                if let Some(handle) = self.default_palette { return Ok(Effect::Return(handle)); }
+                let entries = DEFAULT_PALETTE_COLORS.into_iter().map(|rgb| [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, 0]).collect();
+                let handle = self.palettes.insert(entries).ok_or("palette handle table full")?;
+                self.default_palette = Some(handle);
+                handle
+            }
             ("gdi32", "GetStockObject") => self
                 .gdi
                 .stock_object(a(0))
@@ -3578,30 +3761,24 @@ impl Runtime {
                 if a(1) == 0 {
                     return Ok(Effect::Return(0));
                 }
-                // MFC can pass its guest-side CFont wrapper pointer here;
-                // that address is not a host GDI handle. Keep the existing
-                // font selected on the DC for this opaque wrapper case.
-                if (0x0800_0000..0x1000_0000).contains(&a(1)) {
-                    return Ok(Effect::Return(0));
-                }
                 match self.gdi.select(a(0), a(1)) {
                     Ok(previous) => previous,
-                    // MFC keeps CFont wrapper pointers in its window objects;
-                    // a wrapper pointer is not itself an HFONT. Keep the
-                    // current DC font; text rendering already uses the same
-                    // stock GUI font when no explicit HFONT is selected.
-                    Err(crate::gdi::Error::WrongType) if a(1) >= 0x8000_0000 => 0,
+                    Err(crate::gdi::Error::InvalidHandle | crate::gdi::Error::WrongType | crate::gdi::Error::SelectedObject) => 0,
                     Err(e) => return Err(format!("select: {e:?}")),
                 }
             }
+
             ("gdi32", "DeleteObject") => {
+                if self.default_palette == Some(a(0)) { return Ok(Effect::Return(1)); }
+                if self.palettes.get(a(0)).is_some() && self.gdi.references_object(a(0)) { return Ok(Effect::Return(0)); }
                 if self.palettes.remove(a(0)).is_some() {
-                    self.selected_palettes.retain(|_, palette| *palette != a(0));
                     return Ok(Effect::Return(1));
                 }
-                self.gdi
-                    .delete_object(a(0))
-                    .map_err(|e| format!("delete object: {e:?}"))?;
+                match self.gdi.delete_object(a(0)) {
+                    Ok(()) => {},
+                    Err(crate::gdi::Error::InvalidHandle | crate::gdi::Error::WrongType | crate::gdi::Error::SelectedObject) => return Ok(Effect::Return(0)),
+                    Err(e) => return Err(format!("delete object: {e:?}")),
+                }
                 if let Some(bits) = self.bitmap_allocations.remove(&a(0)) {
                     self.arena.release(bits)?;
                 }
@@ -3611,6 +3788,11 @@ impl Runtime {
                 self.gdi
                     .delete_dc(a(0))
                     .map_err(|e| format!("delete DC: {e:?}"))?;
+                1
+            }
+            ("gdi32", "PatBlt") => {
+                self.gdi.pat_blt(memory, a(0), a(1) as i32, a(2) as i32, a(3) as i32, a(4) as i32, a(5))
+                    .map_err(|e| format!("PatBlt: {e:?}"))?;
                 1
             }
             ("gdi32", "BitBlt") => {
@@ -3675,6 +3857,108 @@ mod tests {
         match effect {
             Effect::Return(value) => value,
             _ => panic!("expected return: {effect:?}"),
+        }
+    }
+    #[test]
+    fn accelerator_dispatches_command_and_returns_handled_after_callback() {
+        let mut runtime = Runtime::default();
+        let mut memory = Memory::default();
+        runtime.windows.register(b"keys".to_vec(), 0x401000).unwrap();
+        let Action::Invoke { token, args, .. } = runtime.windows.create(b"keys", 10, 10, 0).unwrap() else { panic!("create") };
+        let hwnd = args[0];
+        let Action::Invoke { token, .. } = runtime.windows.resume(token, 1).unwrap() else { panic!("create") };
+        runtime.windows.resume(token, 0).unwrap();
+        // Two resource records: F2 and Shift+F2. The callback may return zero;
+        // TranslateAccelerator must still return nonzero and consume the key.
+        memory.write(0x2000, &[1, 0, 113, 0, 9, 128, 0, 0, 0x85, 0, 113, 0, 10, 128, 0, 0]).unwrap();
+        runtime.resources.register(9, 128, 1033, 0x2000, 16).unwrap();
+        assert_eq!(runtime.call("user32", "LoadAcceleratorsA", &[0, 128], &mut memory).unwrap(), Effect::Return(0x2000));
+        for (offset, word) in [(0, hwnd), (4, 0x100), (8, 113), (12, 0)] { write(&mut memory, 0x3000 + offset, word).unwrap(); }
+        for (shift, command) in [(0, 0x8009), (0x80, 0x800a)] {
+            runtime.keys[16] = shift;
+            let Effect::Invoke { token, procedure, args } = runtime.call("user32", "TranslateAcceleratorA", &[hwnd, 0x2000, 0x3000], &mut memory).unwrap() else { panic!("command callback") };
+            assert_eq!(procedure, 0x401000);
+            assert_eq!(args, vec![hwnd, 0x111, 0x10000 | command, 0]);
+            assert_eq!(runtime.resume(token, 0).unwrap(), Effect::Return(1));
+        }
+        for (message, key) in [(0x101, 113), (0x100, 114)] {
+            write(&mut memory, 0x3004, message).unwrap();
+            write(&mut memory, 0x3008, key).unwrap();
+            assert_eq!(runtime.call("user32", "TranslateAcceleratorA", &[hwnd, 0x2000, 0x3000], &mut memory).unwrap(), Effect::Return(0));
+        }
+        assert_eq!(runtime.call("winmm", "timeKillEvent", &[0], &mut memory).unwrap(), Effect::Return(97));
+        assert!(runtime.call("winmm", "timeKillEvent", &[1], &mut memory).is_err());
+    }
+    #[test]
+    fn redraw_erases_before_paint_and_stock_palette_stays_alive() {
+        let mut runtime = Runtime::default();
+        let mut memory = Memory::default();
+        runtime.windows.register(b"paint".to_vec(), 0x401000).unwrap();
+        let Action::Invoke { token, args, .. } = runtime.windows.create(b"paint", 10, 10, 0).unwrap() else { panic!("create") };
+        let hwnd = args[0];
+        let Action::Invoke { token, .. } = runtime.windows.resume(token, 1).unwrap() else { panic!("create") };
+        runtime.windows.resume(token, 0).unwrap();
+        let Effect::Invoke { token, args, .. } = runtime.call("user32", "RedrawWindow", &[hwnd, 0, 0, 0x105], &mut memory).unwrap() else { panic!("erase callback") };
+        assert_eq!(args[1], 20);
+        let dc = args[2];
+        assert!(runtime.gdi.is_dc(dc));
+        let Effect::Invoke { token, args, .. } = runtime.resume(token, 1).unwrap() else { panic!("paint callback") };
+        assert_eq!(args, vec![hwnd, 15, 0, 0]);
+        assert!(!runtime.gdi.is_dc(dc));
+        assert_eq!(runtime.resume(token, 0).unwrap(), Effect::Return(1));
+        let palette = value(runtime.call("gdi32", "GetStockObject", &[15], &mut memory).unwrap());
+        assert_eq!(runtime.call("gdi32", "GetStockObject", &[15], &mut memory).unwrap(), Effect::Return(palette));
+        assert_eq!(runtime.palettes.get(palette).unwrap().len(), 20);
+        assert_eq!(runtime.call("gdi32", "GetPaletteEntries", &[palette, 19, 1, 0x4000], &mut memory).unwrap(), Effect::Return(1));
+        assert_eq!(read(&memory, 0x4000).unwrap(), 0x00ffffff);
+        runtime.call("gdi32", "DeleteObject", &[palette], &mut memory).unwrap();
+        assert!(runtime.palettes.get(palette).is_some());
+    }
+    #[test]
+    fn indexed_display_caps_and_realized_system_palette_are_consistent() {
+        let mut runtime = Runtime::default();
+        let mut memory = Memory::default();
+        let dc = value(runtime.call("gdi32", "CreateCompatibleDC", &[0], &mut memory).unwrap());
+        assert_eq!(runtime.call("gdi32", "GetDeviceCaps", &[dc, 12], &mut memory).unwrap(), Effect::Return(32));
+        assert_eq!(runtime.call("gdi32", "GetSystemPaletteEntries", &[dc, 0, 0, 0], &mut memory).unwrap(), Effect::Return(0));
+        runtime.set_display_bits(8).unwrap();
+        for (cap, expected) in [(12, 8), (14, 1), (24, 20), (38, 0x141), (104, 256), (106, 20)] {
+            assert_eq!(runtime.call("gdi32", "GetDeviceCaps", &[dc, cap], &mut memory).unwrap(), Effect::Return(expected));
+        }
+        assert!(runtime.set_display_bits(16).is_err());
+        assert_eq!(runtime.call("gdi32", "GetSystemPaletteEntries", &[dc, 0, 0, 0], &mut memory).unwrap(), Effect::Return(256));
+        let reserved_low = runtime.system_palette[..10].to_vec();
+        let reserved_high = runtime.system_palette[246..].to_vec();
+        memory.write(0x2000, &[0, 3, 2, 0, 12, 34, 56, 1, 65, 43, 21, 4]).unwrap();
+        let palette = value(runtime.call("gdi32", "CreatePalette", &[0x2000], &mut memory).unwrap());
+        runtime.call("gdi32", "SelectPalette", &[dc, palette, 0], &mut memory).unwrap();
+        assert_eq!(runtime.call("gdi32", "RealizePalette", &[dc], &mut memory).unwrap(), Effect::Return(2));
+        assert_eq!(runtime.call("gdi32", "RealizePalette", &[dc], &mut memory).unwrap(), Effect::Return(0));
+        assert_eq!(runtime.call("gdi32", "GetSystemPaletteEntries", &[dc, 10, 2, 0x3000], &mut memory).unwrap(), Effect::Return(2));
+        assert_eq!(read(&memory, 0x3000).unwrap(), 0x0038220c);
+        assert_eq!(read(&memory, 0x3004).unwrap(), 0x00152b41);
+        assert_eq!(&runtime.system_palette[..10], reserved_low);
+        assert_eq!(&runtime.system_palette[246..], reserved_high);
+    }
+    #[test]
+    fn window_enabled_query_tracks_disabled_style_without_requiring_visibility() {
+        let mut runtime = Runtime::default();
+        let mut memory = Memory::default();
+        memory.write(0x11000, b"enabled-test\0").unwrap();
+        for (address, value) in [(0x2000, 48), (0x2008, 0x401000), (0x2028, 0x11000)] {
+            write(&mut memory, address, value).unwrap();
+        }
+        runtime.call("user32", "RegisterClassExA", &[0x2000], &mut memory).unwrap();
+        let (pending, hwnd) = token(runtime.call("user32", "CreateWindowExA",
+            &[0, 0x11000, 0, 0, 0, 0, 10, 10, 0, 0, 0x400000, 0], &mut memory).unwrap(), 129);
+        let (pending, _) = token(runtime.resume(pending, 1).unwrap(), 1);
+        assert_eq!(runtime.resume(pending, 0).unwrap(), Effect::Return(hwnd));
+        for (style, enabled) in [(0x08000000, 0), (0, 1), (0x18000000, 0), (0x10000000, 1)] {
+            runtime.call("user32", "SetWindowLongA", &[hwnd, (-16i32) as u32, style], &mut memory).unwrap();
+            assert_eq!(runtime.call("user32", "IsWindowEnabled", &[hwnd], &mut memory).unwrap(), Effect::Return(enabled));
+        }
+        for hwnd in [0, 0xdeadbeef] {
+            assert_eq!(runtime.call("user32", "IsWindowEnabled", &[hwnd], &mut memory).unwrap(), Effect::Return(0));
         }
     }
     #[test]

@@ -92,6 +92,7 @@ pub fn signature(dll: &str, symbol: &str) -> Option<Signature> {
         ("wlam.x87", "sin" | "cos" | "tan" | "atan2") => 2,
         ("winmm", "joyGetDevCapsA") => 3,
         ("winmm", "joyGetPos") => 2,
+        ("winmm", "timeKillEvent") => 1,
         ("kernel32", "DuplicateHandle" | "FormatMessageA") => 7,
         ("kernel32", "WideCharToMultiByte" | "GetVolumeInformationA") => 8,
         (
@@ -234,6 +235,10 @@ pub fn signature(dll: &str, symbol: &str) -> Option<Signature> {
             | "OffsetViewportOrgEx"
             | "GetTextExtentPointA",
         ) => 4,
+        ("gdi32", "ExtTextOutA") => 8,
+        ("gdi32", "IntersectClipRect") => 5,
+        ("gdi32", "GetTextColor" | "GetBkColor" | "GetBkMode" | "GetTextAlign" | "GetStretchBltMode" | "GetROP2") => 1,
+        ("gdi32", "SetStretchBltMode" | "SetROP2") => 2,
         ("gdi32", "CreateBitmap" | "Rectangle" | "TextOutA") => 5,
         ("gdi32", "PatBlt") => 6,
         ("gdi32", "GdiFlush") => 0,

@@ -31,9 +31,11 @@ try {
     && document.querySelector('#screen').height === 450);
   await waitFrame(90);
   const dataUrl = await page.locator('#screen').evaluate(canvas => canvas.toDataURL('image/png'));
+  const depthBits = await page.locator('#screen').evaluate(canvas =>
+    canvas.getContext('webgl').getParameter(canvas.getContext('webgl').DEPTH_BITS));
   const output = process.env.WLAM_WEBGL_CAPTURE ?? '/tmp/tolympic-webgl-frame90.png';
   await writeFile(output, Buffer.from(dataUrl.split(',')[1], 'base64'));
-  console.log(`Saved WebGL frame 90 (600×450) to ${output}.`);
+  console.log(`Saved WebGL frame 90 (600×450, ${depthBits}-bit depth) to ${output}.`);
 } finally {
   await browser.close();
 }

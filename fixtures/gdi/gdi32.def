@@ -1,0 +1,23 @@
+LIBRARY GDI32.dll
+EXPORTS
+CreateCompatibleDC@4
+CreateDIBSection@24
+SelectObject@8
+DeleteObject@4
+DeleteDC@4
+CreateSolidBrush@4
+GetStockObject@4
+SaveDC@4
+RestoreDC@8
+SetTextColor@8
+GetTextColor@4
+SetBkColor@8
+GetBkColor@4
+SetBkMode@8
+GetBkMode@4
+IntersectClipRect@20
+GetClipBox@8
+PatBlt@24
+BitBlt@36
+TextOutA@20
+ExtTextOutA@32

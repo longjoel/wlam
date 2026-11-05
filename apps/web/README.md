@@ -1,5 +1,13 @@
 # Interactive Win32 runner
 
+The runner opens in a simulated desktop with a taskbar. Drag the window title
+bar to move it, use the title-bar buttons to minimize or maximize/restore it,
+and drag the lower-right grip to resize the guest window. The taskbar button
+and desktop shortcut restore a minimized runner. Guest resizing sends the
+regular Win32 resize message, so applications such as TOLYMPIC update their
+viewport as the simulated window changes size. The Start menu also provides
+runner restore and guest restart actions.
+
 From the repository root, with the workspace-local Rust toolchain installed:
 
 ```sh
@@ -14,6 +22,16 @@ Escape and **Close guest** use the guest's destruction/message path. **Stop**
 terminates the worker immediately, including a guest in an infinite loop.
 Restart constructs fresh guest and host instances.
 
+When execution fails, **Guest diagnostics** opens with the failed API and guest
+registers. Use **Download debug log** to share a JSON report: it includes the
+latest snapshot, up to 64 recent API calls, 32 callback entries, 32 stack words,
+and up to 16 EBP frame candidates, plus SHA-256 hashes identifying the guest,
+image and host artifacts. Waiting and clean exit also publish snapshots.
+The report retains the underlying error and JavaScript stack. EBP candidates
+are not a verified unwind; optimized guest code may omit frame pointers.
+This view captures failures; instruction stepping and breakpoints are not yet
+implemented. Stop preserves the latest snapshot, and Restart clears it.
+
 The local server supplies COOP/COEP headers. Ordinary hosting without isolation
 headers cannot use this synchronous worker/input-queue implementation.
 
@@ -27,9 +45,10 @@ to WebGL, skipping CPU fragment rasterization and full-surface pixel copies.
 The TOLYMPIC build script supplies an optimized release host for this path;
 the default CPU renderer continues to use the development host build.
 The current accelerated subset covers TOLYMPIC's triangle and quad-strip draws;
-other primitive modes remain on the CPU renderer. Its canvas stays opaque and
-retains the last completed image between swaps, matching the guest window's
-presentation behavior.
+other primitive modes are unsupported in WebGL mode. Select the default CPU
+renderer for demos that use points, lines or other unsupported primitives. The
+WebGL canvas stays opaque and retains the last completed image between swaps,
+matching the guest window's presentation behavior.
 
 To build and launch the accelerated TOLYMPIC target in one step, run
 `./scripts/run-tolympic.sh`. It builds the bundle, starts the local server when
@@ -65,6 +84,8 @@ cd ../..
 python3 scripts/serve-web.py --port 8765
 # In another terminal, from the repository root:
 node apps/web/tests/browser.mjs
+node apps/web/tests/debugger.mjs
+node apps/web/tests/desktop-window.mjs
 ```
 
 The browser test checks every pixel after actual mouse and keyboard input,
@@ -72,6 +93,11 @@ normal close, a responsive page while the worker waits, Stop/Restart, forced
 termination of a looping guest, and named unsupported imports. A screenshot is
 written to `target/interactive/browser.png`. `WLAM_TEST_URL` overrides the URL;
 `WLAM_PLAYWRIGHT_MODULE` can point to an external Playwright module installation.
+The desktop-window check exercises title-bar dragging, minimize/taskbar restore,
+maximize/restore, resizing before TOLYMPIC starts and while it is running, and
+the Start menu. The resize grip also supports arrow keys (Shift+arrow for a
+larger step) and Enter/Space to grow both dimensions. Changing the browser
+viewport keeps the runner onscreen and resizes the guest surface.
 
 Modal message-box tests also check that Cancel and Escape return the correct
 button ID to an actual Wasm import. Dialog text uses Windows-1252 decoding and
@@ -79,8 +105,8 @@ text-only DOM updates. The worker waits on shared input while the page stays
 responsive; ordinary input already queued is deferred until the dialog closes.
 
 For the original Hover target, use `./scripts/build-hover.sh` and open
-`?manifest=/target/hover/bundle/manifest.json`. Hover currently displays its
-startup display warning, loads maze and texture data, and reaches input waiting
+`?manifest=/target/hover/bundle/manifest.json`. Hover uses an 8-bit guest
+display profile without a display warning, loads maze and texture data, and reaches input waiting
 in the Node diagnostic. Gameplay and controls have not yet been validated. See `benchmarks/hover/README.md` for measured progress and diagnostics.
 
 This is a staged Win32 subset: one guest UI thread, one unstyled fixed window,

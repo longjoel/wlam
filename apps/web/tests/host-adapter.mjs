@@ -74,6 +74,12 @@ assert.equal(call('CreateWindowExA',[0,0x12000,0,0,0,0,32,24,0,0,0x400000,0]),1)
 const window=host.action_argument(0);assert.equal(host.action_argument(1),129);
 assert.equal(host.resume(host.action_token(),1),1);assert.equal(host.action_argument(1),1);
 assert.equal(host.resume(host.action_token(),0),0);assert.equal(host.action_value(),window);
+assert.ok(apis.has('IsWindowEnabled'));
+assert.equal(call('IsWindowEnabled',[window]),0);assert.equal(host.action_value(),1);
+assert.equal(call('SetWindowLongA',[window,(-16)>>>0,0x08000000]),0);
+assert.equal(call('IsWindowEnabled',[window]),0);assert.equal(host.action_value(),0);
+assert.equal(call('SetWindowLongA',[window,(-16)>>>0,0]),0);
+assert.equal(call('IsWindowEnabled',[0]),0);assert.equal(host.action_value(),0);
 assert.equal(call('BeginPaint',[window,0x5000]),0);
 assert.equal(view.getUint32(0x5000,true),host.action_value());
 assert.equal(call('EndPaint',[window,0x5000]),0);

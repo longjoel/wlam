@@ -255,16 +255,25 @@ renders them with a WebGL shader and acknowledges each frame on
 rasterization and the page avoids full-surface pixel copies. The fixture and
 TOLYMPIC browser acceptance cover drawing, resize, input, Stop/Restart and
 Escape. A frame-90 capture at 600×450 matched 261,883/270,000 CPU-reference
-pixels exactly; 65 pixels differ by more than 20 RGB levels. The capture is
+pixels exactly and 264,111/270,000 Mesa replay pixels exactly. Against Mesa,
+mean absolute RGB error is 0.03668 and 65 pixels differ by more than 20 levels.
+The browser reports a 24-bit depth buffer, matching the guest's requested pixel
+format. Difference analysis places 53 large errors on ring-edge coverage and
+the remaining 12 in two overlap clusters where the green ring crosses black and
+red. The CPU reference uses a 32-bit normalized internal depth buffer, while
+the WebGL/Mesa replay buffers are 24-bit; a Windows reference is needed to
+decide which overlap ordering matches the original. The Mesa frame-90 reference
+was regenerated from the bounded trace because its previous saved image showed
+the doughnut mode. The WebGL capture is
 [`tolympic-webgl-frame90.png`](tolympic-webgl-frame90.png). Recreate it with
 `WLAM_WEBGL_CAPTURE=benchmarks/glint/tolympic-webgl-frame90.png node apps/web/tests/webgl-reference-capture.mjs`.
-Headless Chromium presented 8 additional frames in 2 seconds on this host, so
-rendering is continuous. The optimized host produced 110 frames in 0.76 seconds
-without browser presentation pacing (145 FPS); the browser requestAnimationFrame
-path caps display to the browser's refresh rate. The WebGL context is opaque, matching the guest window, and
-preserves the last completed buffer between swaps. The CPU renderer remains the
-default and comparison path. This does not close the separate native Windows
-fidelity gate.
+Headless Chromium presented 121 additional frames in 2 seconds on this host
+(about 60 FPS) with the optimized release host. The unpaced host produced 110
+frames in 0.76 seconds (145 FPS), so the browser presentation rate is limited by
+`requestAnimationFrame`. The WebGL context is opaque, matching the guest window,
+and preserves the last completed buffer between swaps. The CPU renderer remains
+the default and comparison path. This does not close the separate native
+Windows fidelity gate.
 
 ## 2. Agree on integration interfaces with the Hover work
 

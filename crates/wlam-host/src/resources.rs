@@ -56,4 +56,9 @@ impl Resources {
     pub fn named(&self, kind: u32, name: u32) -> Option<Resource> {
         self.get(self.find(kind, name)?)
     }
+    pub fn at_address(&self, kind: u32, address: u32) -> Option<Resource> {
+        self.names.iter().filter(|((t, _), _)| *t == kind)
+            .filter_map(|(_, handle)| self.get(*handle))
+            .find(|resource| resource.address == address)
+    }
 }

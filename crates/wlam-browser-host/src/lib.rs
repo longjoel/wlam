@@ -164,6 +164,7 @@ const APIS: &[(&str, &str)] = &[
     ("USER32.dll", "GetKeyState"),
     ("USER32.dll", "MessageBoxA"),
     ("KERNEL32.dll", "GetCurrentThread"),
+    ("KERNEL32.dll", "SetThreadPriority"),
     ("KERNEL32.dll", "GetCurrentProcess"),
     ("USER32.dll", "GetCursorPos"),
     ("KERNEL32.dll", "SetUnhandledExceptionFilter"),
@@ -251,11 +252,32 @@ const APIS: &[(&str, &str)] = &[
     ("USER32.dll", "BringWindowToTop"),
     ("USER32.dll", "GetLastActivePopup"),
     ("USER32.dll", "IsWindowVisible"),
+    ("USER32.dll", "IsWindowEnabled"),
     ("USER32.dll", "DefWindowProcA"),
     ("USER32.dll", "PostQuitMessage"),
     ("USER32.dll", "DestroyWindow"),
     ("USER32.dll", "InvalidateRect"),
     ("USER32.dll", "UpdateWindow"),
+    ("USER32.dll", "RedrawWindow"),
+    ("GDI32.dll", "SaveDC"),
+    ("GDI32.dll", "RestoreDC"),
+    ("GDI32.dll", "SetTextColor"),
+    ("GDI32.dll", "SetBkColor"),
+    ("GDI32.dll", "SetBkMode"),
+    ("GDI32.dll", "SetTextAlign"),
+    ("GDI32.dll", "SetStretchBltMode"),
+    ("GDI32.dll", "SetROP2"),
+    ("GDI32.dll", "GetTextColor"),
+    ("GDI32.dll", "GetBkColor"),
+    ("GDI32.dll", "GetBkMode"),
+    ("GDI32.dll", "GetTextAlign"),
+    ("GDI32.dll", "GetStretchBltMode"),
+    ("GDI32.dll", "GetROP2"),
+    ("GDI32.dll", "IntersectClipRect"),
+    ("GDI32.dll", "GetClipBox"),
+    ("GDI32.dll", "TextOutA"),
+    ("GDI32.dll", "ExtTextOutA"),
+    ("GDI32.dll", "PatBlt"),
     ("USER32.dll", "SendMessageA"),
     ("USER32.dll", "DispatchMessageA"),
     ("USER32.dll", "TranslateMessage"),
@@ -276,6 +298,7 @@ const APIS: &[(&str, &str)] = &[
     ("WINMM.dll", "waveOutGetNumDevs"),
     ("WINMM.dll", "midiOutGetNumDevs"),
     ("WINMM.dll", "timeGetTime"),
+    ("WINMM.dll", "timeKillEvent"),
     ("WINMM.dll", "joyGetDevCapsA"),
     ("WINMM.dll", "joyGetPos"),
     ("wlam.x87", "sin"),
@@ -322,6 +345,16 @@ pub extern "C" fn initialize(image_base: u32) {
         width: 0,
         height: 0,
     });
+}
+/// Select an opt-in guest display profile before program startup.
+#[no_mangle]
+pub extern "C" fn set_display_bits(bits: u32) -> u32 {
+    let mut lock = STATE.lock().unwrap();
+    let Some(state) = lock.as_mut() else { return 0; };
+    match state.runtime.set_display_bits(bits) {
+        Ok(()) => 1,
+        Err(error) => { state.error = error; 0 }
+    }
 }
 /// Register a read-only browser asset from guest memory. The runner stages
 /// assets in newly grown guest pages before entering the program.

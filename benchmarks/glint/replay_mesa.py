@@ -135,8 +135,24 @@ int main(){
  glReadBuffer(0x0404);
 '''
 src+='\n'.join(emit(call) for call in calls)+'\n'
-src+=r''' glFinish(); unsigned char* p=malloc(WIDTH*HEIGHT*4); if(!p)return 5; glReadPixels(0,0,WIDTH,HEIGHT,0x1908,0x1401,p); FILE*f=fopen("RAW_OUTPUT","wb"); fwrite(p,1,WIDTH*HEIGHT*4,f); fclose(f); if(WIDTH==600&&HEIGHT==450){float z=1.0f;glReadPixels(389,236,1,1,0x1902,0x1406,&z);fprintf(stderr,"Mesa depth at browser pixel (389,213): %.9g, 24-bit %.0f\n",z,z*16777215.0f);glReadPixels(299,137,1,1,0x1902,0x1406,&z);fprintf(stderr,"Mesa depth at browser pixel (299,312): %.9g, 24-bit %.0f\n",z,z*16777215.0f);glReadPixels(208,281,1,1,0x1902,0x1406,&z);fprintf(stderr,"Mesa depth at browser pixel (208,168): %.12g, 24-bit %.0f; rgba=(%u,%u,%u,%u)\n",z,z*16777215.0f,p[(281*WIDTH+208)*4],p[(281*WIDTH+208)*4+1],p[(281*WIDTH+208)*4+2],p[(281*WIDTH+208)*4+3]);} return 0; }
+src+=r''' glFinish(); unsigned char* p=malloc(WIDTH*HEIGHT*4); if(!p)return 5; glReadPixels(0,0,WIDTH,HEIGHT,0x1908,0x1401,p); FILE*f=fopen("RAW_OUTPUT","wb"); fwrite(p,1,WIDTH*HEIGHT*4,f); fclose(f);
 '''
+if WIDTH == 600 and HEIGHT == 450:
+    diagnostic_points = (
+        [(320, 218), (437, 224)]
+        if FRAME == 90
+        else [(389, 213), (299, 312), (208, 168)]
+    )
+    for x, y in diagnostic_points:
+        gl_y = HEIGHT - 1 - y
+        pixel = (gl_y * WIDTH + x) * 4
+        src += (
+            f'{{float z=1.0f;glReadPixels({x},{gl_y},1,1,0x1902,0x1406,&z);'
+            f'fprintf(stderr,"Mesa depth at browser pixel ({x},{y}): %.12g, '
+            f'24-bit %.0f; rgba=(%u,%u,%u,%u)\\n",z,z*16777215.0f,'
+            f'p[{pixel}],p[{pixel + 1}],p[{pixel + 2}],p[{pixel + 3}]);}}\n'
+        )
+src += ' return 0; }\n'
 src = (src.replace("WIDTH", str(WIDTH)).replace("HEIGHT", str(HEIGHT))
        .replace("RAW_OUTPUT", str(RAW_OUTPUT)))
 source = Path(f"/tmp/tolympic-mesa-replay-{FRAME}.c")
