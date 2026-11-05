@@ -6,8 +6,7 @@
 //! it the guest reads zeroed `.text` and diverges immediately, which is why an
 //! unseeded wasm-interp run appeared to "succeed" while the harness spun.
 
-#[path = "../tests/shared/mod.rs"]
-mod shared;
+use wlam_sleigh::emit as shared;
 
 use std::collections::BTreeMap;
 use wlam_emit::chain::{build_module_with_memory, pages_for_image, partition, HostImport};
@@ -61,7 +60,7 @@ fn main() {
     // Loader state: ESP, FS_OFFSET, empty SEH chain.
     let mut seed = Vec::new();
     for (idx, val) in [(4u32, 0x70000u32), (10, 0x60000)] {
-        seed.extend_from_slice(&(0x8000 + idx * 4).to_le_bytes());
+        seed.extend_from_slice(&(wlam_emit::snapshot_address(idx as usize) as u32).to_le_bytes());
         seed.extend_from_slice(&val.to_le_bytes());
     }
     seed.extend_from_slice(&0x60000u32.to_le_bytes());

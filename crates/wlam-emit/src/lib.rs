@@ -5,33 +5,16 @@
 //! definitions; this crate owns their translation, so the two can evolve
 //! independently.
 //!
-//! ## Memory model (fixed now, so the ABI does not drift)
+//! The active emitter uses Wasm locals for registers and shared guest memory
+//! for loader state and register snapshots. Each snapshot slot occupies eight
+//! bytes; use [`snapshot_address`] instead of calculating offsets in callers.
+//! x87 registers are an f64 approximation, not full 80-bit emulation.
 //!
-//! | guest address range | contents |
-//! |---|---|
-//! | `0x0000_0000 .. 0x0000_ffff` | reserved null page; any access traps |
-//! | `0x0040_0000 ..` | the PE image at its preferred base |
-//! | `TEB.stack_base` | guest stack |
-//! | `0x7ffd_e000 ..` | TIB / TEB; `FS:[0]` points at the exception list head |
-//! | `0xf000_0000 ..` | x87 register file (80-bit values live in memory) |
-//! | existing size | one guard page past the highest used address |
-//!
-//! The guest's whole 32-bit address space is one linear memory; nothing is ever
-//! addressed through a host pointer.
-//!
-//! ## Registers
-//!
-//! P-code registers become wasm *locals* so lifted code stays fast, with a
-//! memory-backed snapshot maintained for host calls and trap diagnostics.
-//! wasm has no 80-bit type, so the x87 register file is guest memory.
-//!
-//! ## Not emitted yet
-//!
-//! Indirect branches need a jump-table resolution pass and are reported as
-//! [`EmitError::IndirectBranch`] rather than guessed; real x86 code uses them,
-//! so this is the largest known gap (`docs/roadmap.md`). Block translation
-//! will land on the encoder below.
+//! Whole programs report unsupported operations through named diagnostic
+//! imports and trap when reached. Standalone translation returns an error.
+//! See `docs/abi.md` and `docs/roadmap.md` for the current contract and limits.
 
+mod callback;
 pub mod chain;
 pub mod encode;
 pub mod ir;
@@ -46,7 +29,7 @@ pub use ir::{BinOp, Operand, UnOp, IR};
 pub use wlam_pcode::regfile::{is_partial, slot_of as regfile_slot, Parent as RegParent, Slot as RegSlot};
 pub use translate::{
     module_with_snapshot, translate_ops, LocalMap, TranslateError, TranslatedBlock,
-    REG_SNAPSHOT_BASE,
+    REG_SNAPSHOT_BASE, snapshot_address,
 };
 
 pub use encode::{leb_s32, leb_u32, module_header, section_id, Encoder, SectionKind};
@@ -107,15 +90,8 @@ pub const GUEST_LOCALS: &[&str] = &[
 
 /// The x87 register stack.
 ///
-/// Sleigh models `ST0`-`ST7` as 10-byte (80-bit `EXTENDED`) registers. The
-/// emitter does **not** yet represent them: an f64-subset model was attempted
-/// and reverted because it required deciding float-ness in three places at once
-/// (declaration by name, temp width, and a per-block pre-pass) and they
-/// disagreed, producing thousands of "expected [f64] but got [i32]" validation
-/// errors. x87 emission therefore remains a known gap; see `docs/roadmap.md`.
-///
-/// Listed here so callers can name them, and so the work has an obvious place to
-/// land.
+/// Sleigh's 80-bit x87 stack, currently represented by f64 locals.
+/// This is an approximation; full extended precision is not implemented.
 pub const X87_LOCALS: &[&str] = &["ST0", "ST1", "ST2", "ST3", "ST4", "ST5", "ST6", "ST7"];
 
 /// Every register seeded as a wasm local, in a fixed order.

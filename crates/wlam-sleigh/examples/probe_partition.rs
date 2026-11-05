@@ -4,8 +4,7 @@
 //! function. This uses the project's own `partition` so the answer is the one
 //! the emitter actually acts on.
 
-#[path = "../tests/shared/mod.rs"]
-mod shared;
+use wlam_sleigh::emit as shared;
 use std::collections::{BTreeMap, BTreeSet};
 use wlam_emit::chain::partition;
 use wlam_pe::Pe;

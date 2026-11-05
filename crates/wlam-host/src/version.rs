@@ -1,36 +1,8 @@
 //! Version-reporting APIs: `GetVersion`, `GetVersionExA`, `GetVersionExW`.
 //!
-//! ## Why this is the first real API
-//!
-//! Uxn32 calls `GetVersion` four instructions into `WinMain`, before it builds
-//! any window:
-//!
-//! ```text
-//! 40ccd8  ff 15 6c 10 41 00   call dword ptr [0x41106c]   ; GetVersion
-//! 40ccde  33 d2               xor  edx, edx
-//! 40cce0  8a d4               mov  dl, ah                  ; major version
-//! 40cce2  89 15 80 5b 41 00   mov  [0x415b80], edx
-//! 40cce8  8b c8               mov  ecx, eax
-//! 40ccea  81 e1 ff 00 00 00   and  ecx, 0xff               ; minor version
-//! 40ccf0  89 0d 7c 5b 41 00   mov  [0x415b7c], ecx
-//! 40ccf6  c1 e1 08            shl  ecx, 8
-//! 40ccf9  03 ca               add  ecx, edx                ; 'NT' if major > 4
-//! 40ccfb  89 0d 78 5b 41 00   mov  [0x415b78], ecx
-//! ```
-//!
-//! So the guest splits the dword into `major = (v >> 8) & 0xff` and
-//! `minor = v & 0xff`, and derives a platform tag from `major > 4`. That makes
-//! the value meaningful, not decorative: reporting Windows 2000 (major 5) and
-//! reporting Windows 95 (major 4) send the program down different paths.
-//!
-//! ## What "the host" is
-//!
-//! There is no Windows underneath. The host *presents as* a particular
-//! Windows version, the same choice Wine makes, and that choice is part of the
-//! host's contract: whichever one is reported must also be the version whose
-//! behaviour the rest of the host layer implements. [`WindowsVersion`] is a
-//! named, enumerable thing for exactly that reason -- so the choice can be
-//! stated once and be visible.
+//! GetVersion packs the major version in the low byte and the minor version
+//! in the next byte. GetVersionEx exposes the same values as separate fields.
+//! Contract: https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getversion
 
 /// A Windows version, as the host chooses to present itself.
 ///
@@ -75,7 +47,7 @@ impl WindowsVersion {
     };
 
     /// `GetVersion`'s return dword:
-    /// `(build & 0xffff) << 16 | (major & 0xff) << 8 | (minor & 0xff)`.
+    /// `(build & 0xffff) << 16 | (minor & 0xff) << 8 | (major & 0xff)`.
     ///
     /// For NT-platform versions the high bit of the high word is *not* set; a
     /// platform id of `VER_PLATFORM_WIN32_WINDOWS` sets it. That bit is how
@@ -85,10 +57,7 @@ impl WindowsVersion {
             Platform::Win32Windows => 0x8000_0000,
             _ => 0,
         };
-        (self.build as u32) << 16
-            | platform_bit
-            | ((self.major as u32) << 8)
-            | self.minor as u32
+        (self.build as u32) << 16 | platform_bit | ((self.minor as u32) << 8) | self.major as u32
     }
 
     /// The `OSVERSIONINFOA` fields the guest can read back.
@@ -232,7 +201,11 @@ mod tests {
         assert_eq!(u32_at(d, infoa_offset::MAJOR), 5);
         assert_eq!(u32_at(d, infoa_offset::MINOR), 0);
         assert_eq!(u32_at(d, infoa_offset::BUILD), 2195);
-        assert_eq!(u32_at(d, infoa_offset::PLATFORM), 2, "VER_PLATFORM_WIN32_NT");
+        assert_eq!(
+            u32_at(d, infoa_offset::PLATFORM),
+            2,
+            "VER_PLATFORM_WIN32_NT"
+        );
     }
 
     #[test]
@@ -242,8 +215,8 @@ mod tests {
         let v = WindowsVersion::WIN2000;
         let dword = v.version_dword();
         let (major, minor, build, platform) = v.os_version_info();
-        assert_eq!((dword >> 8) & 0xff, major);
-        assert_eq!(dword & 0xff, minor);
+        assert_eq!(dword & 0xff, major);
+        assert_eq!((dword >> 8) & 0xff, minor);
         assert_eq!(dword >> 16, build);
         assert_eq!(platform, Platform::Win32Nt as u32);
     }
@@ -256,10 +229,16 @@ mod tests {
         let err = WindowsVersion::WIN2000
             .write_os_version_info(&mut mem, 0x100)
             .unwrap_err();
-        assert!(matches!(err, VersionExError::BadSize { got: 100, .. }), "{err}");
+        assert!(
+            matches!(err, VersionExError::BadSize { got: 100, .. }),
+            "{err}"
+        );
         // Nothing may have been written: a half-filled struct is worse than none.
         let d = mem.get(0x104, 16).unwrap();
-        assert_eq!(d, &[0u8; 16], "a rejected call must not scribble on the struct");
+        assert_eq!(
+            d, &[0u8; 16],
+            "a rejected call must not scribble on the struct"
+        );
     }
 
     #[test]
@@ -278,16 +257,16 @@ mod tests {
         info_at(&mut data, 0x100, OSVERSIONINFOEXA_SIZE);
         // Pre-fill the extended area so a "did anything write there" check is
         // meaningful.
-        for b in &mut data[0x100 + OSVERSIONINFOA_SIZE as usize..0x100 + OSVERSIONINFOEXA_SIZE as usize] {
+        for b in
+            &mut data[0x100 + OSVERSIONINFOA_SIZE as usize..0x100 + OSVERSIONINFOEXA_SIZE as usize]
+        {
             *b = 0xAA;
         }
         let mut mem = GuestMemory::new(&mut data);
         WindowsVersion::WIN2000
             .write_os_version_info(&mut mem, 0x100)
             .expect("the extended size is accepted");
-        let d = mem
-            .get(0x100, OSVERSIONINFOEXA_SIZE as usize)
-            .unwrap();
+        let d = mem.get(0x100, OSVERSIONINFOEXA_SIZE as usize).unwrap();
         // The common prefix carries the version.
         assert_eq!(u32_at(d, infoa_offset::MAJOR), 5);
         assert_eq!(u32_at(d, infoa_offset::SIZE), OSVERSIONINFOEXA_SIZE);
@@ -298,7 +277,9 @@ mod tests {
         let mut data = vec![0u8; 0x1000];
         info_at(&mut data, 0x100, OSVERSIONINFOA_SIZE);
         let mut mem = GuestMemory::new(&mut data);
-        WindowsVersion::WIN2000.write_os_version_info(&mut mem, 0x100).unwrap();
+        WindowsVersion::WIN2000
+            .write_os_version_info(&mut mem, 0x100)
+            .unwrap();
         let csd = mem
             .get(
                 0x100 + infoa_offset::CSD_VERSION,

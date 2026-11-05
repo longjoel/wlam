@@ -1,0 +1,13 @@
+LIBRARY OPENGL32.dll
+EXPORTS
+wglCreateContext@4
+wglMakeCurrent@8
+wglDeleteContext@4
+glBegin@4
+glClear@4
+glClearColor@16
+glColor3ubv@4
+glEnd@0
+glGetError
+glVertex3f@12
+glViewport@16

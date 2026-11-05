@@ -84,26 +84,16 @@ impl Default for StartupInfo {
 impl StartupInfo {
     /// Write the struct at `at`.
     ///
-    /// `cb` is read from the struct because Windows requires the caller to set
-    /// it, and `GetStartupInfoA` refuses to write when it is wrong. Writing
-    /// through a bad `cb` would corrupt a caller that passed a smaller struct,
-    /// so a mismatch is refused instead of ignored.
+    /// GetStartupInfo's buffer is an output parameter, including `cb`:
+    /// https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getstartupinfoa
     pub fn write(
         &self,
-        mem: &mut crate::GuestMemory<'_>,
+        mem: &mut dyn crate::memory::MemoryAccess,
         at: u32,
     ) -> Result<(), StartupInfoError> {
-        let cb = mem
-            .read_u32(at + offset::CB)
-            .ok_or(StartupInfoError::OutOfBounds { addr: at })?;
-        if cb != STARTUPINFOA_SIZE {
-            return Err(StartupInfoError::BadSize { got: cb, at });
-        }
         // All-or-nothing: check the whole struct is addressable before writing,
         // so a bad pointer cannot leave the guest with a half-filled struct.
-        let region = mem
-            .get_mut(at, STARTUPINFOA_SIZE as usize)
-            .ok_or(StartupInfoError::OutOfBounds { addr: at })?;
+        let mut region = [0u8; STARTUPINFOA_SIZE as usize];
 
         // Everything except the fields below is "absent" and left zero.
         region.fill(0);
@@ -113,24 +103,20 @@ impl StartupInfo {
             .copy_from_slice(&self.flags.to_le_bytes());
         region[offset::W_SHOW_WINDOW as usize..offset::W_SHOW_WINDOW as usize + 2]
             .copy_from_slice(&self.show_window.to_le_bytes());
-        Ok(())
+        mem.write(at, &region)
+            .map_err(|_| StartupInfoError::OutOfBounds { addr: at })
     }
 }
 
 /// Why `GetStartupInfoA` could not be served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartupInfoError {
-    BadSize { got: u32, at: u32 },
     OutOfBounds { addr: u32 },
 }
 
 impl std::fmt::Display for StartupInfoError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StartupInfoError::BadSize { got, at } => write!(
-                f,
-                "STARTUPINFOA.cb is {got} at {at:#x} (expected {STARTUPINFOA_SIZE})"
-            ),
             StartupInfoError::OutOfBounds { addr } => {
                 write!(f, "STARTUPINFOA at {addr:#x} is out of bounds")
             }
@@ -147,7 +133,7 @@ impl std::fmt::Display for StartupInfoError {
 ///
 /// Returns `(bytes_written_excluding_nul, truncated)`.
 pub fn write_cstr(
-    mem: &mut crate::GuestMemory<'_>,
+    mem: &mut dyn crate::memory::MemoryAccess,
     at: u32,
     cap: u32,
     s: &[u8],
@@ -155,13 +141,110 @@ pub fn write_cstr(
     if cap == 0 {
         return Ok((0, !s.is_empty()));
     }
-    let region = mem
-        .get_mut(at, cap as usize)
-        .ok_or(StartupInfoError::OutOfBounds { addr: at })?;
+    if at as u64 + cap as u64 > mem.byte_len() {
+        return Err(StartupInfoError::OutOfBounds { addr: at });
+    }
     let n = s.len().min(cap as usize - 1);
-    region[..n].copy_from_slice(&s[..n]);
-    region[n] = 0;
+    let mut bytes = s[..n].to_vec();
+    bytes.push(0);
+    mem.write(at, &bytes)
+        .map_err(|_| StartupInfoError::OutOfBounds { addr: at })?;
     Ok((n as u32, n < s.len()))
+}
+
+/// The module path this host presents to the guest.
+///
+/// A recompiled image has no Windows path: it is a bundle directory, not a file
+/// the guest loader resolved. The path still has to be usable, because Windows
+/// programs routinely derive their working directory by truncating it at the
+/// last backslash (`GetModuleFileNameA` followed by `strrchr('\\')`). Returning
+/// `""` makes that scan walk backwards out of the caller's buffer, so the host
+/// presents a stable synthetic path under `C:\` instead.
+pub const MODULE_FILE_NAME: &[u8] = b"C:\\PROGRAM.EXE";
+
+/// Guest address where host-supplied process strings begin.
+///
+/// This is below the TIB (`0x60000`) and loader stack (`0x70000`), and below
+/// every plausible PE image base, so it never overlaps a mapped section. The
+/// region is part of the module's reserved address space; the host writes each
+/// string once and caches its address for the life of the process.
+pub const PROCESS_STRING_BASE: u32 = 0x0005_0000;
+
+/// Strings owned by the process rather than by one call.
+///
+/// Windows guarantees that `GetCommandLineA` returns the same pointer until the
+/// process ends, and callers are entitled to compare or cache it. A fresh copy
+/// per call would be a subtle lie and would also leak guest bytes. This hands
+/// out each string once, from a monotonic bump allocator in the reserved
+/// region.
+#[derive(Debug)]
+pub struct Process {
+    /// The command line the host was given. Empty means "no arguments": the
+    /// recompiler does not invent a program name for an image that has none.
+    command_line: &'static [u8],
+    command_line_address: Option<u32>,
+    /// The environment block. This host inherits no variables.
+    environment: &'static [u8],
+    environment_address: Option<u32>,
+    next: u32,
+}
+
+impl Default for Process {
+    fn default() -> Self {
+        Process {
+            command_line: b"",
+            command_line_address: None,
+            environment: b"",
+            environment_address: None,
+            next: PROCESS_STRING_BASE,
+        }
+    }
+}
+
+impl Process {
+    /// The address of the NUL-terminated command line, or `None` if the guest
+    /// cannot address the reserved region.
+    pub fn command_line(&mut self, mem: &mut dyn crate::memory::MemoryAccess) -> Option<u32> {
+        if let Some(address) = self.command_line_address {
+            return Some(address);
+        }
+        let address = self.store(mem, self.command_line)?;
+        self.command_line_address = Some(address);
+        Some(address)
+    }
+
+    /// The address of the environment block: each entry is `NAME=value\0`, and
+    /// the block is terminated by an extra NUL.
+    ///
+    /// With no inherited variables the block is a single empty entry. That is
+    /// a real environment, not a missing one, and an enumeration loop sees the
+    /// leading NUL and stops.
+    pub fn environment_strings(
+        &mut self,
+        mem: &mut dyn crate::memory::MemoryAccess,
+    ) -> Option<u32> {
+        if let Some(address) = self.environment_address {
+            return Some(address);
+        }
+        // `store` appends the terminator, so passing one NUL produces the two
+        // NUL bytes that end an environment block.
+        let address = self.store(mem, b"\0")?;
+        self.environment_address = Some(address);
+        Some(address)
+    }
+
+    /// Copy `bytes` plus a terminator into the reserved region, returning the
+    /// address. The whole range is checked before writing. Each allocation is
+    /// 4-byte aligned, matching the alignment callers expect for a pointer.
+    fn store(&mut self, mem: &mut dyn crate::memory::MemoryAccess, bytes: &[u8]) -> Option<u32> {
+        let length = bytes.len() + 1;
+        let address = (self.next + 3) & !3;
+        let mut stored = bytes.to_vec();
+        stored.push(0);
+        mem.write(address, &stored).ok()?;
+        self.next = address.checked_add(length as u32)?;
+        Some(address)
+    }
 }
 
 #[cfg(test)]
@@ -191,19 +274,20 @@ mod tests {
         // The pre-fill was 0xAA, so zeroed fields prove the whole struct was
         // written rather than just the interesting four bytes.
         assert!(
-            d.iter().enumerate().all(|(i, &b)| b == 0 || (i >= 0x2c && i < 0x30) || (i < 4)),
+            d.iter()
+                .enumerate()
+                .all(|(i, &b)| b == 0 || (i >= 0x2c && i < 0x30) || (i < 4)),
             "every field must be written, not left holding stale bytes"
         );
     }
 
     #[test]
-    fn a_wrong_cb_is_refused_and_writes_nothing() {
-        let mut data = seeded(40); // not a STARTUPINFOA
+    fn uninitialized_output_is_overwritten_including_cb() {
+        let mut data = seeded(0xcccccccc);
         let mut mem = GuestMemory::new(&mut data);
-        let err = StartupInfo::default().write(&mut mem, 0x100).unwrap_err();
-        assert!(matches!(err, StartupInfoError::BadSize { got: 40, .. }));
-        let d = mem.get(0x104, 8).unwrap();
-        assert_eq!(d, &[0xAAu8; 8], "a refused call must not touch the struct");
+        StartupInfo::default().write(&mut mem, 0x100).unwrap();
+        assert_eq!(u32_at(&data, 0x100), STARTUPINFOA_SIZE);
+        assert_eq!(u32_at(&data, 0x104), 0);
     }
 
     #[test]
@@ -249,8 +333,43 @@ mod tests {
         let (n, trunc) = write_cstr(&mut mem, 0x10, 4, b"abcdef").unwrap();
         assert_eq!(n, 3);
         assert!(trunc, "the caller must be told it did not fit");
-        assert_eq!(mem.get(0x10, 4), Some(&b"abc\0"[..]), );
+        assert_eq!(mem.get(0x10, 4), Some(&b"abc\0"[..]),);
         // Nothing past the buffer may be touched.
         assert_eq!(mem.get(0x14, 4), Some(&[0u8; 4][..]));
+    }
+
+    #[test]
+    fn the_command_line_is_stable_and_nul_terminated() {
+        let mut data = vec![0xAAu8; 0x6_0000];
+        let mut mem = GuestMemory::new(&mut data);
+        let mut process = Process::default();
+        let first = process
+            .command_line(&mut mem)
+            .expect("reserved region is addressable");
+        let second = process.command_line(&mut mem).expect("cached address");
+        assert_eq!(first, second, "the pointer must not change between calls");
+        assert_eq!(first, PROCESS_STRING_BASE);
+        assert_eq!(mem.get(first, 1), Some(&b"\0"[..]));
+    }
+
+    #[test]
+    fn the_command_line_write_is_all_or_nothing() {
+        // A memory that stops before the reserved region cannot serve it, and
+        // must not report a pointer into nowhere.
+        let mut data = vec![0u8; 0x100];
+        let mut mem = GuestMemory::new(&mut data);
+        let mut process = Process::default();
+        assert_eq!(process.command_line(&mut mem), None);
+    }
+
+    #[test]
+    fn the_module_path_has_a_backslash_to_truncate_at() {
+        // Windows programs find their directory with `strrchr(path, '\\')`.
+        let slash = MODULE_FILE_NAME
+            .iter()
+            .rposition(|&b| b == b'\\')
+            .expect("a module path must contain a directory separator");
+        assert!(slash > 0, "the directory must not be empty");
+        assert!(MODULE_FILE_NAME.ends_with(b".EXE"));
     }
 }

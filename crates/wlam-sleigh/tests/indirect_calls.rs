@@ -1,8 +1,8 @@
-//! Calls through a computed target go through a guarded wasm table.
+//! Computed x86 calls resolve only discovered guest virtual addresses.
 //!
 //! The guest hands the emitter a *runtime* value (a register that was set in an
 //! earlier block, or by the host via `GetProcAddress`). It must become a
-//! `call_indirect` into a table of guest functions, with a bounds check: a bad
+//! call to the matching guest function, with an address check: a bad
 //! target has to trap, never silently call function 0. A silent mis-dispatch is
 //! a wrong-answer bug, which is strictly worse than a crash.
 
@@ -53,9 +53,9 @@ fn run(module: &[u8], regs: &[String], esp: u32, eax: u32, edi: u32) -> String {
             "const fs=require('fs');const m=new WebAssembly.Module(fs.readFileSync({path:?}));\
              const i=new WebAssembly.Instance(m,{{}});\
              const d=new DataView(i.exports.memory.buffer);\
-             d.setUint32({base}+{esp_idx}*4,{esp},true);\
-             d.setUint32({base}+{eax_idx}*4,{eax},true);\
-             d.setUint32({base}+{edi_idx}*4,{edi},true);\
+             d.setUint32({base}+{esp_idx}*8,{esp},true);\
+             d.setUint32({base}+{eax_idx}*8,{eax},true);\
+             d.setUint32({base}+{edi_idx}*8,{edi},true);\
              try{{i.exports.entry();console.log('OK '+d.getUint32(0x10004,true));}}\
              catch(e){{console.log('TRAP '+e.message)}}",
             base = wlam_emit::REG_SNAPSHOT_BASE,
@@ -117,7 +117,7 @@ fn indirect_call_to_zero_is_not_function_zero() {
 /// else.
 ///
 /// ```text
-/// 0x1000: FF D7               call edi          (EDI = table id of 0x1010)
+/// 0x1000: FF D7               call edi          (EDI = guest address 0x1010)
 /// 0x1002: 89 05 04 00 01 00   mov [0x10004], EAX
 /// 0x1008: C3                  ret
 /// 0x1010: B8 AA 00 00 00      mov eax, 0xAA
@@ -150,7 +150,6 @@ fn indirect_call_reaches_the_intended_function() {
     eprintln!("entry blocks={:?}", prog.functions[entry_idx as usize].blocks.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>());
     eprintln!("callee blocks={:?}", prog.functions[idx as usize].blocks.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>());
     let module = build_module(&prog, &blocks).expect("module");
-    std::fs::write("/var/home/longjoel/Projects/WasmLeanAndMean/.scratch/ind.wasm", &module).unwrap();
-    let out = run(&module, &regs, 0x4000, 0, idx);
+    let out = run(&module, &regs, 0x4000, 0, callee as u32);
     assert_eq!(out, "OK 170", "call edi must reach the callee and return to the caller");
 }

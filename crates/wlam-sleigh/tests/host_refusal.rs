@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use wlam_emit::chain::{build_module_with_memory, partition, HostImport};
 use wlam_emit::ir as eir;
-use wlam_harness::{instantiate, run_entry_diagnosing, seed_register, Host, OnRefuse, RunError};
+use wlam_harness::{load_image, IatPolicy, instantiate, run_entry_diagnosing, seed_register, Host, OnRefuse, RunError};
 use wlam_host::kernel32;
 use wlam_pe::Pe;
 use wlam_sleigh::discover::discover;
@@ -96,6 +96,11 @@ fn unimplemented_api_stops_the_run_and_names_itself() {
     };
     let host = Arc::new(Mutex::new(Host::new()));
     let (mut store, instance) = instantiate(&module, Arc::clone(&host)).expect("link");
+    store.set_fuel(1_000_000).expect("fuel enabled");
+    let image = std::fs::read("../../north-star/bin/Uxn32.exe").unwrap();
+    let pe = Pe::parse(&image).unwrap();
+    let memory = instance.get_memory(&store, "memory").unwrap();
+    load_image(memory.data_mut(&mut store), &pe, IatPolicy::Poison).unwrap();
     let result = run_entry_diagnosing(&mut store, &instance, &loader_seed(), &host);
 
     // The guest must stop, and the reason must be a named refusal rather than
@@ -112,7 +117,7 @@ fn unimplemented_api_stops_the_run_and_names_itself() {
         }
         Err(RunError::Load(e)) => panic!("link failed: {e}"),
         Ok(()) => {
-            let h = host.lock().unwrap();
+            let h = host.lock().unwrap_or_else(|error| error.into_inner());
             panic!(
                 "guest ran to completion with {} unimplemented APIs ({:?})",
                 h.unimplemented().len(),
@@ -135,9 +140,14 @@ fn probing_mode_reaches_further_and_still_records_every_refusal() {
     h.on_refuse(OnRefuse::Return(0));
     let host = Arc::new(Mutex::new(h));
     let (mut store, instance) = instantiate(&module, Arc::clone(&host)).expect("link");
+    store.set_fuel(1_000_000).expect("fuel enabled");
+    let image = std::fs::read("../../north-star/bin/Uxn32.exe").unwrap();
+    let pe = Pe::parse(&image).unwrap();
+    let memory = instance.get_memory(&store, "memory").unwrap();
+    load_image(memory.data_mut(&mut store), &pe, IatPolicy::Poison).unwrap();
     let _ = run_entry_diagnosing(&mut store, &instance, &loader_seed(), &host);
 
-    let h = host.lock().unwrap();
+    let h = host.lock().unwrap_or_else(|error| error.into_inner());
     let refused = h.traps();
     assert_eq!(
         h.diagnostics().len() as u64,
@@ -149,38 +159,26 @@ fn probing_mode_reaches_further_and_still_records_every_refusal() {
     println!("refused {refused} unimplemented APIs before stopping");
 }
 
-/// Reports the order in which the image reaches host APIs, so the work of
-/// implementing them can be driven by what the program actually calls rather
-/// than by the import table's alphabetical order.
-///
-/// Prints under `--nocapture`; asserts only that the run stops at a named API.
+/// The real loaded image must make a measurable startup milestone within a
+/// bounded run. Merely printing a trap or exhausting twenty billion fuel units
+/// cannot establish progress.
 #[test]
-fn first_refusals_are_reported_in_call_order() {
+fn real_image_reaches_version_and_heap_within_budget() {
     let Some(module) = build_uxn32() else { return };
     let mut h = Host::new();
     kernel32(&mut h);
-    h.on_refuse(OnRefuse::Return(0)); // keep going so we can see a sequence
     let host = Arc::new(Mutex::new(h));
     let (mut store, instance) = instantiate(&module, Arc::clone(&host)).expect("link");
-    // Probing is expected to run long; give it room to show whether it is
-    // making progress or spinning.
-    store.set_fuel(20_000_000_000).ok();
+    store.set_fuel(1_000_000).expect("fuel enabled");
+    let image = std::fs::read("../../north-star/bin/Uxn32.exe").unwrap();
+    let pe = Pe::parse(&image).unwrap();
+    let memory = instance.get_memory(&store, "memory").unwrap();
+    load_image(memory.data_mut(&mut store), &pe, IatPolicy::Poison).unwrap();
     let outcome = run_entry_diagnosing(&mut store, &instance, &loader_seed(), &host);
-    eprintln!("PROBING RUN: {outcome:?}");
-
-    let h = host.lock().unwrap_or_else(|e| e.into_inner());
-    eprintln!("CALLS: {:?}", h.call_counts().iter().filter(|(_, n)| **n > 0).map(|(a, n)| format!("{a}:{n}")).collect::<Vec<_>>());
-    let diags = h.diagnostics();
-    // This test reports what the guest reaches; it does not require a trap. Once
-    // enough of the startup path is implemented the guest stops refusing and
-    // the failure moves elsewhere (a guest-internal trap, or running to
-    // completion), so demanding a refusal would make progress look like a
-    // regression.
-    if diags.is_empty() {
-        println!("no refusals reached; guest outcome: {outcome:?}");
-    }
-    println!("first host APIs reached ({} refused):", diags.len());
-    for d in diags.iter().take(20) {
-        println!("  {d}");
+    let h = host.lock().unwrap_or_else(|error| error.into_inner());
+    for name in ["GetVersion", "HeapCreate"] {
+        let api = wlam_harness::Api::new("KERNEL32.dll", name);
+        assert!(h.call_counts().get(&api).copied().unwrap_or(0) > 0,
+            "real startup never reached {name}: {outcome:?}");
     }
 }

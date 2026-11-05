@@ -52,19 +52,21 @@ pub enum TranslateError {
     /// Carries the name: "unknown register" with no name cost a debugging round
     /// on two different images.
     UnknownRegister(String),
+    UnsupportedPcode(String),
 }
 
 impl std::fmt::Display for TranslateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TranslateError::UnsupportedWidth(w) => write!(f, "unsupported operand width {w} bytes"),
+            TranslateError::UnsupportedPcode(op) => write!(f, "unsupported P-code: {op}"),
             TranslateError::UnknownRegister(n) => write!(f, "register {n} is not in the local map"),
             TranslateError::UnsupportedWide(what) => {
                 write!(f, "unsupported 64-bit operation: {what}")
             }
             TranslateError::Unsupported(what) => write!(f, "not emitted yet: {what}"),
             TranslateError::UnimplementedUserop(id) => {
-                write!(f, "unimplemented userop {id} (x87 microcode)")
+                write!(f, "unimplemented Sleigh userop {id}")
             }
         }
     }
@@ -254,6 +256,11 @@ impl TranslatedBlock {
 
 /// wasm opcodes we emit, named for readability.
 mod op {
+    pub const BLOCK: u8 = 0x02;
+    pub const LOOP: u8 = 0x03;
+    pub const END: u8 = 0x0b;
+    pub const BR: u8 = 0x0c;
+    pub const BR_IF: u8 = 0x0d;
     pub const I32_CONST: u8 = 0x41;
     pub const LOCAL_GET: u8 = 0x20;
     pub const LOCAL_SET: u8 = 0x21;
@@ -323,6 +330,7 @@ mod op {
     // real-number instructions; they must never be emitted for integer IR.
     pub const I64_LOAD: u8 = 0x29;
     pub const I64_STORE: u8 = 0x37;
+    pub const F32_STORE: u8 = 0x38;
     pub const F32_LOAD: u8 = 0x2a;
     pub const F64_LOAD: u8 = 0x2b;
     pub const F64_STORE: u8 = 0x39;
@@ -342,6 +350,8 @@ mod op {
     pub const F64_CONVERT_I64_S: u8 = 0xb9;
     /// `f64.promote_f32`.
     pub const F64_PROMOTE_F32: u8 = 0xbb;
+    /// `f64.demote_f32`: round a double to a single-precision memory value.
+    pub const F64_DEMOTE_F32: u8 = 0xb6;
     /// `i32.trunc_f64_s`: double to integer, trapping on overflow/NaN.
     pub const I32_TRUNC_F64_S: u8 = 0xaa;
     pub const I64_TRUNC_F64_S: u8 = 0xb0;
@@ -354,6 +364,7 @@ struct BlockEmitter {
     /// Host-import name -> function index, for calls the emitter makes itself
     /// (the x87 `sin`/`cos` helpers).
     import_index: std::collections::BTreeMap<crate::chain::HostImport, u32>,
+    write_watches: Vec<(u32,u32)>,
 }
 
 impl BlockEmitter {
@@ -362,6 +373,7 @@ impl BlockEmitter {
             import_index: std::collections::BTreeMap::new(),
             locals,
             body: Vec::new(),
+            write_watches: Vec::new(),
         }
     }
 
@@ -469,6 +481,22 @@ impl BlockEmitter {
                 self.body.extend_from_slice(&crate::encode::leb_s32(*offset as u32 as i32));
                 Ok(4)
             }
+        }
+    }
+
+    fn push_float(&mut self, operand: &Operand) -> Result<u32, TranslateError> {
+        if let Operand::Const { value, size } = operand {
+            let value = match size {
+                4 => f32::from_bits(*value as u32) as f64,
+                8 => f64::from_bits(*value),
+                10 if *value == 0 => 0.0,
+                width => return Err(TranslateError::UnsupportedWidth(*width)),
+            };
+            self.op(op::F64_CONST);
+            self.body.extend(value.to_le_bytes());
+            Ok(8)
+        } else {
+            self.push_value(operand)
         }
     }
 
@@ -621,7 +649,14 @@ impl BlockEmitter {
     /// Marking during the forward pass is therefore one step too late.
     fn pre_mark_x87_temps(&mut self, ops: &[IR]) {
         for ir in ops {
+            if let IR::MicroLoop { head, body, tail, .. } = ir {
+                self.pre_mark_x87_temps(head);
+                self.pre_mark_x87_temps(body);
+                self.pre_mark_x87_temps(tail);
+                continue;
+            }
             let (dst, a, b): (&Operand, Option<&Operand>, Option<&Operand>) = match ir {
+                IR::FloatUnary {dst,src,..} => (dst,None,Some(src)),
                 // Only a FloatToFloat marks its source: that source is the
                 // value `FLD m64` read from memory. `IntToFloat` is `FILD`, whose
                 // source is a genuine integer, and marking it made integer
@@ -629,11 +664,12 @@ impl BlockEmitter {
                 IR::Convert { op: crate::ir::ConvertOp::FloatToFloat, dst, src } => {
                     (dst, None, Some(src))
                 }
-                IR::Convert { dst, .. } => (dst, None, None),
+                IR::Convert { op: crate::ir::ConvertOp::IntToFloat, dst, .. } => (dst, None, None),
+                IR::Convert { op: crate::ir::ConvertOp::FloatToInt, src, .. } => (src, None, None),
                 // `FSINCOS` writes its two results into small temps that are
                 // then copied into ST0/ST1. Those temps hold doubles.
                 IR::Userop { id, dst: Some(d), .. }
-                    if matches!(*id, X87_USEROP_SIN | X87_USEROP_COS) =>
+                    if matches!(*id, X87_USEROP_SIN | X87_USEROP_COS | X87_USEROP_TAN | X87_USEROP_ATAN2) =>
                 {
                     (d, None, None)
                 }
@@ -645,15 +681,15 @@ impl BlockEmitter {
                 {
                     (dst, None, Some(src))
                 }
+                IR::Float { op: crate::ir::FloatOp::Eq | crate::ir::FloatOp::NotEq | crate::ir::FloatOp::Less | crate::ir::FloatOp::LessEq, operands, .. } => {
+                    (&operands.0, None, Some(&operands.1))
+                }
                 IR::Float { dst, operands, .. } => {
                     (dst, Some(&operands.0), Some(&operands.1))
                 }
                 // A copy involving a 10-byte temp (`FLDZ` pushes through one)
                 // is real-valued. Restricted to size 10 on purpose: marking
                 // every Copy source made ordinary integer copies f64.
-                IR::Copy { dst, src } if dst.size() == 10 || src.size() == 10 => {
-                    (dst, None, Some(src))
-                }
                 _ => continue,
             };
             for o in [Some(dst), a, b].into_iter().flatten() {
@@ -666,9 +702,48 @@ impl BlockEmitter {
     }
 
     fn emit_ir(&mut self, ir: &IR) -> Result<(), TranslateError> {
+        self.emit_ir_inner(ir)?;
+        if let IR::Store {addr,..}=ir {
+            for (address,index) in self.write_watches.clone() {
+                self.push_value(addr)?;
+                self.op(op::I32_CONST);self.push_i32_const(address);self.op(op::I32_EQ);
+                self.body.extend([0x04,0x40,op::I32_CONST]);self.push_i32_const(address);
+                self.body.extend([op::I32_CONST,0,op::CALL]);self.body.extend(leb_u32(index));
+                self.body.extend([0x1a,op::END]);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sleigh lowers x87 stack-register rotations (for example `FXCH`) to a
+    /// run of register copies that describe one parallel state update. Keep
+    /// their old values live until every source has been read; emitting these
+    /// copies one at a time aliases ST0..ST7 and destroys values in the cycle.
+    fn emit_x87_parallel_copies(&mut self, copies: &[IR]) -> Result<(), TranslateError> {
+        let mut staged = Vec::with_capacity(copies.len());
+        for ir in copies {
+            let IR::Copy { src, .. } = ir else {
+                return Err(TranslateError::Unsupported("non-copy in x87 parallel assignment"));
+            };
+            staged.push(self.push_float(src)?);
+        }
+        for (ir, width) in copies.iter().zip(staged).rev() {
+            let IR::Copy { dst, .. } = ir else { unreachable!() };
+            self.pop_into_width(dst, width)?;
+        }
+        Ok(())
+    }
+    fn emit_ir_inner(&mut self, ir: &IR) -> Result<(), TranslateError> {
         match ir {
+            IR::FloatUnary {op:kind,dst,src} => {
+                let width=self.push_float(src)?;
+                if width==4 {self.op(op::F64_PROMOTE_F32);}
+                use crate::ir::FloatUnaryOp::*;
+                self.op(match kind {Abs=>0x99,Neg=>0x9a,Ceil=>0x9b,Floor=>0x9c,Round=>0x9e,Sqrt=>0x9f});
+                self.pop_into(dst)
+            }
             IR::Copy { dst, src } => {
-                        let pushed = self.push_value(src)?;
+                let pushed = if self.operand_is_x87(dst) { self.push_float(src)? } else { self.push_value(src)? };
                 self.normalize(src)?;
                 self.pop_into_width(dst, pushed)
             }
@@ -723,15 +798,26 @@ impl BlockEmitter {
             }
             IR::Store { addr, value, size } => {
                 self.push_value(addr)?;
-                self.push_value(value)?;
-                // `FSTP m64` of the stack top, or of a temp produced by the
-                // `Float2Float` that FSTP emits. Both are f64 locals.
-                if self.operand_is_x87(value) && *size == 8 {
-                    self.body.push(op::F64_STORE);
-                    self.body.push(0);
-                    self.body.push(0);
-                    return Ok(());
+                // x87 values live in f64 locals, while FSTP may request either
+                // an m32 or m64 destination. Convert to f32 before storing the
+                // former; an i32.store with the f64 still on the stack produces
+                // an invalid module (or loses the value if coerced).
+                if self.operand_is_x87(value) {
+                    self.push_float(value)?;
+                    match size {
+                        4 => {
+                            self.op(op::F64_DEMOTE_F32);
+                            self.body.extend([op::F32_STORE, 0, 0]);
+                            return Ok(());
+                        }
+                        8 => {
+                            self.body.extend([op::F64_STORE, 0, 0]);
+                            return Ok(());
+                        }
+                        w => return Err(TranslateError::UnsupportedWidth(*w)),
+                    }
                 }
+                self.push_value(value)?;
                 match size {
                     1 => self.body.push(op::I32_STORE8),
                     2 => self.body.push(op::I32_STORE16),
@@ -771,10 +857,11 @@ impl BlockEmitter {
             // x87 transcendentals. wasm has no sin/cos, so these become host
             // calls carrying the double through guest memory.
             IR::Userop { id, args, dst: Some(d) }
-                if matches!(*id, X87_USEROP_SIN | X87_USEROP_COS) =>
+                if matches!(*id, X87_USEROP_SIN | X87_USEROP_COS | X87_USEROP_TAN) =>
             {
                 self.emit_x87_sin_cos(*id, args, d)
             }
+            IR::Userop { id: X87_USEROP_ATAN2, args, dst: Some(d) } => self.emit_x87_atan2(args, d),
             IR::Un { op: un, dst, src } => {
                 self.push_value(src)?;
                 match un {
@@ -859,21 +946,11 @@ impl BlockEmitter {
                 self.normalize(dst)?;
                 self.pop_into(dst)
             }
-            IR::Userop { dst, .. } => {
-                // Environment operations: on the browser side these become host
-                // imports. Until the host layer exists, a userop traps by
-                // returning the current value unchanged *and* is reported by the
-                // caller; never silently treated as a value-producing op.
-                match dst {
-                    Some(d) => {
-                        self.op(op::I32_CONST);
-                        self.body.extend_from_slice(&crate::encode::leb_s32(0));
-                        self.normalize(d)?;
-                        self.pop_into(d)
-                    }
-                    None => Ok(()),
-                }
+            IR::Userop { id, .. } => self.emit_unsupported(TranslateError::UnimplementedUserop(*id)),
+            IR::MicroLoop { head, exit, body, repeat, tail } => {
+                self.emit_micro_loop(head, exit.as_ref(), body, repeat.as_ref(), tail)
             }
+            IR::Unsupported(op) => self.emit_unsupported(TranslateError::UnsupportedPcode(op.clone())),
             IR::Nop => Ok(()),
             IR::Branch { .. }
             | IR::IndirectJump { .. }
@@ -886,6 +963,64 @@ impl BlockEmitter {
         }
     }
 
+    /// Emit a loop that is contained in one guest instruction.
+    ///
+    /// The wasm shape mirrors the reconstructed semantics exactly:
+    ///
+    /// ```text
+    /// block              ;; `br 1` exits the loop
+    ///   loop             ;; `br 0` repeats
+    ///     head
+    ///     br_if 1 (exit)
+    ///     body
+    ///     br_if 0 (repeat)  /  br 0
+    ///   end
+    /// end
+    /// tail
+    /// ```
+    fn emit_micro_loop(
+        &mut self,
+        head: &[IR],
+        exit: Option<&Operand>,
+        body: &[IR],
+        repeat: Option<&Operand>,
+        tail: &[IR],
+    ) -> Result<(), TranslateError> {
+        // Empty block types: the loop carries no value, only control flow.
+        self.op(op::BLOCK);
+        self.op(0x40);
+        self.op(op::LOOP);
+        self.op(0x40);
+        for ir in head {
+            self.emit_ir(ir)?;
+        }
+        if let Some(cond) = exit {
+            self.push_value(cond)?;
+            self.op(op::BR_IF);
+            self.body.extend_from_slice(&leb_u32(1));
+        }
+        for ir in body {
+            self.emit_ir(ir)?;
+        }
+        match repeat {
+            Some(cond) => {
+                self.push_value(cond)?;
+                self.op(op::BR_IF);
+                self.body.extend_from_slice(&leb_u32(0));
+            }
+            None => {
+                self.op(op::BR);
+                self.body.extend_from_slice(&leb_u32(0));
+            }
+        }
+        self.op(op::END);
+        self.op(op::END);
+        for ir in tail {
+            self.emit_ir(ir)?;
+        }
+        Ok(())
+    }
+
     /// Emit `sin` or `cos` of an x87 value via a host import.
     ///
     /// The import signature is `(i32 args_ptr, i32 ret_addr) -> i32`, which
@@ -893,8 +1028,27 @@ impl BlockEmitter {
     /// [`X87_HELPER_ARG`], the helper reads it there and writes its result to
     /// [`X87_HELPER_RET`], and the result is loaded back as this op's value.
     ///
-    /// Only `FSINCOS` needs these. `FPREM1` and `FXAM` are lowered by Sleigh to
-    /// ordinary float ops and need no helper.
+    /// Whole programs can defer unsupported instructions until execution, but
+    /// must report them by name and stop even if the host uses probing returns.
+    /// Standalone translation, without a registered diagnostic import, fails.
+    fn emit_unsupported(&mut self, error: TranslateError) -> Result<(), TranslateError> {
+        let import = unsupported_import(&error);
+        let Some(index) = self.import_index.get(&import).copied() else {
+            return Err(error);
+        };
+        self.op(op::I32_CONST);
+        self.push_i32_const(0);
+        self.op(op::I32_CONST);
+        self.push_i32_const(0);
+        self.op(op::CALL);
+        self.body.extend_from_slice(&leb_u32(index));
+        self.op(0x1a); // drop the probing return value
+        self.op(0x00); // unreachable: never fabricate a result or continue
+        Ok(())
+    }
+
+    /// x87 transcendental userops use a host helper because WASM has no
+    /// portable sin/cos/tan instructions.
     fn emit_x87_sin_cos(
         &mut self,
         id: u64,
@@ -910,7 +1064,7 @@ impl BlockEmitter {
         self.body.push(0);
         self.body.push(0);
         // call helper(0, 0)
-        let imp = if id == X87_USEROP_SIN { X87_USEROP_SIN } else { X87_USEROP_COS };
+        let imp = id;
         let idx = *self
             .import_index
             .get(&x87_helper_import(imp))
@@ -921,12 +1075,34 @@ impl BlockEmitter {
         self.push_i32_const(0);
         self.op(op::CALL);
         self.body.extend_from_slice(&crate::encode::leb_u32(idx));
+        self.op(0x1a); // helper result is in memory; discard its ABI i32 return
         // value = *X87_HELPER_RET
         self.op(op::I32_CONST);
         self.push_i32_const(X87_HELPER_RET as u32);
         self.body.push(op::F64_LOAD);
         self.body.push(0);
         self.body.push(0);
+        self.mark_dst_x87(dst);
+        self.pop_into(dst)
+    }
+
+    /// Emit x87 `FPATAN`: `ST1 = atan2(ST1, ST0)`, then pop the x87 stack.
+    fn emit_x87_atan2(&mut self, args: &[Operand], dst: &Operand) -> Result<(), TranslateError> {
+        if args.len() != 2 { return Err(TranslateError::Unsupported("FPATAN argument shape")); }
+        for (index, arg) in args.iter().enumerate() {
+            self.op(op::I32_CONST);
+            self.push_i32_const((X87_HELPER_ARG + index as u64 * 8) as u32);
+            self.push_float(arg)?;
+            self.body.extend([op::F64_STORE, 0, 0]);
+        }
+        let idx = *self.import_index.get(&x87_helper_import(X87_USEROP_ATAN2))
+            .ok_or(TranslateError::Unsupported("x87 atan2 helper import missing"))?;
+        self.op(op::I32_CONST); self.push_i32_const(0);
+        self.op(op::I32_CONST); self.push_i32_const(0);
+        self.op(op::CALL); self.body.extend_from_slice(&crate::encode::leb_u32(idx));
+        self.op(0x1a);
+        self.op(op::I32_CONST); self.push_i32_const(X87_HELPER_RET_ATAN2 as u32);
+        self.body.extend([op::F64_LOAD, 0, 0]);
         self.mark_dst_x87(dst);
         self.pop_into(dst)
     }
@@ -1035,7 +1211,7 @@ impl BlockEmitter {
                     let idx = self.locals.temp(*offset, 8);
                     self.locals.mark_x87(idx);
                 }
-                let sw = self.push_value(src)?;
+                let sw = self.push_float(src)?;
                 if sw == 4 {
                     self.op(op::F64_PROMOTE_F32);
                 }
@@ -1051,7 +1227,7 @@ impl BlockEmitter {
                 self.pop_into(dst)
             }
             FloatToInt => {
-                self.push_value(src)?;
+                self.push_float(src)?;
                 match dst.size() {
                     1 | 2 | 4 => self.op(op::I32_TRUNC_F64_S),
                     8 => self.op(op::I64_TRUNC_F64_S),
@@ -1069,13 +1245,13 @@ impl BlockEmitter {
         lhs: &Operand,
         rhs: &Operand,
     ) -> Result<(), TranslateError> {
-        let lw = self.push_value(lhs)?;
+        let lw = self.push_float(lhs)?;
         if lw == 4 {
             self.op(op::F64_PROMOTE_F32);
         } else if lw != 8 && lw != 10 {
             return Err(TranslateError::UnsupportedWidth(lw));
         }
-        let rw = self.push_value(rhs)?;
+        let rw = self.push_float(rhs)?;
         if rw == 4 {
             self.op(op::F64_PROMOTE_F32);
         } else if rw != 8 && rw != 10 {
@@ -1180,6 +1356,52 @@ impl BlockEmitter {
             BinOp::Carry | BinOp::SCarry | BinOp::SBorrow | BinOp::MulFull => unreachable!(),
             },
         };
+        if matches!(bin, BinOp::DivS | BinOp::DivU | BinOp::RemS | BinOp::RemU)
+            && std::env::var_os("WLAM_TRACE_DIV").is_some()
+            && !self.write_watches.is_empty()
+        {
+            // Park the already-evaluated operands so tracing does not repeat
+            // guest memory reads or change the arithmetic input. This is
+            // especially useful for x86 IDIV, where a zero denominator traps
+            // before the containing guest block can spill its registers.
+            let width=if wide {8} else {4};
+            let lhs_local=self.locals.temp(SCRATCH_KEY_BASE-900,width);
+            let rhs_local=self.locals.temp(SCRATCH_KEY_BASE-901,width);
+            self.local(op::LOCAL_SET,rhs_local);
+            self.local(op::LOCAL_SET,lhs_local);
+            for (address,index) in self.write_watches.clone() {
+                let source=match address {
+                    0x7fd0=>Some((lhs_local,width)),
+                    0x7fd4=>Some((rhs_local,width)),
+                    0x7fd8=>self.locals.reg("EAX").map(|i|(i,4)),
+                    0x7fdc=>self.locals.reg("EDX").map(|i|(i,4)),
+                    0x7fe0=>self.locals.reg("ECX").map(|i|(i,4)),
+                    0x7fe4=>self.locals.reg("ESI").map(|i|(i,4)),
+                    0x7fe8=>self.locals.reg("EBP").map(|i|(i,4)),
+                    0x7fec=>self.locals.reg("ESP").map(|i|(i,4)),
+                    0x7ff0=>self.locals.reg("EIP").map(|i|(i,4)),
+                    _=>None,
+                };
+                let frame_offset=match address {0x7fee=>Some(4),0x7fef=>Some(8),_=>None};
+                let ebp=frame_offset.and_then(|_|self.locals.reg("EBP"));
+                if source.is_none() && (frame_offset.is_none()||ebp.is_none()) {continue;}
+                self.op(op::I32_CONST);self.push_i32_const(address);
+                if let Some((local,source_width))=source {
+                    self.local(op::LOCAL_GET,local);
+                    if source_width==8 {self.op(op::I64_WRAP_I32);}
+                } else {
+                    self.local(op::LOCAL_GET,ebp.unwrap());
+                    self.op(op::I32_CONST);self.push_i32_const(frame_offset.unwrap());
+                    self.body.extend([op::I32_ADD,op::I32_LOAD,2,0]);
+                }
+                self.body.extend([op::I32_STORE,2,0]);
+                self.op(op::I32_CONST);self.push_i32_const(address);
+                self.op(op::I32_CONST);self.push_i32_const(0);
+                self.op(op::CALL);self.body.extend(leb_u32(index));self.op(0x1a);
+            }
+            self.local(op::LOCAL_GET,lhs_local);
+            self.local(op::LOCAL_GET,rhs_local);
+        }
         self.op(byte);
         // Comparisons already produce exactly 0 or 1, which is the correct value
         // at every destination width — narrowing them (e.g. i32.extend8_s on a
@@ -1207,157 +1429,89 @@ impl BlockEmitter {
         self.pop_into(dst)
     }
 
-    /// `Carry(a, b)` = carry out of the top bit of `a + b` (unsigned);
-    /// `SCarry(a, b)` = signed overflow of the same addition.
-    ///
-    /// Both are computed from the operands rather than delegated to a host
-    /// call: Sleigh emits one of them for *every* arithmetic instruction, so a
-    /// call here would make lifted code an RPC per add.
-    fn emit_carry(
-        &mut self,
-        lhs: &Operand,
-        rhs: &Operand,
-        dst: &Operand,
-        signed: bool,
-    ) -> Result<(), TranslateError> {
-        if signed {
-            return self.emit_carry_signed(lhs, rhs, dst);
-        }
-        // Unsigned: `a + b` carries iff the result is below `a`.
-        self.push_value(lhs)?;
-        self.push_value(rhs)?;
-        self.op(op::I32_ADD);
-        let scratch = self.locals.temp(u64::MAX - 2, 4);
-        self.local(op::LOCAL_TEE, scratch);
-        self.push_value(lhs)?;
-        self.op(op::I32_GT_U); // a > (a + b)  <=>  carry out
-        self.normalize(dst)?;
-        self.pop_into(dst)
+    fn emit_carry(&mut self, lhs: &Operand, rhs: &Operand, dst: &Operand, signed: bool)
+        -> Result<(), TranslateError>
+    {
+        self.emit_flag(lhs, rhs, dst, if signed { BinOp::SCarry } else { BinOp::Carry })
     }
 
-    /// Signed overflow: `((a ^ res) & (b ^ res)) >> 31`.
-    fn emit_carry_signed(
-        &mut self,
-        lhs: &Operand,
-        rhs: &Operand,
-        dst: &Operand,
-    ) -> Result<(), TranslateError> {
-        let a = self.locals.temp(u64::MAX - 4, 4);
-        let b = self.locals.temp(u64::MAX - 5, 4);
-        let r = self.locals.temp(u64::MAX - 6, 4);
-        self.push_value(lhs)?;
-        self.local(op::LOCAL_SET, a);
-        self.push_value(rhs)?;
-        self.local(op::LOCAL_SET, b);
-        self.local(op::LOCAL_GET, a);
-        self.local(op::LOCAL_GET, b);
-        self.op(op::I32_ADD);
-        self.local(op::LOCAL_SET, r);
-        self.local(op::LOCAL_GET, a);
-        self.local(op::LOCAL_GET, r);
-        self.op(op::I32_XOR);
-        self.local(op::LOCAL_GET, b);
-        self.local(op::LOCAL_GET, r);
-        self.op(op::I32_XOR);
-        self.op(op::I32_AND);
-        self.op(op::I32_CONST);
-        self.body.extend_from_slice(&crate::encode::leb_s32(31));
-        self.op(op::I32_SHR_S);
-        self.op(op::I32_CONST);
-        self.body.extend_from_slice(&leb_u32(1));
-        self.op(op::I32_AND);
-        self.normalize(dst)?;
-        self.pop_into(dst)
+    fn emit_borrow(&mut self, lhs: &Operand, rhs: &Operand, dst: &Operand)
+        -> Result<(), TranslateError>
+    {
+        self.emit_flag(lhs, rhs, dst, BinOp::SBorrow)
     }
 
-    /// `SBorrow(a, b)` = signed borrow out of `a - b`, i.e. the sign bit of
-    /// `(a ^ ((a ^ b) & (a ^ res)))`.
-    fn emit_borrow(
-        &mut self,
-        lhs: &Operand,
-        rhs: &Operand,
-        dst: &Operand,
-    ) -> Result<(), TranslateError> {
-        // Borrow is the classic `(a ^ (a - b)) & (a ^ b)` sign trick, valid at
-        // either width; only the opcode family and the sign-bit position differ.
-        // The scratch slots used to be fixed 4-byte i32 locals, so a qword
-        // operand (CMPXCHG8B's 64-bit subtract) was stored into an i32 slot.
-        //
-        // The width has to come from what `push_value` actually pushes --
-        // deciding from the operands' nominal sizes picked i64 for an i32 value.
-        // Both slot sets are pre-allocated so the choice can be made after the
-        // first push; the unused pair simply goes undeclared.
-        let (a32, b32, r32) = (
-            self.locals.temp(u64::MAX - 7, 4),
-            self.locals.temp(u64::MAX - 8, 4),
-            self.locals.temp(u64::MAX - 9, 4),
-        );
-        let (a64, b64, r64) = (
-            self.locals.temp(u64::MAX - 10, 8),
-            self.locals.temp(u64::MAX - 11, 8),
-            self.locals.temp(u64::MAX - 12, 8),
-        );
-        let lw = self.push_value(lhs)?;
-        // `wide` cannot be decided from the left operand alone: the DPX-style
-        // `borrow from EAX - qword` has an i32 left and an i64 right. Push both
-        // and widen whichever is narrow, so the pair always matches the slot
-        // width. Parking happens in the i64 slots; a 32-bit result is narrowed
-        // afterwards by `normalize`.
-        let rw = self.push_value(rhs)?;
-        let wide = lw == 8 || rw == 8;
-        let (a, b, r) = if wide { (a64, b64, r64) } else { (a32, b32, r32) };
-        // rhs is on top: widen it, park it, then widen and park lhs.
-        if wide && rw != 8 {
-            self.op(op::I64_EXTEND_I32_U);
+    /// Compute flags at the operands' precision, not the flag destination's.
+    fn emit_flag(&mut self, lhs: &Operand, rhs: &Operand, dst: &Operand, kind: BinOp)
+        -> Result<(), TranslateError>
+    {
+        let width = lhs.size().max(rhs.size());
+        if !matches!(width, 1 | 2 | 4 | 8) {
+            return Err(TranslateError::UnsupportedWidth(width));
         }
-        self.local(op::LOCAL_SET, b);
-        if wide && lw != 8 {
-            self.op(op::I64_EXTEND_I32_U);
+        let mut lw = self.push_value(lhs)?;
+        if lw == 8 && lhs.size() <= 4 {
+            self.op(op::I32_WRAP_I64);
+            lw = 4;
         }
-        self.local(op::LOCAL_SET, a);
-        self.local(op::LOCAL_GET, a);
-        self.local(op::LOCAL_GET, b);
-        self.op(step(wide, op::I32_SUB, op::I64_SUB));
-        self.local(op::LOCAL_SET, r);
-        self.local(op::LOCAL_GET, a);
-        self.local(op::LOCAL_GET, b);
-        self.op(step(wide, op::I32_XOR, op::I64_XOR));
-        self.local(op::LOCAL_GET, a);
-        self.local(op::LOCAL_GET, r);
-        self.op(step(wide, op::I32_XOR, op::I64_XOR));
-        self.op(step(wide, op::I32_AND, op::I64_AND));
-        self.local(op::LOCAL_GET, a);
-        self.op(step(wide, op::I32_XOR, op::I64_XOR));
-        if wide {
-            self.op(op::I64_CONST);
-            self.body.extend_from_slice(&crate::encode::leb_s64(63));
-            self.op(op::I64_SHR_S);
-        } else {
+        if lhs.size() < 4 {
             self.op(op::I32_CONST);
-            self.push_i32_const(31);
-            self.op(op::I32_SHR_S);
-        }
-        // Mask off everything above the sign bit. This must match the width the
-        // shift produced: leaving it as `i32.and` put a 32-bit operator on the
-        // i64 the wide path leaves on the stack.
-        if wide {
-            self.op(op::I64_CONST);
-            self.body.extend_from_slice(&leb_u32(1));
-            self.op(op::I64_AND);
-        } else {
-            self.op(op::I32_CONST);
-            self.body.extend_from_slice(&leb_u32(1));
+            self.push_i32_const((1u32 << (lhs.size() * 8)) - 1);
             self.op(op::I32_AND);
         }
-        // The wide path leaves an i64; flags are 1-2 bytes, so narrow it before
-        // `normalize` applies `i32.extend8_s`/`extend16_s`, which have no i64
-        // form.
-        if wide {
+        let mut rw = self.push_value(rhs)?;
+        if rw == 8 && rhs.size() <= 4 {
             self.op(op::I32_WRAP_I64);
+            rw = 4;
+        }
+        if rhs.size() < 4 {
+            self.op(op::I32_CONST);
+            self.push_i32_const((1u32 << (rhs.size() * 8)) - 1);
+            self.op(op::I32_AND);
+        }
+        let wide = lw == 8 || rw == 8;
+        let slot = if wide { u64::MAX - 203 } else { u64::MAX - 200 };
+        let (a, b, r) = (self.locals.temp(slot, if wide { 8 } else { 4 }),
+            self.locals.temp(slot - 1, if wide { 8 } else { 4 }),
+            self.locals.temp(slot - 2, if wide { 8 } else { 4 }));
+        if wide && rw != 8 { self.op(op::I64_EXTEND_I32_U); }
+        self.local(op::LOCAL_SET, b);
+        if wide && lw != 8 { self.op(op::I64_EXTEND_I32_U); }
+        self.local(op::LOCAL_SET, a);
+        self.local(op::LOCAL_GET, a);
+        self.local(op::LOCAL_GET, b);
+        self.op(if kind == BinOp::SBorrow {
+            step(wide, op::I32_SUB, op::I64_SUB)
+        } else { step(wide, op::I32_ADD, op::I64_ADD) });
+        if kind == BinOp::Carry {
+            if width < 4 {
+                self.op(op::I32_CONST);
+                self.push_i32_const((1u32 << (width * 8)) - 1);
+                self.op(op::I32_AND);
+            }
+            self.local(op::LOCAL_GET, a);
+            self.op(step(wide, op::I32_LT_U, op::I64_LT_U));
+        } else {
+            self.local(op::LOCAL_SET, r);
+            self.local(op::LOCAL_GET, a);
+            self.local(op::LOCAL_GET, if kind == BinOp::SBorrow { b } else { r });
+            self.op(step(wide, op::I32_XOR, op::I64_XOR));
+            self.local(op::LOCAL_GET, if kind == BinOp::SBorrow { a } else { b });
+            self.local(op::LOCAL_GET, r);
+            self.op(step(wide, op::I32_XOR, op::I64_XOR));
+            self.op(step(wide, op::I32_AND, op::I64_AND));
+            self.op(if wide { op::I64_CONST } else { op::I32_CONST });
+            self.body.extend_from_slice(&crate::encode::leb_s32((width * 8 - 1) as i32));
+            self.op(step(wide, op::I32_SHR_U, op::I64_SHR_U));
+            self.op(if wide { op::I64_CONST } else { op::I32_CONST });
+            self.body.push(1);
+            self.op(step(wide, op::I32_AND, op::I64_AND));
+            if wide { self.op(op::I32_WRAP_I64); }
         }
         self.normalize(dst)?;
         self.pop_into(dst)
     }
+
 }
 
 /// Pick the i32 or i64 form of an opcode.
@@ -1383,9 +1537,28 @@ pub fn translate_ops_with_imports(
     let base_count = locals.len();
     let mut e = BlockEmitter::new(locals);
     e.import_index = imports.clone();
+    e.write_watches=imports.iter().filter_map(|(import,index)| {
+        if import.library!="wlam.trace" {return None;}
+        Some((u32::from_str_radix(import.name.strip_prefix("write_")?,16).ok()?,*index))
+    }).collect();
     e.pre_mark_x87_temps(ops);
-    for ir in ops {
-        e.emit_ir(ir)?;
+    let mut at = 0;
+    while at < ops.len() {
+        if is_x87_register_copy(&ops[at]) {
+            let mut end = at + 1;
+            while end < ops.len() && is_x87_register_copy(&ops[end]) {
+                end += 1;
+            }
+            if end - at > 1 {
+                e.emit_x87_parallel_copies(&ops[at..end])?;
+            } else {
+                e.emit_ir(&ops[at])?;
+            }
+            at = end;
+        } else {
+            e.emit_ir(&ops[at])?;
+            at += 1;
+        }
     }
     // ALL locals must be declared: registers are locals (not parameters), and
     // the temps appended during emission follow them. Declaring only the temps
@@ -1423,6 +1596,15 @@ pub fn translate_ops_with_imports(
         ops_offset: prefix_len,
         map,
     })
+}
+
+fn is_x87_register_copy(ir: &IR) -> bool {
+    matches!(ir,
+        IR::Copy {
+            dst: Operand::Reg { name: dst, size: 10 },
+            src: Operand::Reg { name: src, size: 10 },
+        } if dst.starts_with("ST") && src.starts_with("ST")
+    )
 }
 
 /// Build a complete wasm module holding the translated block, so tests can
@@ -1473,26 +1655,41 @@ pub fn module_for_block(block: &TranslatedBlock, exports: &str) -> Vec<u8> {
 }
 
 /// Build a module that runs the block and then stores every register local into
-/// guest memory at [`REG_SNAPSHOT_BASE`] + index * 4.
+/// guest memory at [`REG_SNAPSHOT_BASE`] + index * 8.
 ///
 /// Registers are wasm locals (fast), which makes them invisible from outside.
 /// A snapshot area keeps the machine state observable so tests and trap
 /// diagnostics can read it without giving up the locals.
 pub const REG_SNAPSHOT_BASE: u64 = 0x8000;
 
+/// Every register occupies eight bytes, including integer registers. One
+/// fixed stride keeps the loader, block probes and chained calls in agreement.
+pub const fn snapshot_address(index: usize) -> u64 {
+    REG_SNAPSHOT_BASE + index as u64 * 8
+}
+
 /// Scratch double passed to an x87 transcendental helper.
 ///
 /// wasm has no `sin`/`cos`, so `FSINCOS` becomes a host call. Every host import
 /// has the shape `(i32 args_ptr, i32 ret_addr) -> i32`, which cannot carry an
 /// f64, so the argument is stored here as a double, the helper reads it, and the
-/// result is loaded back. Sits well above the register snapshot area so the two
+/// result is loaded back. Sits below the register snapshot area so the two
 /// can never overlap.
-pub const X87_HELPER_ARG: u64 = 0x8100;
+pub const X87_HELPER_ARG: u64 = 0x7000;
 
 /// Sleigh userop id for `sin` of `ST0` (one half of `FSINCOS`).
-pub const X87_USEROP_SIN: u64 = 99;
+pub const X87_USEROP_COS: u64 = 99;
 /// Sleigh userop id for `cos` of `ST0` (the other half of `FSINCOS`).
-pub const X87_USEROP_COS: u64 = 105;
+pub const X87_USEROP_SIN: u64 = 105;
+/// Sleigh userop id for x87 `FPTAN`.
+pub const X87_USEROP_TAN: u64 = 103;
+/// Sleigh userop id for x87 `FPATAN`.
+pub const X87_USEROP_ATAN2: u64 = 102;
+
+/// A diagnostic import, deliberately unimplemented by the Win32 host.
+pub fn unsupported_import(error: &TranslateError) -> crate::chain::HostImport {
+    crate::chain::HostImport { library: "wlam.unsupported".into(), name: error.to_string() }
+}
 
 /// The synthetic host import backing an x87 transcendental.
 ///
@@ -1501,11 +1698,13 @@ pub const X87_USEROP_COS: u64 = 105;
 pub fn x87_helper_import(op: u64) -> crate::chain::HostImport {
     crate::chain::HostImport {
         library: "wlam.x87".to_string(),
-        name: if op == X87_USEROP_SIN { "sin" } else { "cos" }.to_string(),
+        name: match op { X87_USEROP_SIN => "sin", X87_USEROP_COS => "cos", X87_USEROP_TAN => "tan", X87_USEROP_ATAN2 => "atan2", _ => "unknown" }.to_string(),
     }
 }
 /// Scratch double receiving an x87 helper's result.
-pub const X87_HELPER_RET: u64 = 0x8108;
+pub const X87_HELPER_RET: u64 = 0x7008;
+/// Scratch double receiving the x87 `FPATAN` result.
+pub const X87_HELPER_RET_ATAN2: u64 = 0x7010;
 
 /// `initial` is currently informational: the harness writes the initial
 /// register values into the snapshot area itself before calling `run`, so the
@@ -1519,23 +1718,12 @@ pub fn module_with_snapshot(
     initial: &[u64],
 ) -> Vec<u8> {
     let _ = initial;
-    let mut body = block.body.clone();
-    body.pop(); // drop the trailing `end`
-                // Prologue: load the initial register values from the snapshot area into
-                // the locals, so the function starts from a known machine state.
-    //
-    // Slot layout, in register order: integer registers take 4 bytes each, and
-    // the x87 stack follows them at 8 bytes each. The x87 registers are f64
-    // locals, so they must be loaded and stored as doubles -- emitting
-    // `i32.load` into an f64 local is the type error a validator reports as
-    // "expected f64, found i32", which is how the first version of this
-    // function failed on real Minesweeper blocks.
-    let mut next = REG_SNAPSHOT_BASE;
+    // Keep local declarations first, then seed before executing any guest op.
+    let mut body = block.body[..block.ops_offset].to_vec();
     let mut slot: Vec<(u32, u64)> = Vec::with_capacity(registers.len());
-    for name in registers {
+    for (i, name) in registers.iter().enumerate() {
         let Some(idx) = locals.reg(name) else { continue };
-        slot.push((idx, next));
-        next += if locals.is_x87(idx) { 8 } else { 4 };
+        slot.push((idx, snapshot_address(i)));
     }
     for &(idx, at) in &slot {
         let is_x87 = locals.is_x87(idx);
@@ -1547,6 +1735,7 @@ pub fn module_with_snapshot(
         body.push(op::LOCAL_SET);
         body.extend_from_slice(&leb_u32(idx));
     }
+    body.extend_from_slice(&block.body[block.ops_offset..block.body.len() - 1]);
     // Write every register back, so the caller sees the block's result. The
     // differential gate compares exactly this, so it stays unconditional: a
     // switch here would let the gate and the probe measure different modules.

@@ -6,8 +6,7 @@ use wlam_emit::LocalMap;
 use wlam_pe::Pe;
 use wlam_sleigh::with_big_stack;
 
-#[path = "../tests/shared/mod.rs"]
-mod shared;
+use wlam_sleigh::emit as shared;
 
 fn main() {
     let addr: u64 = u64::from_str_radix(

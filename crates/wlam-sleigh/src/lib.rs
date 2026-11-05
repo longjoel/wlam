@@ -31,7 +31,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod compile;
 pub mod discover;
+pub mod emit;
 pub mod interp;
 pub mod ir;
 pub mod registers;
@@ -45,14 +47,15 @@ pub use ir::{BinOp, IR, Operand, UnOp};
 pub use pcode_ir;
 pub use rsleigh_api::{Architecture, Decoder};
 
-/// Stack size used for lifting work: 16 MiB.
+/// Stack size used for lifting work: 64 MiB.
+/// The interactive clang fixture exceeds 16 MiB on the generated decoder path.
 ///
 /// The vendored rsleigh x86 decoder recurses on Sleigh sub-tables and needs
 /// more than the default 2 MiB test-thread stack in debug builds (measured:
 /// fails at 2 MiB, passes at 8 MiB for a single `call [IAT]`). Callers running
 /// on a thread with the default stack should wrap lifting in
 /// [`with_big_stack`] rather than silently depending on the build profile.
-pub const LIFT_STACK_SIZE: usize = 16 * 1024 * 1024;
+pub const LIFT_STACK_SIZE: usize = 64 * 1024 * 1024;
 
 /// Run `f` on a thread with a [`LIFT_STACK_SIZE`] stack and return its result.
 ///
@@ -227,23 +230,74 @@ pub fn lift_block(bytes: &[u8], start: u64) -> Block {
             break;
         }
         let mut decoder = Decoder::new(Architecture::X86_32);
-        let insn = match decoder.decode(rest, ip) {
+        let mut insn = match decoder.decode_unoptimized(rest, ip) {
             Ok(i) if i.len > 0 => i,
             _ => {
                 terminator = Terminator::Undecodable(ip);
                 break;
             }
         };
-        let mut ops = Vec::with_capacity(insn.ops.len());
-        let mut unlowered = 0usize;
-        for op in &insn.ops {
-            let lowered = crate::ir::lower(op);
-            if matches!(lowered, IR::Nop) && !matches!(op, PcodeOp::CallOther { .. }) {
-                unlowered += 1;
+        repair_x86_flagged_memory_address(&mut insn.ops);
+        pcode_ir::optimize(&mut insn.ops);
+        // The decoder spaces instruction temporaries by 64 KiB, but nested
+        // Sleigh constructors allocate several such ranges. Adjacent native
+        // instructions can therefore reuse the same numeric temp, even with
+        // incompatible integer/float types. Give each x86 instruction a 4 GiB
+        // namespace while retaining its internal subtable offsets.
+        let namespace = ip.wrapping_shl(32).wrapping_sub(ip.wrapping_shl(16));
+        let unique_outputs = insn.ops.iter().filter_map(pcode_ir::get_output)
+            .filter(|v|v.space == AddressSpaceId::Unique).map(|v|v.offset)
+            .collect::<std::collections::BTreeSet<_>>();
+        for op in &mut insn.ops {
+            // Indirect memory transfers may name a Unique pointer using a RAM
+            // varnode. Keep that reference paired with its renamed producer.
+            if let PcodeOp::BranchInd { dest } | PcodeOp::CallInd { dest } = op {
+                if dest.space == AddressSpaceId::Ram && unique_outputs.contains(&dest.offset) {
+                    dest.offset += namespace;
+                }
             }
-            ops.push(lowered);
+            pcode_ir::offset_unique_varnodes(op, namespace);
+        }
+        let mut ops = Vec::with_capacity(insn.ops.len());
+        for op in &insn.ops {
+            ops.push(crate::ir::lower(op));
+        }
+        // Sleigh's x87 transcendental templates sometimes return their
+        // CallOther result under the following instruction's unique-temp
+        // namespace, while the explicit ST0 write reads the current
+        // instruction's namespace. Preserve the P-code data flow by wiring the
+        // immediate ST0 copy to the CallOther output.
+        for i in 0..ops.len().saturating_sub(1) {
+            let result = match &ops[i] {
+                IR::Userop { id: 99 | 102 | 103 | 105, dst: Some(dst), .. } => Some(dst.clone()),
+                _ => None,
+            };
+            if let Some(result) = result {
+                if let IR::Copy {
+                    dst: Operand::Reg { name, .. },
+                    src: Operand::Temp { .. },
+                } = &ops[i + 1]
+                {
+                    if name.as_ref() == "ST0" {
+                        if let IR::Copy { src, .. } = &mut ops[i + 1] {
+                            *src = result;
+                        }
+                    }
+                }
+            }
         }
         let next = ip + insn.len;
+        // `REP`-prefixed string instructions lift to a microcode loop whose
+        // branches target the instruction's own start and `inst_next`, not
+        // other blocks. Collapse that shape into a structured loop instead of
+        // leaving both branches as unsupported ops.
+        ops = collapse_micro_loop(&insn.ops, ops, ip, next);
+        let mnemonic=insn.disassembly.split_whitespace().next().unwrap_or("");
+        if ["STOS","SCAS","CMPS","LODS"].iter().any(|name|mnemonic.starts_with(name))
+            || mnemonic.starts_with("MOVS") && insn.disassembly.contains("ES:") {
+            snapshot_string_addresses(&mut ops,ip);
+        }
+        let unlowered = count_unlowered(&ops);
         let mut term = None;
         for op in &insn.ops {
             match op {
@@ -319,6 +373,193 @@ pub fn lift_block(bytes: &[u8], start: u64) -> Block {
     Block { start, end: ip, instructions, terminator }
 }
 
+/// The x86-32 address width. A `Const` branch destination of this size is a
+/// real instruction address; Sleigh encodes its own microcode labels as
+/// 8-byte constants (see `const_space_branch_is_not_a_terminator`).
+const ADDRESS_SIZE: u32 = 4;
+
+/// A `Branch`/`CBranch` whose destination is an address-sized constant.
+///
+/// The returned condition is `None` for an unconditional branch.
+fn const_address_branch(op: &PcodeOp) -> Option<(u64, Option<&Varnode>)> {
+    match op {
+        PcodeOp::Branch { dest }
+            if dest.space == AddressSpaceId::Const && dest.size == ADDRESS_SIZE =>
+        {
+            Some((dest.offset, None))
+        }
+        PcodeOp::CBranch { dest, cond }
+            if dest.space == AddressSpaceId::Const && dest.size == ADDRESS_SIZE =>
+        {
+            Some((dest.offset, Some(cond)))
+        }
+        _ => None,
+    }
+}
+
+fn is_transfer(op: &PcodeOp) -> bool {
+    matches!(
+        op,
+        PcodeOp::Branch { .. }
+            | PcodeOp::CBranch { .. }
+            | PcodeOp::BranchInd { .. }
+            | PcodeOp::Call { .. }
+            | PcodeOp::CallInd { .. }
+            | PcodeOp::Return { .. }
+    )
+}
+
+/// Turn Sleigh's flattened `REP` microcode loop into a structured loop.
+///
+/// `REP MOVS`/`STOS`/`LODS` and friends lift to:
+///
+/// ```text
+/// head:     cond = (ECX == 0)
+///           if cond goto inst_next      ; exit when the count is exhausted
+/// body:     ...one element copy...
+///           goto inst_start             ; loop back
+/// ```
+///
+/// `REPE`/`REPNE CMPS`/`SCAS` replace the unconditional back edge with a
+/// second conditional branch. Both shapes are reducible to
+/// [`IR::MicroLoop`]. Anything else is left as the explicit
+/// [`IR::Unsupported`] ops the lifter produced, so an unknown microcode shape
+/// still traps by name rather than being executed with invented semantics.
+fn collapse_micro_loop(raw: &[PcodeOp], lowered: Vec<IR>, start: u64, next: u64) -> Vec<IR> {
+    let branches: Vec<(usize, u64, Option<&Varnode>)> = raw
+        .iter()
+        .enumerate()
+        .filter_map(|(i, op)| const_address_branch(op).map(|(target, cond)| (i, target, cond)))
+        .collect();
+    if branches.is_empty() {
+        return lowered;
+    }
+    // Only edges that stay inside this instruction are understood. A constant
+    // address somewhere else is an unknown microcode shape, not a block edge.
+    if branches.iter().any(|(_, target, _)| *target != start && *target != next) {
+        return lowered;
+    }
+    if branches.len() != 2 {
+        return lowered;
+    }
+    let (exit_index, exit_target, exit_cond) = branches[0];
+    let (repeat_index, repeat_target, repeat_cond) = branches[1];
+    // `REP` always tests the counter before the body; a forward branch with no
+    // condition would be a different (skip) pattern.
+    if exit_target != next || repeat_target != start || exit_index >= repeat_index {
+        return lowered;
+    }
+    let Some(exit_cond) = exit_cond else {
+        return lowered;
+    };
+    // No other transfer may sit in the middle: the two branches above are only
+    // a complete loop when they are the only control flow in the instruction.
+    if raw
+        .iter()
+        .enumerate()
+        .any(|(i, op)| i != exit_index && i != repeat_index && is_transfer(op))
+    {
+        return lowered;
+    }
+
+    vec![IR::MicroLoop {
+        head: lowered[..exit_index].to_vec(),
+        exit: Some(Operand::from_varnode(exit_cond)),
+        body: lowered[exit_index + 1..repeat_index].to_vec(),
+        repeat: repeat_cond.map(Operand::from_varnode),
+        tail: lowered[repeat_index + 1..].to_vec(),
+    }]
+}
+
+/// String-address subtables update ESI/EDI before their exported memory
+/// reference is consumed. Freeze their input values once per iteration, so
+/// accesses use the old address while the architectural registers advance.
+///
+/// The generated x86 SBB/ADC P-code can reuse the same unique varnode for a
+/// lazy memory operand's address and the widened carry flag. Preserve the
+/// earlier effective address for RAM accesses after that flag copy; arithmetic
+/// uses of the varnode still need the carry value.
+fn repair_x86_flagged_memory_address(ops: &mut [PcodeOp]) {
+    use pcode_ir::{AddressSpaceId, PcodeOp as P};
+
+    let carry_temps = ops
+        .iter()
+        .filter_map(|op| match op {
+            P::IntZext { out, input }
+                if input.space == AddressSpaceId::Register && input.offset == 512 =>
+            {
+                Some(out.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    for i in 0..ops.len() {
+        let (address_temp, carry_temp) = match &ops[i] {
+            P::Copy { out, input }
+                if out.space == AddressSpaceId::Unique && carry_temps.contains(input) =>
+            {
+                (out.clone(), input.clone())
+            }
+            _ => continue,
+        };
+        let Some(address) = ops[..i].iter().rev().find_map(|op| match op {
+            P::Copy { out, input } if *out == address_temp && *input != carry_temp => {
+                Some(input.clone())
+            }
+            _ => None,
+        }) else {
+            continue;
+        };
+        for op in &mut ops[i + 1..] {
+            match op {
+                P::Load { ptr, .. } | P::Store { ptr, .. } if *ptr == address_temp => {
+                    *ptr = address.clone();
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn snapshot_string_addresses(ops:&mut Vec<IR>,instruction:u64) {
+    let mut used=std::collections::BTreeSet::new();
+    let rewrite=|operand:&mut Operand,used:&mut std::collections::BTreeSet<&'static str>| {
+        let register=match operand {Operand::Reg {name,..} if name.as_ref()=="ESI"=>"ESI",Operand::Reg {name,..} if name.as_ref()=="EDI"=>"EDI",_=>return};
+        used.insert(register);
+        *operand=Operand::Temp {offset:(instruction<<32)|if register=="ESI" {0x80000000} else {0x80000004},size:4};
+    };
+    for op in ops.iter_mut() {
+        match op {
+            IR::Copy {src,..}|IR::Un {src,..}|IR::Convert {src,..}|IR::FloatUnary {src,..}|IR::Subpiece {src,..}=>rewrite(src,&mut used),
+            IR::Load {addr,..}=>rewrite(addr,&mut used),
+            IR::Store {addr,value,..}=>{rewrite(addr,&mut used);rewrite(value,&mut used);}
+            IR::Bin {operands,..}|IR::Float {operands,..}=>{rewrite(&mut operands.0,&mut used);rewrite(&mut operands.1,&mut used);}
+            IR::MicroLoop {body,..}=>snapshot_string_addresses(body,instruction),
+            _=>{}
+        }
+    }
+    let snapshots=used.into_iter().map(|name|IR::Copy {
+        dst:Operand::Temp {offset:(instruction<<32)|if name=="ESI" {0x80000000} else {0x80000004},size:4},
+        src:Operand::Reg {name:name.into(),size:4},
+    }).collect::<Vec<_>>();
+    ops.splice(0..0,snapshots);
+}
+
+/// Count unsupported ops, including those nested in reconstructed microcode
+/// loops, so per-instruction diagnostics stay truthful.
+fn count_unlowered(ops: &[IR]) -> usize {
+    ops.iter()
+        .map(|op| match op {
+            IR::Unsupported(_) => 1,
+            IR::MicroLoop { head, body, tail, .. } => {
+                count_unlowered(head) + count_unlowered(body) + count_unlowered(tail)
+            }
+            _ => 0,
+        })
+        .sum()
+}
+
 impl IR {
     /// Human-readable form, e.g. `EAX = EAX + 0x5` or `CF = Carry(EAX, 0x5)`.
     ///
@@ -345,6 +586,7 @@ impl IR {
                 // mistaken for integer arithmetic with a same-named mnemonic.
                 format!("{} = ~{op:?}({}, {})", o(dst), o(&operands.0), o(&operands.1))
             }
+            IR::FloatUnary { op, dst, src } => format!("{} = ~{op:?}({})", o(dst), o(src)),
             IR::Un { op, dst, src } => format!("{} = {op:?}({})", o(dst), o(src)),
             IR::Convert { op, dst, src } => format!("{} = {op:?}({})", o(dst), o(src)),
             IR::Subpiece { dst, src, lsb } => format!("{} = {}.{lsb}", o(dst), o(src)),
@@ -367,6 +609,25 @@ impl IR {
                     None => format!("{call}  ; userop {id}"),
                 }
             }
+            IR::MicroLoop { head, exit, body, repeat, tail } => {
+                let text = |ops: &[IR]| {
+                    ops.iter().map(|op| op.text()).collect::<Vec<_>>().join("; ")
+                };
+                let exit = exit.as_ref().map_or_else(String::new, |c| {
+                    format!(", exit if {}", o(c))
+                });
+                let repeat = repeat.as_ref().map_or_else(
+                    || "repeat".to_string(),
+                    |c| format!("repeat if {}", o(c)),
+                );
+                format!(
+                    "micro-loop {{ {}{exit}; {}; {repeat} }} tail {{ {} }}",
+                    text(head),
+                    text(body),
+                    text(tail)
+                )
+            }
+            IR::Unsupported(op) => format!("unsupported: {op}"),
             IR::Nop => "nop".to_string(),
         }
     }
@@ -422,6 +683,26 @@ pub fn scan(bytes: &[u8], base: u64) -> Coverage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn instruction_temporaries_have_disjoint_namespaces() {
+        let lifted = block(&[0xd9,0xeb,0xa5,0xa5,0xdd,0x5d,0x8a,0xc3], 0x1000);
+        let mut count = 0;
+        for instruction in &lifted.instructions {
+            for op in &instruction.ops {
+                let destination = match op {
+                    IR::Copy { dst, .. } | IR::Load { dst, .. } |
+                    IR::Bin { dst, .. } | IR::Convert { dst, .. } => Some(dst),
+                    _ => None,
+                };
+                if let Some(Operand::Temp { offset, .. }) = destination {
+                    assert_eq!(offset >> 32, instruction.address);
+                    count += 1;
+                }
+            }
+        }
+        assert!(count > 3);
+    }
 
     /// Bytes lifted in these tests are hand-assembled from the Intel encoding
     /// tables; expected results are derived from the ISA definition.

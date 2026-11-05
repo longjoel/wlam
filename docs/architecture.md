@@ -9,7 +9,7 @@
              └──────┬───────┘
                     ▼
              ┌──────────────┐   discovery from entry point + exports +
-             │ wlam-lift-x86│   IAT callers; jump-table recovery
+             │ wlam-sleigh│   IAT callers; jump-table recovery
              │  x86 → P-code│
              └──────┬───────┘
                     ▼
@@ -66,7 +66,7 @@ translation and far-pointer context emulation for SEH.
 |---|---|---|
 | `wlam-pe` | parse PE32/PE32+; imports, exports, relocs, resources | any recompilation policy |
 | `wlam-pcode` | IR definition, semantics, C-like printer | knowing x86 or wasm |
-| `wlam-lift-x86` | x86 → P-code | discovery, ABI decisions |
+| `wlam-sleigh` | x86 → P-code | discovery, ABI decisions |
 | `wlam-translate` | discovery, call resolution, translation orchestration | emitting bytes |
 | `wlam-emit` | P-code → wasm binary | parsing anything |
 | `wlam-host` | Win32 API implementation | interpreting guest code |

@@ -217,7 +217,12 @@ impl HeapSet {
         }
 
         // Try each arena belonging to this heap.
-        let arenas: Vec<Heap> = self.heaps.iter().copied().filter(|h| h.handle == handle).collect();
+        let arenas: Vec<Heap> = self
+            .heaps
+            .iter()
+            .copied()
+            .filter(|h| h.handle == handle)
+            .collect();
         for heap in arenas {
             if let Some(p) = alloc_in_arena(mem, &heap, need, flags & HEAP_ZERO_MEMORY != 0) {
                 return Some(p + HEADER);
@@ -397,7 +402,11 @@ mod tests {
         let mut mem = GuestMemory::new(&mut data);
         let h = set.create(0x10000, 0).unwrap();
         let p = set.alloc(&mut mem, h, 0, 100).unwrap();
-        assert_eq!(set.size(&mem, h, p), Some(104), "size is the block minus its header");
+        assert_eq!(
+            set.size(&mem, h, p),
+            Some(104),
+            "size is the block minus its header"
+        );
     }
 
     #[test]
@@ -410,7 +419,11 @@ mod tests {
         set.free(&mut mem, h, p);
         // Reallocated memory may be dirty unless HEAP_ZERO_MEMORY is passed.
         let q = set.alloc(&mut mem, h, HEAP_ZERO_MEMORY, 64).unwrap();
-        assert_eq!(mem.read_u32(q), Some(0), "HEAP_ZERO_MEMORY must clear the block");
+        assert_eq!(
+            mem.read_u32(q),
+            Some(0),
+            "HEAP_ZERO_MEMORY must clear the block"
+        );
     }
 
     #[test]
@@ -430,7 +443,10 @@ mod tests {
         let mut mem = GuestMemory::new(&mut data);
         let h = set.create(0x10000, 0).unwrap();
         assert!(!set.free(&mut mem, h, 0), "NULL is not a valid block");
-        assert!(!set.free(&mut mem, h, 0x1234_5678), "a wild pointer is not a block");
+        assert!(
+            !set.free(&mut mem, h, 0x1234_5678),
+            "a wild pointer is not a block"
+        );
         let p = set.alloc(&mut mem, h, 0, 32).unwrap();
         assert!(set.free(&mut mem, h, p));
         assert!(!set.free(&mut mem, h, p), "double free must be refused");
@@ -451,7 +467,11 @@ mod tests {
         let mut set = HeapSet::new(0x1000, data.len() as u64);
         let mut mem = GuestMemory::new(&mut data);
         let h = set.create(0x1000, 0).expect("small heap fits");
-        assert_eq!(set.alloc(&mut mem, h, 0, 0x1_0000), None, "too large for the region");
+        assert_eq!(
+            set.alloc(&mut mem, h, 0, 0x1_0000),
+            None,
+            "too large for the region"
+        );
     }
 
     #[test]
@@ -467,7 +487,10 @@ mod tests {
         let mut set = HeapSet::new(0x1000, 0x10_0000);
         let h = set.create(0x1000, 0).unwrap();
         assert!(!set.destroy(0xDEAD_BEEF), "unknown handle");
-        assert!(!set.destroy(set.process_heap()), "the process heap cannot be destroyed");
+        assert!(
+            !set.destroy(set.process_heap()),
+            "the process heap cannot be destroyed"
+        );
         assert!(set.destroy(h));
         assert!(!set.destroy(h), "double destroy");
     }

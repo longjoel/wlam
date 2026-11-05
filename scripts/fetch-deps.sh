@@ -10,6 +10,7 @@ set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TOOLCHAIN="$ROOT/toolchain"
+RSLEIGH_REV="7d80fe56b459a06eceea750220a51832a3697942"
 GHIDRA_VERSION="11.4.2"
 GHIDRA_ZIP="ghidra_${GHIDRA_VERSION}_PUBLIC_20250826.zip"
 
@@ -31,7 +32,9 @@ fetch_rsleigh() {
     # generated from the Sleigh sources first (~1 min per architecture).
     cd "$TOOLCHAIN"
     if [ ! -d rsleigh ]; then
-        git clone --depth 1 https://github.com/ShaneBreazeale/rsleigh
+        git clone --no-checkout --depth 1 https://github.com/ShaneBreazeale/rsleigh
+        git -C rsleigh fetch --depth 1 origin "$RSLEIGH_REV"
+        git -C rsleigh checkout --detach "$RSLEIGH_REV"
     fi
     cd rsleigh
     # Local fixes to rsleigh live here as patches, because this directory is a
@@ -42,6 +45,7 @@ fetch_rsleigh() {
     #       `trunk` value by 8 as if it were bits, so `tmp(4)` became `lsb = 0`
     #       and both halves of a dword MUL collapsed onto the low half
     #       (EDX = EAX). See docs/sleigh-notes.md.
+    # 0002: apply FS/GS bases to absolute displacement addressing as well.
     for patch in "$ROOT/scripts/patches"/*.patch; do
         [ -e "$patch" ] || continue
         if git apply --reverse --check "$patch" 2>/dev/null; then

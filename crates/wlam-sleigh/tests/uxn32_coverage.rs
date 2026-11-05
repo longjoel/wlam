@@ -128,7 +128,7 @@ fn collect_regs(ir: &IR, out: &mut std::collections::BTreeSet<String>) {
             visit(&operands.0, out);
             visit(&operands.1, out);
         }
-        IR::Convert { dst, src, .. } => {
+        IR::FloatUnary { dst, src, .. } | IR::Convert { dst, src, .. } => {
             visit(dst, out);
             visit(src, out);
         }
@@ -157,7 +157,15 @@ fn collect_regs(ir: &IR, out: &mut std::collections::BTreeSet<String>) {
                 visit(d, out);
             }
         }
-        IR::Nop => {}
+        IR::MicroLoop { head, exit, body, repeat, tail } => {
+            for op in head.iter().chain(body).chain(tail) {
+                collect_regs(op, out);
+            }
+            for cond in [exit, repeat].into_iter().flatten() {
+                visit(cond, out);
+            }
+        }
+        IR::Unsupported(_) | IR::Nop => {}
     }
 }
 

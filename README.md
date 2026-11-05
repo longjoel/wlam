@@ -32,19 +32,19 @@ We read Wine's sources as a **behavioral reference**, not as a build input.
 
 ## Status
 
-| Component | State |
-|---|---|
-| `wlam-pe` PE32/PE32+ parser, imports/exports/relocs/resources | ✅ passes on 1,461 real Windows images |
-| `wlam-pcode` IR | stub |
-| `wlam-lift-x86` lifter | stub |
-| `wlam-translate` discovery/call resolution | stub |
-| `wlam-emit` wasm emission | stub |
-| `wlam-host` Win32 layer | stub |
-| differential harness | stub |
+A real PE32 fixture now runs interactively in the browser through the Rust
+Win32 host: window creation callbacks, DIB/BitBlt output, mouse and keyboard
+input, repainting, and normal exit. Chromium acceptance tests verify pixels,
+input, waiting, and Stop/Restart. See [apps/web/README.md](apps/web/README.md)
+for build, launch, and test instructions.
 
-North star (V1): [`randrew/uxn32`](https://github.com/randrew/uxn32), ~3,000
-lines of pure Win32 C (GDI blits, `waveOut`, file IO, menus) with no SDL or
-DirectX. It is the first program the toolchain must run end to end.
+`wlam analyze` reports imports; `wlam recompile <exe> -o <new-directory>` emits
+a bundle for the browser loader. This remains an experimental Win32 subset;
+Uxn32 and Minesweeper are not claimed to run end to end. See
+[docs/roadmap.md](docs/roadmap.md) for compatibility gaps.
+
+The root workspace tests the active `wlam-sleigh` lifter. The older handwritten
+`wlam-lift-x86` is retained separately for reference with known semantic failures.
 
 ## Building
 
@@ -57,18 +57,22 @@ export CARGO_HOME=$PWD/toolchain/cargo
 export RUSTUP_HOME=$PWD/toolchain/rustup
 export PATH=$PWD/toolchain/cargo/bin:$PWD/toolchain/bin:$PWD/toolchain/tools/bin:$PWD/toolchain/wabt-src/build:$PATH
 
-cargo test --workspace        # unit + real-image corpus tests
+cargo test --workspace --offline  # active pipeline + available corpus tests
+scripts/loop.sh                  # tests + validation of both benchmark images
 ```
 
 `toolchain/bin/wasm-ld` symlinks the `rust-lld` shipped with the Rust toolchain;
-`toolchain/tools/bin/wasm-tools` and `toolchain/wabt-src/build/*` are built from
+`toolchain/tools/bin/wasm-tools` and `toolchain/wabt-src/bin/*` are built from
 source because Homebrew is unavailable here.
 
 ### Toolchain requirements
 
 - Rust 1.99.1 with `wasm32-unknown-unknown` and `wasm32-wasip1`.
 - `clang` (for differential fixtures, `--target=i686-pc-windows-msvc`).
-- Nothing else: the recompiler emits wasm itself.
+- Generated Sleigh decoders: run `scripts/fetch-deps.sh rsleigh` once after
+  installing the local Rust toolchain. The script pins rsleigh and applies the
+  tracked SUBPIECE and segment-base patches before generation.
+- The recompiler emits wasm itself.
 
 ## Tests against real images
 

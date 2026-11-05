@@ -126,6 +126,8 @@ pub struct Program {
     pub function_index: BTreeMap<u64, u32>,
     pub locals: LocalMap,
     pub registers: Vec<String>,
+    /// Preferred PE image base, used to normalize RVA-valued indirect targets.
+    pub image_base: u32,
     pub requirements: Requirements,
     pub problems: Vec<String>,
     /// Guest IAT slot address -> the Win32 API it holds.
@@ -135,6 +137,18 @@ pub struct Program {
     pub host_imports: BTreeMap<u64, HostImport>,
     /// wasm function index for each distinct host import.
     pub import_index: BTreeMap<HostImport, u32>,
+    /// Guest IAT slot address -> the API it holds, for every verified slot.
+    ///
+    /// Distinct from [`Program::host_imports`], which holds only the slots
+    /// discovered code actually calls and so drives which imports the module
+    /// declares. A guest may still reach a slot this translation never saw a
+    /// `call` for -- notably through an indirect `call eax` such as the
+    /// exception dispatcher `acos_handler` at 0x43e1f8, which loads ESTABLISHER,
+    /// ESTABLISHER_FRAME and HANDLER from `EXCEPTION_REGISTRATION_RECORD` and
+    /// jumps to `[ebx+0x18]`. When that shadowed IAT address lands in the
+    /// function table it would call some unrelated guest function, so
+    /// `Exit::CallInd` also tests these slots at run time.
+    pub iat_imports: BTreeMap<u64, HostImport>,
     /// Guest function index of the program entry point.
     ///
     /// NOT necessarily 0: `partition` pops `entries` from a stack, so the last
@@ -157,6 +171,9 @@ impl Program {
     ) {
         let mut slots = BTreeSet::new();
         for block in blocks.values() {
+            for op in &block.ops {
+                if let crate::ir::IR::Load {addr:crate::ir::Operand::Const {value,..},..}=op {slots.insert(*value);}
+            }
             if let Some(slot) = iat_slot_of(block) {
                 slots.insert(slot);
             }
@@ -166,6 +183,9 @@ impl Program {
                 self.host_imports.insert(slot, import);
             }
         }
+        // Populate runtime dispatch after collecting slots. Taking this snapshot
+        // before registration leaves register-indirect calls with no imports.
+        self.iat_imports = self.host_imports.clone();
         // x87 transcendentals: `FSINCOS` becomes host calls, so their helper
         // imports must exist whenever a block uses one. Registered with a
         // synthetic slot key above every real IAT address so they cannot
@@ -173,17 +193,40 @@ impl Program {
         let mut helper_slot = u64::MAX;
         for block in blocks.values() {
             for op in &block.ops {
-                if let crate::ir::IR::Userop { id, .. } = op {
-                    if matches!(*id, crate::translate::X87_USEROP_SIN | crate::translate::X87_USEROP_COS)
-                    {
-                        self.host_imports
-                            .insert(helper_slot, crate::translate::x87_helper_import(*id));
-                        helper_slot -= 1;
-                    }
+                let import = match op {
+                    crate::ir::IR::Userop { id, .. }
+                        if matches!(*id, crate::translate::X87_USEROP_SIN | crate::translate::X87_USEROP_COS | crate::translate::X87_USEROP_TAN | crate::translate::X87_USEROP_ATAN2) =>
+                        Some(crate::translate::x87_helper_import(*id)),
+                    crate::ir::IR::Userop { id, .. } => Some(crate::translate::unsupported_import(
+                        &TranslateError::UnimplementedUserop(*id))),
+                    crate::ir::IR::Unsupported(op) => Some(crate::translate::unsupported_import(
+                        &TranslateError::UnsupportedPcode(op.clone()))),
+                    crate::ir::IR::Load { size: 10, .. } | crate::ir::IR::Store { size: 10, .. } =>
+                        Some(crate::translate::unsupported_import(&TranslateError::UnsupportedWidth(10))),
+                    _ => None,
+                };
+                if let Some(import) = import {
+                    self.host_imports.insert(helper_slot, import);
+                    helper_slot -= 1;
                 }
             }
         }
-        // Deterministic import indices: sorted by (library, name).
+        // Deterministic import indices: sorted by (library, name). The set is
+        // every import the module *declares*; an IAT slot that only an
+        // indirect call can reach is already among them whenever it is called
+        // directly somewhere, and that is what `iat_imports` tests.
+        if let Ok(watches)=std::env::var("WLAM_TRACE_WRITES") {
+            for address in watches.split(',').filter_map(|s|u32::from_str_radix(s.trim().trim_start_matches("0x"),16).ok()) {
+                self.host_imports.insert(helper_slot,HostImport {library:"wlam.trace".into(),name:format!("write_{address:08x}")});
+                helper_slot-=1;
+            }
+        }
+        if let Ok(watches)=std::env::var("WLAM_TRACE_BLOCKS") {
+            for address in watches.split(',').filter_map(|s|u32::from_str_radix(s.trim().trim_start_matches("0x"),16).ok()) {
+                self.host_imports.insert(helper_slot,HostImport {library:"wlam.trace".into(),name:format!("write_{address:08x}")});
+                helper_slot-=1;
+            }
+        }
         self.import_index = self
             .host_imports
             .values()
@@ -201,6 +244,9 @@ impl Program {
 /// A function owns every block reachable by jump and fall-through; a direct
 /// `call` starts a *new* function, which is what makes `ret` well defined.
 pub fn partition(entries: &[u64], blocks: &BTreeMap<u64, Block>, registers: &[String]) -> Program {
+    partition_with_indirect_targets(entries,blocks,registers,&BTreeMap::new())
+}
+pub fn partition_with_indirect_targets(entries:&[u64],blocks:&BTreeMap<u64,Block>,registers:&[String],targets:&BTreeMap<u64,Vec<u64>>)->Program {
     let locals = LocalMap::new(registers.iter().map(|r| (r.clone(), 4)));
     let mut functions: Vec<GuestFunction> = Vec::new();
     let mut work: Vec<u64> = entries.to_vec();
@@ -264,8 +310,13 @@ pub fn partition(entries: &[u64], blocks: &BTreeMap<u64, Block>, registers: &[St
                 Terminator::CallInd { resume } => queue.push(*resume),
                 Terminator::Return | Terminator::Trap(_) => {}
                 Terminator::IndirectJump => {
-                    func.problems
-                        .push((addr, "indirect jump needs target resolution".into()));
+                    if let Some(destinations)=targets.get(&addr) {queue.extend(destinations.iter().copied());}
+                    // A constant `[slot]` may be an imported API (handled as a
+                    // tail call at emission time); anything else is unresolved.
+                    if iat_source(block).is_none() {
+                        func.problems
+                            .push((addr, "indirect jump needs target resolution".into()));
+                    }
                 }
                 Terminator::Undecodable(at) => {
                     func.problems
@@ -291,10 +342,12 @@ pub fn partition(entries: &[u64], blocks: &BTreeMap<u64, Block>, registers: &[St
         function_index,
         locals,
         registers: registers.to_vec(),
+        image_base: 0,
         requirements: Requirements::default(),
         problems: Vec::new(),
         host_imports: BTreeMap::new(),
         import_index: BTreeMap::new(),
+        iat_imports: BTreeMap::new(),
         entry_function,
     }
 }
@@ -343,6 +396,7 @@ impl CondRef {
 /// What happens after a block's ops run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Exit {
+    JumpInd,
     /// Branch back to the dispatcher with a new block id.
     Goto(u32),
     /// Branch on a condition to one of two block ids.
@@ -363,6 +417,15 @@ enum Exit {
     /// `slot` is the guest *IAT* address (the `[slot]` in `call [slot]`), used
     /// to pick the wasm import; `resume` is the return address.
     HostCall { slot: u64, resume: u64 },
+    /// Tail-jump to an imported Win32 API through its IAT slot.
+    ///
+    /// A `jmp [slot]` has no return address of its own: the address already on
+    /// `[ESP]` belongs to the caller of the current function. The host call is
+    /// made with that same stack, and after it returns the stdcall cleanup
+    /// (`return_pop`) pops the caller's address and arguments. Returning from
+    /// the wasm function then hands the updated machine state -- including the
+    /// host's EAX -- to the caller, which dispatches at its own resume point.
+    HostTailCall { slot: u64 },
     /// Call another guest function, then resume.
     ///
     /// `target` is the callee's guest entry address and `resume` the address to
@@ -373,55 +436,58 @@ enum Exit {
     Call { target: u64, resume: u64 },
     /// Call a guest function whose target is computed at run time.
     ///
-    /// The value in `target` is a table id (0-based guest function index). It is
-    /// bounds-checked before `call_indirect`, so a wild or null target traps
-    /// instead of silently reaching function 0.
+    /// The value in `target` is a guest virtual address. Only discovered
+    /// function entries are callable; a wild or null address traps.
     CallInd { target: CondRef, resume: u64 },
     /// Trap: unreachable or unsupported.
     Trap,
 }
 
-/// The IAT slot a block calls through, if its indirect call is an import call.
+/// The IAT slot a block calls or tail-jumps through, if it is an import.
 ///
-/// A Win32 import call lifts as `Load T <- [slot]` followed by `CallInd T`,
-/// where `slot` is a constant (`.idata`) address. Matching on that shape is
-/// what distinguishes it from a genuine `call [reg]` through a computed
+/// A Win32 import call lifts as `Load T <- [slot]` followed by `CallInd T`, and
+/// a tail call as `Load T <- [slot]` followed by `IndirectJump T`, where `slot`
+/// is a constant (`.idata`) address. Matching on that shape is what
+/// distinguishes it from a genuine `call [reg]`/`jmp [reg]` through a computed
 /// function pointer, which cannot be resolved statically.
-fn iat_slot_of(block: &Block) -> Option<u64> {
-    let mut slot = None;
-    for ir in &block.ops {
-        match ir {
-            crate::ir::IR::Load {
-                addr: crate::ir::Operand::Const { value, .. },
-                ..
-            } => slot = Some(*value),
-            // Any other load breaks the `load then call` adjacency.
-            crate::ir::IR::Load { .. } => slot = None,
-            crate::ir::IR::CallInd { .. } => return slot,
-            _ => {}
-        }
-    }
-    None
-}
-
-/// The destination temp of the `Load` that feeds an IAT call, if this block is
-/// an import call.
-///
-/// Only this load is dead once the slot is resolved at compile time; every
-/// other load in the block still runs.
-fn iat_load_dst(block: &Block) -> Option<crate::ir::Operand> {
-    let mut feeding: Option<crate::ir::Operand> = None;
-    for ir in &block.ops {
-        match ir {
-            crate::ir::IR::Load {
-                dst,
-                addr: crate::ir::Operand::Const { .. },
-                ..
-            } => feeding = Some(dst.clone()),
-            crate::ir::IR::Load { .. } => feeding = None,
-            crate::ir::IR::CallInd { .. } => return feeding,
-            _ => {}
-        }
+fn iat_slot_of(block: &Block) -> Option<u64> { iat_source(block).map(|(slot, _)|slot) }
+/// Follow the actual transfer operand, never whichever load happened to be last.
+fn iat_source(block: &Block) -> Option<(u64, crate::ir::Operand)> {
+    use crate::ir::{IR,Operand};
+    let mut values: Vec<(Operand, Option<(u64, Operand)>)> = Vec::new();
+    for op in &block.ops {
+        let target = match op {
+            IR::CallInd { target } | IR::IndirectJump { target } => target.clone(),
+            _ => {
+                let (dst, source) = match op {
+                    IR::Load {dst,addr:Operand::Const {value,..},..} => (dst,Some((*value,dst.clone()))),
+                    // `jmp [slot]` lifts as a copy of the slot address into a
+                    // temporary, not as a load through it. Treating that copy
+                    // as a slot source is what makes the tail call statically
+                    // resolvable.
+                    IR::Copy {dst,src:Operand::Const {value,..}} => (dst,Some((*value,dst.clone()))),
+                    IR::Copy {dst,src} => (dst,values.iter().rev().find(|(d,_)|d==src).and_then(|(_,s)|s.clone())),
+                    IR::FloatUnary {dst,..}|IR::Load {dst,..}|IR::Bin {dst,..}|IR::Un {dst,..}|IR::Float {dst,..}|IR::Convert {dst,..}|IR::Subpiece {dst,..} => (dst,None),
+                    _=>continue,
+                };
+                values.push((dst.clone(),source));
+                continue;
+            }
+        };
+        // Sleigh encodes `jmp [slot]` as a branch through the RAM varnode that
+        // names the slot: `Copy T <- Const slot; IndirectJump Ram{offset: T}`.
+        // The RAM operand and the temporary carry the same offset, so match on
+        // that as well as exact operand equality (the `call [slot]` shape).
+        let found = values.iter().rev().find(|(dst, _)| {
+            if dst == &target {
+                return true;
+            }
+            match (dst, &target) {
+                (Operand::Temp { offset: a, .. }, Operand::Ram { offset: b, .. }) => a == b,
+                _ => false,
+            }
+        });
+        return found.and_then(|(_, source)| source.clone());
     }
     None
 }
@@ -433,42 +499,45 @@ fn iat_load_dst(block: &Block) -> Option<crate::ir::Operand> {
 /// instruction stream resumes there. The ESP bookkeeping and the return-address
 /// store are ordinary data ops and MUST be kept: the callee's `ret` pops them.
 /// Only the `Call` op itself is pulled out into the exit.
+const JUMP_TARGET:u64=u64::MAX-5001;
 fn split_ops(block: &Block, drop_slot_load: bool) -> Result<Vec<crate::ir::IR>, TranslateError> {
-    // For an IAT call the slot is resolved at compile time, so the one `Load`
-    // that would read it at run time is dead: keep it and the module reads an
-    // `.idata` address that need not be mapped (it trapped in the browser test).
-    //
-    // Only THAT load may be dropped. A block can hold an import call *and* a
-    // conditional, whose other loads allocate temps the branch condition needs;
-    // dropping every load removed them and failed with "condition temp has no
-    // local".
-    // The load is dead ONLY when the slot resolves to a host import. For a
-    // table call the loaded value IS the target, so dropping it removed the
-    // temp the call then referred to ("condition temp has no local").
-    let dead_iat_load = if drop_slot_load { iat_load_dst(block) } else { None };
+    // Preserve loads: emit_case converts verified IAT loads to address tokens.
+    // Control flow is the dispatcher's job, except that the *destination* of an
+    // indirect call has to survive it, so its operand is re-materialised first
+    // (see below).
     let mut ops = Vec::new();
     for ir in &block.ops {
-        if let Some(dst) = &dead_iat_load {
-            if let crate::ir::IR::Load { dst: d, .. } = ir {
-                if d == dst {
-                    continue;
-                }
-            }
-        }
         match ir {
             // Control flow is the dispatcher's job.
             crate::ir::IR::Branch { .. }
             | crate::ir::IR::CBranch { .. }
             | crate::ir::IR::Ret { .. }
-            | crate::ir::IR::IndirectJump { .. }
             | crate::ir::IR::Call { .. } => {}
+            crate::ir::IR::IndirectJump {target} if !drop_slot_load => {
+                use crate::ir::{IR,Operand};
+                let dst=Operand::Temp {offset:JUMP_TARGET,size:4};
+                if let Operand::Ram {offset,size}=target {
+                    let pointer=block.ops.iter().any(|op|match op {
+                        IR::Copy {dst:Operand::Temp {offset:at,..},..}|IR::Bin {dst:Operand::Temp {offset:at,..},..}|IR::Un {dst:Operand::Temp {offset:at,..},..}=>at==offset,
+                        _=>false,
+                    });
+                    let addr=if pointer {Operand::Temp {offset:*offset,size:*size}} else {Operand::Const {value:*offset,size:4}};
+                    ops.push(IR::Load {dst,addr,size:4});
+                } else {ops.push(IR::Copy {dst,src:target.clone()});}
+            }
+            crate::ir::IR::IndirectJump {..}=>{},
             // An IAT call is `Load T <- [slot]; CallInd T` with a constant
             // slot, i.e. a Win32 import: statically known, so it needs no
             // guest function table. Anything else really is an indirect call
-            // through a computed target and still needs one.
-            // Both IAT and computed indirect calls are exits; which one is
-            // decided in `block_exit`.
-            crate::ir::IR::CallInd { .. } => {}
+            // through a computed target and still needs one. Which of the two
+            // it is gets decided in `block_exit`.
+            crate::ir::IR::CallInd { target } => {
+                // An indirect call's destination must survive the call: a guest
+                // `call esi` leaves the callee in ESI, and later code may call
+                // through it again. The exit drops the original ops, so
+                // re-materialise the target into its own operand first.
+                ops.push(crate::ir::IR::Copy { dst: target.clone(), src: target.clone() });
+            }
             other => ops.push(other.clone()),
         }
     }
@@ -492,7 +561,7 @@ fn spill_registers(out: &mut Vec<u8>, prog: &Program) {
         // low half of a double and put an i32 where the declaration says f64,
         // which is what produced "expected [f64] but got [i32]".
         out.push(op::I32_CONST);
-        out.extend_from_slice(&leb_u32((crate::REG_SNAPSHOT_BASE + i as u64 * 4) as u32));
+        out.extend_from_slice(&leb_u32(crate::snapshot_address(i) as u32));
         out.push(op::LOCAL_GET);
         out.extend_from_slice(&leb_u32(local));
         if prog.locals.is_x87(local) {
@@ -505,27 +574,10 @@ fn spill_registers(out: &mut Vec<u8>, prog: &Program) {
     }
 }
 
-/// Take over the callee's final machine state after a `call`.
-///
-/// The callee spilled every register on `ret`, which is how a caller normally
-/// reads it back -- but not for the two registers the *emitter* uses to find
-/// the callee's `ret` in the first place:
-///
-///   * `EIP` still holds the return address the callee popped. Reloading it
-///     would overwrite the caller's own `EIP` -- and the caller's `ret` later
-///     pops its return address from the stack into `EIP`, so that value is
-///     live. Losing it sent a block back to its own entry: Uxn32's
-///     `GetVersion` call at 0x40ccd8 resumed with `EIP` = 0x40ccb2 and ran the
-///     whole function again, which is the infinite loop that burned the fuel.
-///   * `ESP` after a *halted* callee (a block ending in `unreachable`, e.g.
-///     one the emitter could not lower) still holds the callee's final stack,
-///     so the caller would continue with the wrong frame. The caller's own
-///     `ESP` is correct: the callee's `ret` already restored it.
-///
-/// Everything else comes from the spill, so the callee's results are still
-/// adopted rather than guessed.
+/// Adopt the callee's registers, including ESP after its `ret` (and any
+/// stdcall argument cleanup). EIP remains local to the caller's control flow.
 fn adopt_callee_state(out: &mut Vec<u8>, prog: &Program) {
-    reload_registers_except(out, prog, &["EIP", "ESP"]);
+    reload_registers_except(out, prog, &["EIP"]);
 }
 
 /// Reload every register local from the shared snapshot area.
@@ -543,7 +595,7 @@ fn reload_registers_except(out: &mut Vec<u8>, prog: &Program, skip: &[&str]) {
             continue;
         };
         out.push(op::I32_CONST);
-        out.extend_from_slice(&leb_u32((crate::REG_SNAPSHOT_BASE + i as u64 * 4) as u32));
+        out.extend_from_slice(&leb_u32(crate::snapshot_address(i) as u32));
         if prog.locals.is_x87(local) {
             out.push(op::F64_LOAD);
         } else {
@@ -621,6 +673,13 @@ fn block_exit(
             },
         },
         Terminator::Return => Exit::Ret,
+        // A `jmp [slot]` through a known import is a tail call: the host runs
+        // and then control returns from this wasm function to the guest's
+        // caller. Any other indirect jump still needs real target resolution.
+        Terminator::IndirectJump => match iat_slot_of(block) {
+            Some(slot) if host_imports.contains_key(&slot) => Exit::HostTailCall { slot },
+            _ => Exit::JumpInd,
+        },
         _ => Exit::Trap,
     })
 }
@@ -763,12 +822,16 @@ pub fn build_module_with_memory(
     for func in &prog.functions {
         bodies.push(emit_function_body(func, prog, blocks, import_count)?);
     }
+    let callback = crate::callback::body(prog);
+    if let Some(body) = &callback { bodies.push(body.clone()); }
+    let indirect = indirect_dispatch_body(prog, import_count)?;
+    if let Some(body) = &indirect { bodies.push(body.clone()); }
     let mut e = Encoder::new();
     module_header(&mut e);
     // type 0: () -> ()            guest entry
     // type 1: (i32, i32) -> i32   host import: (args_ptr, ret_addr) -> EAX
     e.section(section_id::TYPE, |b| {
-        b.u32(2);
+        b.u32(3);
         b.push(0x60);
         b.u32(0);
         b.u32(0);
@@ -778,6 +841,7 @@ pub fn build_module_with_memory(
         b.push(0x7f);
         b.u32(1);
         b.push(0x7f);
+        b.push(0x60); b.u32(3); b.raw(&[0x7f, 0x7f, 0x7f]); b.u32(1); b.push(0x7f);
     });
     if import_count > 0 {
         e.section(section_id::IMPORT, |b| {
@@ -793,10 +857,10 @@ pub fn build_module_with_memory(
         });
     }
     e.section(section_id::FUNCTION, |b| {
-        b.u32(prog.functions.len() as u32);
-        for _ in &prog.functions {
-            b.u32(0);
-        }
+        b.u32(bodies.len() as u32);
+        for _ in &prog.functions { b.u32(0); }
+        if callback.is_some() { b.u32(2); }
+        if indirect.is_some() { b.u32(0); }
     });
     e.section(section_id::TABLE, |b| {
         b.u32(1);
@@ -813,7 +877,7 @@ pub fn build_module_with_memory(
         // Every guest function is exported under a stable name so a debugger or
         // probe can call one directly (e.g. to step a starved guest block by
         // block). `entry` stays first so existing callers are unaffected.
-        b.u32(2 + prog.functions.len() as u32);
+        b.u32(2 + prog.functions.len() as u32 + u32::from(callback.is_some()));
         b.u32(5);
         b.raw(b"entry");
         b.push(0x00);
@@ -822,6 +886,9 @@ pub fn build_module_with_memory(
         b.raw(b"memory");
         b.push(0x02);
         b.u32(0);
+        if callback.is_some() {
+            b.u32(12); b.raw(b"invoke_guest"); b.push(0); b.u32(import_count + prog.functions.len() as u32);
+        }
         for (i, func) in prog.functions.iter().enumerate() {
             let name = format!("g_{:08x}", func.entry as u32);
             b.u32(name.len() as u32);
@@ -880,7 +947,7 @@ fn emit_function_body(
             continue;
         };
         body.push(op::I32_CONST);
-        body.extend_from_slice(&leb_u32((crate::REG_SNAPSHOT_BASE + i as u64 * 4) as u32));
+        body.extend_from_slice(&leb_u32(crate::snapshot_address(i) as u32));
         // x87 registers are f64 locals: load them as doubles. This is the
         // program-entry seed, the third of the three places that touch every
         // register slot; all three had to become type-aware together.
@@ -1011,17 +1078,62 @@ fn emit_case(
         out.push(op::UNREACHABLE);
         return Ok(());
     };
+    // Optional diagnostic breadcrumb: keep the last guest basic block address
+    // in the exported register snapshot so a Wasm trap inside a guest callback
+    // can be localized even when it occurs before the next host import.
+    if std::env::var_os("WLAM_DEBUG_EIP").is_some() {
+        if let Some(eip) = prog.locals.reg("EIP") {
+            out.push(op::I32_CONST);
+            out.extend_from_slice(&crate::encode::leb_s32(addr as i32));
+            out.push(op::LOCAL_SET);
+            out.extend(leb_u32(eip));
+        }
+        if let Some(index) = prog.registers.iter().position(|name| name == "EIP") {
+            out.push(op::I32_CONST);
+            out.extend_from_slice(&crate::encode::leb_u32(crate::snapshot_address(index) as u32));
+            out.push(op::I32_CONST);
+            out.extend_from_slice(&crate::encode::leb_s32(addr as i32));
+            out.push(op::I32_STORE);
+            out.extend_from_slice(&[2, 0]);
+        }
+    }
+    if let Ok(watches)=std::env::var("WLAM_TRACE_BLOCKS") {
+        if watches.split(',').filter_map(|s|u32::from_str_radix(s.trim().trim_start_matches("0x"),16).ok()).any(|address|address as u64==block.start) {
+            emit_debug_trace(out,prog,block.start as u32);
+        }
+    }
     // Decide up front whether this is an import call: only then is the slot
     // load dead code.
-    let is_import_call = matches!(&block.terminator, Terminator::CallInd { .. })
+    let is_import_call = matches!(&block.terminator, Terminator::CallInd { .. }|Terminator::IndirectJump)
         && iat_slot_of(block).map(|s| prog.host_imports.contains_key(&s)).unwrap_or(false);
-    let ops = split_ops(block, is_import_call)?;
+    let ops = split_ops(block, is_import_call)?.into_iter().map(|op| {
+        match op {
+            crate::ir::IR::Load {dst,addr:crate::ir::Operand::Const {value,..},size:4}
+                if prog.host_imports.contains_key(&value)=>crate::ir::IR::Copy {dst,src:crate::ir::Operand::Const {value,size:4}},
+            other=>other,
+        }
+    }).collect::<Vec<_>>();
     // Each block's temps must get their own locals inside the shared function
     // layout: translating with a fresh map would hand out indices the function
     // never declared ("unknown local 10: local index out of bounds").
-    let translated = match crate::translate_ops(&ops, shared.clone()) {
+    let translated = match crate::translate::translate_ops_with_imports(&ops, shared.clone(), &prog.import_index) {
         Ok(t) => t,
         Err(e) => {
+            if matches!(e, TranslateError::UnsupportedWidth(10)) {
+                let import = crate::translate::unsupported_import(&e);
+                if let Some(index) = prog.import_index.get(&import) {
+                    if let Some(eip) = prog.locals.reg("EIP") {
+                        out.push(op::I32_CONST);
+                        out.extend(crate::encode::leb_s32(block.start as i32));
+                        out.push(op::LOCAL_SET); out.extend(leb_u32(eip));
+                    }
+                    spill_registers(out, prog);
+                    out.extend([op::I32_CONST, 0, op::I32_CONST, 0, op::CALL]);
+                    out.extend(leb_u32(*index));
+                    out.extend([0x1a, op::UNREACHABLE]);
+                    return Ok(());
+                }
+            }
             if std::env::var("FLT_TRACE").is_ok() {
                 eprintln!("BLOCK {:#x} failed: {e:?}", block.start);
             }
@@ -1030,8 +1142,70 @@ fn emit_case(
     };
     *shared = translated.map.clone();
     out.extend_from_slice(&translated.body[translated.ops_offset..translated.body.len() - 1]);
+    emit_store_watchpoint(out, prog, block.start as u32, &ops, shared);
+    if std::env::var_os("WLAM_DEBUG_EIP").is_some() {
+        if let Some(eip) = prog.locals.reg("EIP") {
+            out.push(op::I32_CONST);
+            out.extend_from_slice(&crate::encode::leb_s32(block.end as i32));
+            out.push(op::LOCAL_SET);
+            out.extend(leb_u32(eip));
+        }
+        if let Some(index) = prog.registers.iter().position(|name| name == "EIP") {
+            out.push(op::I32_CONST);
+            out.extend_from_slice(&crate::encode::leb_u32(crate::snapshot_address(index) as u32));
+            out.push(op::I32_CONST);
+            out.extend_from_slice(&crate::encode::leb_s32(block.end as i32));
+            out.push(op::I32_STORE);
+            out.extend_from_slice(&[2, 0]);
+        }
+    }
     let exit = block_exit(block, func, &translated, &prog.host_imports)?;
     match exit {
+        Exit::JumpInd => {
+            let target=shared.temp_index(JUMP_TARGET).ok_or(TranslateError::Unsupported("indirect jump target missing"))?;
+            if let Some(eip)=prog.locals.reg("EIP") {
+                out.push(op::LOCAL_GET);out.extend(leb_u32(target));out.push(op::LOCAL_SET);out.extend(leb_u32(eip));
+            }
+            if std::env::var_os("WLAM_DEBUG_EIP").is_some() {
+                for (address, value) in [(0x7ff0, Some(target)), (0x7ff4, None), (0x7ff8, None)] {
+                    out.push(op::I32_CONST);out.extend(leb_u32(address));
+                    if let Some(local)=value {
+                        out.push(op::LOCAL_GET);out.extend(leb_u32(local));
+                    } else {
+                        out.push(op::I32_CONST);
+                        out.extend(crate::encode::leb_s32(if address==0x7ff4 {block.start as i32} else {func.entry as i32}));
+                    }
+                    out.push(op::I32_STORE);out.extend([2,0]);
+                    emit_debug_trace(out,prog,address);
+                }
+            }
+            for (address,destination) in &func.ids {
+                out.push(op::LOCAL_GET);out.extend(leb_u32(target));
+                out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(*address as i32));
+                out.push(0x46);
+                if prog.image_base!=0 {
+                    out.push(op::LOCAL_GET);out.extend(leb_u32(target));
+                    out.push(op::I32_CONST);out.extend(leb_u32(prog.image_base));
+                    out.push(op::I32_ADD);
+                    out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(*address as i32));
+                    out.extend([0x46,0x72]); // exact VA or image-base-relative RVA
+                }
+                out.extend([op::IF,0x40,op::I32_CONST]);out.extend(crate::encode::leb_s32(*destination as i32));
+                out.push(op::LOCAL_SET);out.extend(leb_u32(id));
+                out.push(op::BR);out.extend(leb_u32(depth_to_loop+1));out.push(op::END);
+            }
+            if prog.locals.reg("EIP").is_some() {
+                spill_registers(out,prog);
+                if std::env::var_os("WLAM_TRACE_INDIRECT").is_some() {
+                    if let Some(index)=prog.registers.iter().position(|name|name=="EIP") {
+                        emit_debug_trace(out,prog,crate::snapshot_address(index) as u32);
+                    }
+                }
+                let callback=prog.registers.iter().any(|r|r=="ESP")&&prog.registers.iter().any(|r|r=="EAX");
+                out.push(op::CALL);out.extend(leb_u32(import_count+prog.functions.len() as u32+u32::from(callback)));
+                out.push(op::RETURN);
+            } else {out.push(op::UNREACHABLE);}
+        }
         Exit::Goto(target) => {
             out.push(op::I32_CONST);
             out.extend_from_slice(&crate::encode::leb_s32(target as i32));
@@ -1069,6 +1243,9 @@ fn emit_case(
         Exit::Ret => {
             // Hand the caller our final machine state before leaving.
             spill_registers(out, prog);
+            if std::env::var("WLAM_TRACE_FUNCTION_RET").ok().and_then(|s| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok()) == Some(func.entry as u32) {
+                emit_debug_trace(out, prog, 0x45e011);
+            }
             out.push(op::RETURN);
         }
         Exit::Call { target, resume } => {
@@ -1099,28 +1276,71 @@ fn emit_case(
             // Same ABI as a direct call: spill so the callee starts from our
             // machine state (ESP already includes the pushed return address).
             let target_local = target.local(shared)?;
+            if std::env::var_os("WLAM_TRACE_INDIRECT").is_some() {
+                for (address,local) in [(0x7fe0,target_local),(0x7fe8,prog.locals.reg("ECX").unwrap_or(target_local))] {
+                    out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(address));
+                    out.push(op::LOCAL_GET);out.extend(leb_u32(local));
+                    out.push(op::I32_STORE);out.extend([2,0]);
+                    emit_debug_trace(out,prog,address);
+                }
+                out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(0x7fe4));
+                out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(block.start as i32));
+                out.push(op::I32_STORE);out.extend([2,0]);
+                emit_debug_trace(out,prog,0x7fe4);
+            }
+            if std::env::var_os("WLAM_DEBUG_EIP").is_some() {
+                out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(0x7ff0));
+                out.push(op::LOCAL_GET);out.extend(leb_u32(target_local));
+                out.push(op::I32_STORE);out.extend([2,0]);
+                emit_debug_trace(out,prog,0x7ff0);
+                out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(0x7ff4));
+                out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(block.start as i32));
+                out.push(op::I32_STORE);out.extend([2,0]);
+                emit_debug_trace(out,prog,0x7ff4);
+                out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(0x7ff8));
+                out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(func.entry as i32));
+                out.push(op::I32_STORE);out.extend([2,0]);
+                emit_debug_trace(out,prog,0x7ff8);
+            }
+            // Leave the destination in the guest's `EIP`, as a real CPU does
+            // after `call edx`. The register snapshot then names the callee if
+            // the call traps; gated on the program modelling `EIP` at all.
+            if let Some(eip) = prog.locals.reg("EIP") {
+                out.push(op::LOCAL_GET);
+                out.extend_from_slice(&leb_u32(target_local));
+                out.push(op::LOCAL_SET);
+                out.extend_from_slice(&leb_u32(eip));
+            }
             spill_registers(out, prog);
-            // Bounds check. `call_indirect` on an out-of-range index traps on
-            // its own, but a NULL target would otherwise reach table slot 0 --
-            // a real guest function -- and silently run the wrong code. Guarding
-            // explicitly means "bad target" is never a wrong answer.
-            let count = prog.functions.len() as u32;
-            out.push(op::LOCAL_GET);
-            out.extend_from_slice(&leb_u32(target_local));
-            out.push(op::I32_CONST);
-            out.extend_from_slice(&leb_u32(count));
-            out.push(op::I32_LT_U);
-            out.push(op::IF);
-            out.push(0x40);
-            out.push(op::LOCAL_GET);
-            out.extend_from_slice(&leb_u32(target_local));
-            out.push(op::CALL_INDIRECT);
-            out.push(0x00); // typeidx 0: () -> ()
-            out.push(0x00); // tableidx 0
-            out.push(op::ELSE);
+            if prog.locals.reg("EIP").is_some() {
+                // One shared resolver avoids duplicating every import and guest
+                // address comparison at every indirect call site.
+                let callback = prog.registers.iter().any(|r| r == "ESP")
+                    && prog.registers.iter().any(|r| r == "EAX");
+                out.push(op::CALL);
+                out.extend(leb_u32(import_count + prog.functions.len() as u32 + u32::from(callback)));
+                adopt_callee_state(out, prog);
+            } else {
+                out.extend([op::BLOCK, 0x40]);
+            // Guest function pointers are virtual addresses. Resolve only
+            // registered entries; a small integer or NULL is never a table ID.
+            for (address, index) in &prog.function_index {
+                out.push(op::LOCAL_GET);
+                out.extend(leb_u32(target_local));
+                out.push(op::I32_CONST);
+                out.extend(crate::encode::leb_s32(*address as i32));
+                out.extend([0x46, op::IF, 0x40]);
+                out.push(op::CALL);
+                out.extend(leb_u32(index + import_count));
+                adopt_callee_state(out, prog);
+                out.extend([op::BR, 1, op::END]);
+            }
+            // No matching guest entry is callable.
             out.push(op::UNREACHABLE);
-            out.push(op::END);
-            adopt_callee_state(out, prog);
+            out.push(op::END); // cached import/guest call join
+
+            }
+
             let resume_id = func.ids.get(&resume).copied().ok_or(
                 TranslateError::Unsupported("call resume block is outside its function"),
             )?;
@@ -1144,6 +1364,7 @@ fn emit_case(
             // pushed the return address, so the arguments start at ESP + 4.
             // Slot is passed as the second argument so one host entry can serve
             // several imports if needed.
+            spill_registers(out, prog);
             let esp = prog.locals.reg("ESP").ok_or(TranslateError::Unsupported(
                 "host call needs an ESP local",
             ))?;
@@ -1163,6 +1384,32 @@ fn emit_case(
             } else {
                 out.push(0x1a); // drop
             }
+            // A `call [slot]` handed the import a target that the lifted code
+            // had loaded through a register (`mov esi, [slot]; call esi`).
+            // That register must still hold the slot address afterwards: the
+            // same register is often reused for the next call, and a guest that
+            // reads it back would otherwise see the stale pre-call value.
+            if let Some(eip) = prog.locals.reg("EIP") {
+        out.push(op::I32_CONST);
+        out.extend_from_slice(&crate::encode::leb_s32((slot & 0xffff_ffff) as i32));
+        out.push(op::LOCAL_SET);
+        out.extend_from_slice(&leb_u32(eip));
+    }
+    if let Some(loaded) = loaded_target_register(block).filter(|name| name.as_ref() != "EAX") {
+                if let Some(local) = shared.reg(loaded.as_ref()) {
+                    out.push(op::I32_CONST);
+                    out.extend_from_slice(&crate::encode::leb_s32((slot & 0xffff_ffff) as i32));
+                    out.push(op::LOCAL_SET);
+                    out.extend_from_slice(&leb_u32(local));
+                }
+            }
+            // The lifted CALL pushed a guest return address. The host import
+            // returns directly to this continuation, so implement RET n here.
+            if let Some(signature) = wlam_pcode::abi::signature(&import.library, &import.name) {
+                pop_import_frame(out, esp, signature);
+            } else {
+                out.push(op::UNREACHABLE);
+            }
             let resume_id = func.ids.get(&resume).copied().ok_or(
                 TranslateError::Unsupported("call resume block is outside its function"),
             )?;
@@ -1173,9 +1420,229 @@ fn emit_case(
             out.push(op::BR);
             out.extend_from_slice(&leb_u32(depth_to_loop));
         }
+        Exit::HostTailCall { slot } => {
+            // The host may reenter through invoke_guest. Publish the actual
+            // wrapper stack before it builds a callback frame beneath ESP.
+            spill_registers(out, prog);
+            let import = prog.host_imports.get(&slot).ok_or_else(|| {
+                TranslateError::Unsupported("tail jump through an IAT slot that is not an import")
+            })?;
+            let index = *prog
+                .import_index
+                .get(import)
+                .ok_or(TranslateError::Unsupported("host import has no wasm index"))?;
+            // The stack layout is the caller's: `[ESP]` is the return address
+            // the caller pushed, and the import's arguments follow it. There is
+            // no return address for this jump to push.
+            let esp = prog.locals.reg("ESP").ok_or(TranslateError::Unsupported(
+                "tail call needs an ESP local",
+            ))?;
+            out.push(op::LOCAL_GET);
+            out.extend_from_slice(&leb_u32(esp));
+            out.push(op::I32_CONST);
+            out.extend_from_slice(&leb_u32(4));
+            out.push(op::I32_ADD);
+            out.push(op::I32_CONST);
+            out.extend_from_slice(&leb_u32((slot & 0xffff_ffff) as u32));
+            out.push(op::CALL);
+            out.extend_from_slice(&leb_u32(index));
+            if let Some(eax) = prog.locals.reg("EAX") {
+                out.push(op::LOCAL_SET);
+                out.extend_from_slice(&leb_u32(eax));
+            } else {
+                out.push(0x1a); // drop
+            }
+            // The import's stdcall cleanup (`ret n`) pops the caller's return
+            // address and its arguments. The wasm `return` below then hands
+            // control to the caller's resume point, which is exactly the jump
+            // the guest's `ret` would have made.
+            let Some(signature) = wlam_pcode::abi::signature(&import.library, &import.name) else {
+                // Keep unreachable code compilable, but never resume a guest
+                // after an import whose stack convention is unknown.
+                out.push(op::UNREACHABLE);
+                return Ok(());
+            };
+            let tail_esp = esp;
+            pop_import_frame(out, tail_esp, signature);
+            spill_registers(out, prog);
+            out.push(op::RETURN);
+        }
         Exit::Trap => out.push(op::UNREACHABLE),
     }
     Ok(())
+}
+
+fn emit_import_value(out:&mut Vec<u8>,prog:&Program,slot:u64,import:&HostImport)->Result<(),TranslateError>{
+    spill_registers(out,prog);
+    let esp=prog.locals.reg("ESP").ok_or(TranslateError::Unsupported("host call needs ESP"))?;
+    let index=*prog.import_index.get(import).ok_or(TranslateError::Unsupported("host import index missing"))?;
+    out.push(op::LOCAL_GET);out.extend(leb_u32(esp));out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(4));out.push(op::I32_ADD);
+    out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(slot as i32));out.push(op::CALL);out.extend(leb_u32(index));
+    if let Some(eax)=prog.locals.reg("EAX"){out.push(op::LOCAL_SET);out.extend(leb_u32(eax));}else {out.push(0x1a);}
+    if let Some(signature)=wlam_pcode::abi::signature(&import.library,&import.name){
+        pop_import_frame(out,esp,signature);
+    } else {
+        out.push(op::UNREACHABLE);
+    }
+    // Cleanup and the return value are already in locals. Publish them rather
+    // than reloading the pre-call snapshot and undoing the host return.
+    spill_registers(out,prog);
+    Ok(())
+}
+
+fn emit_debug_trace(out:&mut Vec<u8>,prog:&Program,address:u32) {
+    let import=HostImport {library:"wlam.trace".into(),name:format!("write_{address:08x}")};
+    if let Some(index)=prog.import_index.get(&import) {
+        // The trace host reads the canonical guest register snapshot. Block
+        // locals may have changed since the last import, so publish them first
+        // or traces show stale caller state and mislead control-flow debugging.
+        spill_registers(out,prog);
+        out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(address));
+        out.push(op::I32_CONST);out.push(0);
+        out.push(op::CALL);out.extend(leb_u32(*index));out.push(0x1a);
+    }
+}
+
+/// Optional diagnostic trap on the first block that stores into a watched
+/// guest address range. Set `WLAM_WATCH_RANGE=start:end` in hex when building.
+fn emit_store_watchpoint(out:&mut Vec<u8>,prog:&Program,block:u32,ops:&[crate::ir::IR],map:&LocalMap) {
+    let Some(range)=std::env::var("WLAM_WATCH_RANGE").ok() else {return;};
+    let Some((start,end))=range.split_once(':').and_then(|(a,b)| {
+        let parse=|s:&str|u32::from_str_radix(s.trim().trim_start_matches("0x"),16).ok();
+        Some((parse(a)?,parse(b)?))
+    }) else {return;};
+    if start>=end {return;}
+    for ir in ops {
+        let crate::ir::IR::Store {addr,size,..}=ir else {continue;};
+        let address=const_of(addr).map(|value|value as u32);
+        if let Some(address)=address {
+            if address.saturating_add((*size).max(1))<=start.saturating_sub(32) || address>=end {continue;}
+            emit_watch_trap(out,prog,block,None);
+            continue;
+        }
+        let local=match addr {
+            crate::ir::Operand::Reg {name,..}=>map.reg(name.as_ref()),
+            crate::ir::Operand::Temp {offset,..}=>map.temp_index(*offset),
+            _=>None,
+        };
+        let Some(local)=local else {continue;};
+        out.push(op::LOCAL_GET);out.extend(leb_u32(local));
+        out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(start.saturating_sub(32)));
+        out.push(0x4f); // i32.ge_u
+        out.push(op::LOCAL_GET);out.extend(leb_u32(local));
+        out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(end));
+        out.extend([0x49,0x71,op::IF,0x40]); // i32.lt_u; and; if
+        emit_watch_trap(out,prog,block,Some(local));
+        out.push(op::END);
+    }
+}
+
+fn emit_watch_trap(out:&mut Vec<u8>,prog:&Program,block:u32,address:Option<u32>) {
+    spill_registers(out,prog);
+    out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(0x7fb0));
+    if let Some(local)=address {out.push(op::LOCAL_GET);out.extend(leb_u32(local));}
+    else {out.push(op::I32_CONST);out.push(0);}
+    out.extend([op::I32_STORE,2,0]);
+    out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(0x7fb4));
+    out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(block as i32));
+    out.extend([op::I32_STORE,2,0,op::UNREACHABLE]);
+}
+
+/// Resolve raw x86 code pointers once per module, using the spilled EIP.
+fn indirect_dispatch_body(prog: &Program, import_count: u32) -> Result<Option<Vec<u8>>, TranslateError> {
+    let Some(target) = prog.locals.reg("EIP") else { return Ok(None); };
+    let mut out = Vec::new();
+    let runs = prog.locals.declaration_runs();
+    out.extend(leb_u32(runs.len() as u32));
+    for (ty, count) in runs { out.extend(leb_u32(count)); out.push(ty); }
+    reload_registers(&mut out, prog);
+    if std::env::var_os("WLAM_TRACE_INDIRECT").is_some() {
+        out.push(op::I32_CONST); out.extend(crate::encode::leb_u32(0x7fc0));
+        out.push(op::LOCAL_GET); out.extend(leb_u32(target));
+        out.push(op::I32_STORE); out.extend([2, 0]);
+        emit_debug_trace(&mut out, prog, 0x7ff1);
+        if prog.image_base!=0 {
+            out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(0x7fc4));
+            out.push(op::LOCAL_GET);out.extend(leb_u32(target));
+            out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(prog.image_base));
+            out.push(op::I32_ADD);out.push(op::I32_STORE);out.extend([2,0]);
+            emit_debug_trace(&mut out,prog,0x7ff3);
+        }
+    }
+    for (slot, import) in &prog.iat_imports {
+        if *slot > u32::MAX as u64 || !prog.import_index.contains_key(import) { continue; }
+        out.push(op::LOCAL_GET); out.extend(leb_u32(target));
+        out.push(op::I32_CONST); out.extend(crate::encode::leb_s32(*slot as i32));
+        out.extend([0x46, op::IF, 0x40]);
+        emit_import_value(&mut out, prog, *slot, import)?;
+        out.extend([op::RETURN, op::END]);
+    }
+    for (address, index) in &prog.function_index {
+        out.push(op::LOCAL_GET); out.extend(leb_u32(target));
+        out.push(op::I32_CONST); out.extend(crate::encode::leb_s32(*address as i32));
+        out.push(0x46);
+        if prog.image_base!=0 {
+            out.push(op::LOCAL_GET);out.extend(leb_u32(target));
+            out.push(op::I32_CONST);out.extend(leb_u32(prog.image_base));
+            out.push(op::I32_ADD);
+            out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(*address as i32));
+            out.extend([0x46,0x72]);
+        }
+        out.extend([op::IF, 0x40, op::CALL]);
+        out.extend(leb_u32(index + import_count));
+        out.extend([op::RETURN, op::END]);
+    }
+    if std::env::var_os("WLAM_TRACE_INDIRECT").is_some() {
+        out.push(op::I32_CONST); out.extend(crate::encode::leb_u32(0x7fc8));
+        out.push(op::I32_CONST); out.push(1);
+        out.push(op::I32_STORE); out.extend([2, 0]);
+        emit_debug_trace(&mut out, prog, 0x7ff2);
+    }
+    out.extend([op::UNREACHABLE, op::END]);
+    Ok(Some(out))
+}
+
+/// The register an IAT call target was loaded through, if it was a register.
+///
+/// `call [slot]` lifts as `Load T <- [slot]; CallInd T`, and the emitter turns
+/// the load into an address token. Which destination that token lived in is
+/// what this recovers, so the register can be restored after the call.
+fn loaded_target_register(block: &Block) -> Option<Box<str>> {
+    let target = block.ops.iter().find_map(|op| match op {
+        crate::ir::IR::CallInd { target } => Some(target),
+        _ => None,
+    })?;
+    block.ops.iter().find_map(|op| match op {
+        crate::ir::IR::Load {
+            dst: crate::ir::Operand::Reg { name, .. },
+            ..
+        } if target == &crate::ir::Operand::Reg { name: name.clone(), size: 4 } => {
+            Some(name.clone())
+        }
+        _ => None,
+    })
+}
+
+/// Apply an import's stack cleanup at an IAT call site.
+///
+/// The lifted `call` already pushed the guest return address, so `RET n`
+/// (stdcall) is `[ESP] + 4 + argument_bytes`. A `__cdecl` import is cleaned up
+/// by its own caller (`add esp, 4` right after the call), so the call site must
+/// pop only the return address: doing a stdcall-style cleanup as well would
+/// discard that `add` a second time and walk ESP a whole argument list past the
+/// frame on every call.
+fn pop_import_frame(out: &mut Vec<u8>, esp: u32, signature: wlam_pcode::abi::Signature) {
+    let pop = match signature.convention {
+        wlam_pcode::abi::Convention::Stdcall => signature.return_pop(),
+        wlam_pcode::abi::Convention::Cdecl => 4,
+    };
+    out.push(op::LOCAL_GET);
+    out.extend_from_slice(&leb_u32(esp));
+    out.push(op::I32_CONST);
+    out.extend_from_slice(&crate::encode::leb_s32(pop as i32));
+    out.push(op::I32_ADD);
+    out.push(op::LOCAL_SET);
+    out.extend_from_slice(&leb_u32(esp));
 }
 
 #[cfg(test)]
@@ -1183,10 +1650,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_iat_tail_jump_is_recognised_as_a_host_slot() {
+        // The exact shape Sleigh produces for `jmp dword ptr [0x4ca7b0]`:
+        //   Copy T <- Const 0x4ca7b0
+        //   IndirectJump Ram{offset: T}
+        let temp = 292_361_142_272u64;
+        let block = Block {
+            start: 0x441203,
+            end: 0x441213,
+            ops: vec![
+                crate::ir::IR::Copy {
+                    dst: crate::ir::Operand::Temp { offset: temp, size: 4 },
+                    src: crate::ir::Operand::Const { value: 0x4ca7b0, size: 4 },
+                },
+                crate::ir::IR::IndirectJump {
+                    target: crate::ir::Operand::Ram { offset: temp, size: 4 },
+                },
+            ],
+            terminator: Terminator::IndirectJump,
+        };
+        assert_eq!(iat_slot_of(&block), Some(0x4ca7b0));
+    }
+
+    #[test]
     fn dispatcher_locals_follow_register_locals() {
         let locals = LocalMap::new([("EAX".to_string(), 4)]);
         assert_eq!(id_local(&locals), 1);
         assert_eq!(ret_local(&locals), 2);
+    }
+
+    /// Hover calls the C-runtime `memcpy` import through `call [0x4ca8e8]`
+    /// and then does `add esp, 0xc`. The call site must pop only the return
+    /// address it pushed; a stdcall-style `ret 12` on top of that `add` would
+    /// move ESP past the frame on every copy.
+    #[test]
+    fn a_cdecl_import_pops_only_the_return_address() {
+        use wlam_pcode::abi::{signature, Signature};
+        assert!(signature("MSVCRT.dll", "memcpy").is_none(), "memcpy has no stdcall cleanup");
+        let esp = 0;
+        let mut out = Vec::new();
+        pop_import_frame(&mut out, esp, Signature {
+            convention: wlam_pcode::abi::Convention::Cdecl,
+            argument_bytes: 12,
+        });
+        // local.get 0; i32.const 4; i32.add; local.set 0
+        assert_eq!(out, vec![op::LOCAL_GET, 0, op::I32_CONST, 4, op::I32_ADD, op::LOCAL_SET, 0]);
+        let mut stdcall = Vec::new();
+        pop_import_frame(&mut stdcall, esp, Signature {
+            convention: wlam_pcode::abi::Convention::Stdcall,
+            argument_bytes: 12,
+        });
+        // stdcall: 4 (return address) + 12 (arguments)
+        assert_eq!(stdcall, vec![op::LOCAL_GET, 0, op::I32_CONST, 16, op::I32_ADD, op::LOCAL_SET, 0]);
     }
 
     #[test]

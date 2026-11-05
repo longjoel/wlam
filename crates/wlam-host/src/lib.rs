@@ -28,9 +28,32 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub mod arena;
+pub mod atoms;
+pub mod dialog;
+pub mod events;
+pub mod files;
+pub mod font;
+pub mod gdi;
+pub mod gl_context;
+pub mod gl_renderer;
 pub mod heap;
+pub mod locale;
+pub mod memory;
+pub mod modules;
+pub mod objects;
+pub mod opengl_math;
+pub mod opengl;
+pub mod raster;
+pub mod resources;
+pub mod runtime;
 pub mod startup;
+pub mod stdio;
+pub mod sync;
+pub mod thread;
 pub mod version;
+pub mod virtual_memory;
+pub mod window;
 
 pub use version::{Platform, WindowsVersion};
 
@@ -431,9 +454,175 @@ pub const HOST_VERSION: WindowsVersion = WindowsVersion::WIN2000;
 pub fn kernel32(h: &mut Host) -> &mut Host {
     let api = |name: &str| Api::new("KERNEL32.dll", name);
 
+    let thread = std::sync::Arc::new(std::sync::Mutex::new(thread::ThreadState::default()));
+    for (name, count) in [
+        ("GetCurrentThread", 0),
+        ("GetCurrentProcess", 0),
+        ("TlsAlloc", 0),
+        ("TlsFree", 1),
+        ("TlsGetValue", 1),
+        ("TlsSetValue", 2),
+        ("GetCurrentThreadId", 0),
+        ("GetLastError", 0),
+        ("SetLastError", 1),
+    ] {
+        let thread = thread.clone();
+        h.implement_with_memory(api(name), move |c| {
+            let args = (0..count)
+                .map(|i| {
+                    c.mem
+                        .read_u32(c.args_ptr + i * 4)
+                        .expect("thread API argument pointer")
+                })
+                .collect::<Vec<_>>();
+            thread
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .call(name, &args)
+                .unwrap() as i32
+        });
+    }
+    let virtual_memory = std::sync::Arc::new(std::sync::Mutex::new(
+        virtual_memory::VirtualMemory::default(),
+    ));
+    for (name, count) in [("VirtualAlloc", 4), ("VirtualFree", 3)] {
+        let virtual_memory = virtual_memory.clone();
+        let thread = thread.clone();
+        h.implement_with_memory(api(name), move |c| {
+            let args = (0..count)
+                .map(|i| {
+                    c.mem
+                        .read_u32(c.args_ptr + i * 4)
+                        .expect("virtual memory argument pointer")
+                })
+                .collect::<Vec<_>>();
+            let mut vm = virtual_memory.lock().unwrap_or_else(|e| e.into_inner());
+            let result = if name == "VirtualAlloc" {
+                vm.allocate(args[0], args[1], args[2], args[3], c.mem)
+            } else {
+                vm.free(args[0], args[1], args[2])
+            };
+            match result {
+                Ok(value) => value as i32,
+                Err(error) => {
+                    thread.lock().unwrap_or_else(|e| e.into_inner()).last_error = error.code();
+                    0
+                }
+            }
+        });
+    }
+    let sections = std::sync::Arc::new(std::sync::Mutex::new(sync::CriticalSections::default()));
+    for name in [
+        "InitializeCriticalSection",
+        "EnterCriticalSection",
+        "TryEnterCriticalSection",
+        "LeaveCriticalSection",
+        "DeleteCriticalSection",
+    ] {
+        let sections = sections.clone();
+        h.implement_with_memory(api(name), move |c| {
+            let address = c
+                .mem
+                .read_u32(c.args_ptr)
+                .expect("critical section argument pointer");
+            sections
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .call(name, address, c.mem)
+                .unwrap_or_else(|e| panic!("{name}: {e}")) as i32
+        });
+    }
     // `GetVersion` -> DWORD. No arguments and no memory access: the value is a
     // property of the host, not of the call.
     h.implement(api("GetVersion"), |_| HOST_VERSION.version_dword() as i32);
+
+    // `GetACP() -> UINT` and `GetOEMCP() -> UINT`
+    //
+    // Hover's code-page helper treats `-3` as ANSI and `-2` as OEM, then maps
+    // the returned number onto its own table. Returning the pages this host
+    // actually presents is what keeps that lookup truthful.
+    h.implement(api("GetACP"), |_| locale::ANSI_CODE_PAGE as i32);
+    h.implement(api("GetOEMCP"), |_| locale::OEM_CODE_PAGE as i32);
+
+    // `GetCPInfo(CodePage, lpCPInfo) -> BOOL`
+    //
+    // Hover calls this after `GetACP` to learn how many bytes a character
+    // occupies. For the host's Western pages that is one, and there are no
+    // lead bytes; the structure is written in full so the caller can trust
+    // every field. An unknown page returns FALSE rather than describing a
+    // character set the host does not have.
+    {
+        h.implement_with_memory(api("GetCPInfo"), move |c: Call<'_>| {
+            let code_page = c.mem.read_u32(c.args_ptr).unwrap_or(0);
+            let at = c.mem.read_u32(c.args_ptr + 4).unwrap_or(0);
+            let Some(info) = locale::CpInfo::for_code_page(code_page) else {
+                return 0;
+            };
+            i32::from(info.write(c.mem, at))
+        });
+    }
+
+    // `GetCommandLineA() -> LPSTR`
+    //
+    // Hover immediately dereferences the result to look for quoted arguments,
+    // so it must be a readable NUL-terminated string. This host has no
+    // command-line arguments for the image; returning a stable pointer to an
+    // empty string says that plainly instead of inventing a program path.
+    let process = std::sync::Arc::new(std::sync::Mutex::new(startup::Process::default()));
+    {
+        let process = std::sync::Arc::clone(&process);
+        h.implement_with_memory(api("GetCommandLineA"), move |c: Call<'_>| {
+            process
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .command_line(c.mem)
+                .unwrap_or(0) as i32
+        });
+    }
+
+    // `GetModuleFileNameA(hModule, lpFilename, nSize) -> DWORD`
+    //
+    // Hover derives its install directory by truncating this at the last
+    // backslash, so the answer must be a path even though a recompiled image
+    // has no Windows file of its own. Requesting an explicit module other than
+    // the process image is refused (0): this host has no module table.
+    {
+        h.implement_with_memory(api("GetModuleFileNameA"), move |c: Call<'_>| {
+            let module = c.mem.read_u32(c.args_ptr).unwrap_or(0);
+            let buffer = c.mem.read_u32(c.args_ptr + 4).unwrap_or(0);
+            let size = c.mem.read_u32(c.args_ptr + 8).unwrap_or(0);
+            if module != 0 {
+                return 0;
+            }
+            match startup::write_cstr(c.mem, buffer, size, startup::MODULE_FILE_NAME) {
+                // Windows reports the buffer size when the name did not fit.
+                Ok((_, true)) => size as i32,
+                Ok((written, false)) => written as i32,
+                Err(_) => 0,
+            }
+        });
+    }
+
+    // `GetEnvironmentStrings() -> LPTCH`
+    //
+    // The returned block is walked by the guest one `NAME=value\0` entry at a
+    // time until a leading NUL. This host inherits no variables, so the block
+    // is the two terminating NULs and the very first byte an enumeration loop
+    // reads is the end marker. A NULL answer would be a *different* claim --
+    // "the environment does not exist" -- and callers do not uniformly check
+    // for it, so a real empty block is the honest reply. Like the command line
+    // the pointer is stable for the life of the process, because Windows
+    // documents that `GetEnvironmentStrings` hands out process-owned memory.
+    {
+        let process = std::sync::Arc::clone(&process);
+        h.implement_with_memory(api("GetEnvironmentStrings"), move |c: Call<'_>| {
+            process
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .environment_strings(c.mem)
+                .unwrap_or(0) as i32
+        });
+    }
 
     /// The heap set `kernel32` serves from.
     ///
@@ -494,6 +683,131 @@ pub fn kernel32(h: &mut Host) -> &mut Host {
         c.mem.read_u32(c.args_ptr).unwrap_or(0) as i32
     });
 
+    // -- standard handles ------------------------------------------------
+    //
+    // Hover probes each standard handle with `GetStdHandle` + `GetFileType`
+    // when `STARTUPINFOA` supplies none, so these three calls decide whether it
+    // believes it has a console. The handles come from a real table, not a
+    // constant: `GetFileType` can then report `FILE_TYPE_CHAR` truthfully, and
+    // `SetStdHandle` can redirect a slot without invalidating the others.
+    let stdio = std::sync::Arc::new(std::sync::Mutex::new(stdio::Stdio::default()));
+
+    {
+        let stdio = std::sync::Arc::clone(&stdio);
+        h.implement_with_memory(api("GetStdHandle"), move |c: Call<'_>| {
+            let index = c
+                .mem
+                .read_u32(c.args_ptr)
+                .unwrap_or(stdio::INVALID_HANDLE_VALUE);
+            stdio
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_std_handle(index) as i32
+        });
+    }
+
+    {
+        let stdio = std::sync::Arc::clone(&stdio);
+        h.implement_with_memory(api("GetFileType"), move |c: Call<'_>| {
+            let handle = c
+                .mem
+                .read_u32(c.args_ptr)
+                .unwrap_or(stdio::INVALID_HANDLE_VALUE);
+            stdio
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .file_type(handle) as i32
+        });
+    }
+
+    {
+        let stdio = std::sync::Arc::clone(&stdio);
+        h.implement_with_memory(api("SetStdHandle"), move |c: Call<'_>| {
+            let index = c
+                .mem
+                .read_u32(c.args_ptr)
+                .unwrap_or(stdio::INVALID_HANDLE_VALUE);
+            let handle = c
+                .mem
+                .read_u32(c.args_ptr + 4)
+                .unwrap_or(stdio::INVALID_HANDLE_VALUE);
+            i32::from(
+                stdio
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set_std_handle(index, handle),
+            )
+        });
+    }
+
+    // `WriteFile(hFile, lpBuffer, nBytes, lpWritten, lpOverlapped) -> BOOL`
+    //
+    // Only the synchronous form and the host's own output streams are served.
+    // The bytes are captured rather than printed so the runner can show them;
+    // a write to an unknown handle fails instead of pretending it happened.
+    {
+        let stdio = std::sync::Arc::clone(&stdio);
+        h.implement_with_memory(api("WriteFile"), move |c: Call<'_>| {
+            let handle = c.mem.read_u32(c.args_ptr).unwrap_or(0);
+            let buffer = c.mem.read_u32(c.args_ptr + 4).unwrap_or(0);
+            let count = c.mem.read_u32(c.args_ptr + 8).unwrap_or(0);
+            let written_ptr = c.mem.read_u32(c.args_ptr + 12).unwrap_or(0);
+            let overlapped = c.mem.read_u32(c.args_ptr + 16).unwrap_or(0);
+            if overlapped != 0 {
+                return 0; // asynchronous IO is not implemented
+            }
+            let Some(bytes) = c.mem.get(buffer, count as usize) else {
+                return 0; // the caller passed a buffer the guest cannot address
+            };
+            let bytes = bytes.to_vec();
+            if !stdio
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .write(handle, &bytes)
+            {
+                return 0;
+            }
+            if written_ptr != 0 && !c.mem.write_u32(written_ptr, count) {
+                return 0;
+            }
+            1
+        });
+    }
+
+    // `ReadFile(hFile, lpBuffer, nBytes, lpRead, lpOverlapped) -> BOOL`
+    //
+    // Reads queued console input. An empty queue is a successful zero-byte read
+    // (end of input), not fabricated text. Files opened with `CreateFileA` are
+    // not yet part of the host, so their handles fail here.
+    {
+        let stdio = std::sync::Arc::clone(&stdio);
+        h.implement_with_memory(api("ReadFile"), move |c: Call<'_>| {
+            let handle = c.mem.read_u32(c.args_ptr).unwrap_or(0);
+            let buffer = c.mem.read_u32(c.args_ptr + 4).unwrap_or(0);
+            let count = c.mem.read_u32(c.args_ptr + 8).unwrap_or(0);
+            let read_ptr = c.mem.read_u32(c.args_ptr + 12).unwrap_or(0);
+            let overlapped = c.mem.read_u32(c.args_ptr + 16).unwrap_or(0);
+            if overlapped != 0 {
+                return 0; // asynchronous IO is not implemented
+            }
+            let Some(bytes) = stdio
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .read(handle, count as usize)
+            else {
+                return 0;
+            };
+            match c.mem.get_mut(buffer, bytes.len()) {
+                Some(dst) => dst.copy_from_slice(&bytes),
+                None => return 0,
+            }
+            if read_ptr != 0 && !c.mem.write_u32(read_ptr, bytes.len() as u32) {
+                return 0;
+            }
+            1
+        });
+    }
+
     // `GetVersionExA(lpVersionInformation) -> BOOL`
     //
     // Uxn32 calls this with an `OSVERSIONINFOA` whose `dwOSVersionInfoSize` is
@@ -552,9 +866,7 @@ pub fn kernel32(h: &mut Host) -> &mut Host {
             let flags = c.mem.read_u32(c.args_ptr + 4).unwrap_or(0);
             let bytes = c.mem.read_u32(c.args_ptr + 8).unwrap_or(0);
             // A failed allocation returns NULL, which the guest already handles.
-            lock(&heap)
-                .alloc(c.mem, h_heap, flags, bytes)
-                .unwrap_or(0) as i32
+            lock(&heap).alloc(c.mem, h_heap, flags, bytes).unwrap_or(0) as i32
         });
     }
 
@@ -583,7 +895,12 @@ pub fn kernel32(h: &mut Host) -> &mut Host {
             if old == 0 {
                 // ReAlloc of NULL behaves as Alloc.
                 return lock(&heap)
-                    .alloc(c.mem, h_heap, flags & !heap::HEAP_REALLOC_IN_PLACE_ONLY, bytes)
+                    .alloc(
+                        c.mem,
+                        h_heap,
+                        flags & !heap::HEAP_REALLOC_IN_PLACE_ONLY,
+                        bytes,
+                    )
                     .unwrap_or(0) as i32;
             }
             let mut hs = lock(&heap);
@@ -597,7 +914,12 @@ pub fn kernel32(h: &mut Host) -> &mut Host {
                 return 0;
             }
             let new = hs
-                .alloc(c.mem, h_heap, flags & !heap::HEAP_REALLOC_IN_PLACE_ONLY, bytes)
+                .alloc(
+                    c.mem,
+                    h_heap,
+                    flags & !heap::HEAP_REALLOC_IN_PLACE_ONLY,
+                    bytes,
+                )
                 .unwrap_or(0);
             if new == 0 {
                 return 0;
@@ -739,9 +1061,9 @@ mod tests {
         let v = h.call(&api("GetVersion"), 0).expect("implemented") as u32;
 
         // These are the exact extractions Uxn32 performs at 0x40ccde:
-        //   major = (v >> 8) & 0xff, minor = v & 0xff
-        let major = (v >> 8) & 0xff;
-        let minor = v & 0xff;
+        //   major = v & 0xff, minor = (v >> 8) & 0xff
+        let major = v & 0xff;
+        let minor = (v >> 8) & 0xff;
         assert_eq!(major, HOST_VERSION.major as u32);
         assert_eq!(minor, HOST_VERSION.minor as u32);
         assert_eq!(v >> 16, HOST_VERSION.build as u32);
@@ -751,7 +1073,10 @@ mod tests {
     fn reporting_nt_is_what_the_guest_tests_for() {
         // Uxn32 derives its platform tag with `major > 4`, so the value is not
         // decorative: 5.0 is the oldest version that makes it take the NT path.
-        assert!(HOST_VERSION.major > 4, "the host must present as NT-platform");
+        assert!(
+            HOST_VERSION.major > 4,
+            "the host must present as NT-platform"
+        );
         assert_eq!(HOST_VERSION.platform, Platform::Win32Nt);
         // And the NT bit is clear, which is the other way callers tell NT from 9x.
         assert_eq!(HOST_VERSION.version_dword() & 0x8000_0000, 0);
@@ -766,7 +1091,7 @@ mod tests {
             build: 0,
         };
         assert_eq!(v.version_dword() & 0x8000_0000, 0x8000_0000);
-        assert_eq!(v.version_dword() & 0x7fff_ffff, 0x0000_040a);
+        assert_eq!(v.version_dword() & 0x7fff_ffff, 0x0000_0a04);
     }
 
     #[test]
@@ -842,7 +1167,9 @@ mod tests {
         let (mut h, mut data) = heap_host();
         let mut mem = GuestMemory::new(&mut data);
         args(mem.data, 0x1000, &[0, 0x1000, 0]);
-        let handle = h.call_with_memory(&api("HeapCreate"), 0x1000, &mut mem).unwrap() as u32;
+        let handle = h
+            .call_with_memory(&api("HeapCreate"), 0x1000, &mut mem)
+            .unwrap() as u32;
 
         // HeapAlloc(hHeap, flags, bytes)
         args(mem.data, 0x2000, &[handle, 0, 64]);
@@ -861,23 +1188,36 @@ mod tests {
         let (mut h, mut data) = heap_host();
         let mut mem = GuestMemory::new(&mut data);
         args(mem.data, 0x1000, &[0, 0x1000, 0]);
-        let handle = h.call_with_memory(&api("HeapCreate"), 0x1000, &mut mem).unwrap() as u32;
+        let handle = h
+            .call_with_memory(&api("HeapCreate"), 0x1000, &mut mem)
+            .unwrap() as u32;
 
         args(mem.data, 0x2000, &[handle, 0, 128]);
-        let p = h.call_with_memory(&api("HeapAlloc"), 0x2000, &mut mem).unwrap() as u32;
+        let p = h
+            .call_with_memory(&api("HeapAlloc"), 0x2000, &mut mem)
+            .unwrap() as u32;
 
         // HeapSize(hHeap, flags, ptr) reports the usable size.
         args(mem.data, 0x3000, &[handle, 0, p]);
-        let size = h.call_with_memory(&api("HeapSize"), 0x3000, &mut mem).unwrap();
-        assert!(size >= 128, "HeapSize must report at least what was asked for");
+        let size = h
+            .call_with_memory(&api("HeapSize"), 0x3000, &mut mem)
+            .unwrap();
+        assert!(
+            size >= 128,
+            "HeapSize must report at least what was asked for"
+        );
 
         // HeapFree(hHeap, flags, ptr) -> TRUE
         args(mem.data, 0x4000, &[handle, 0, p]);
-        let freed = h.call_with_memory(&api("HeapFree"), 0x4000, &mut mem).unwrap();
+        let freed = h
+            .call_with_memory(&api("HeapFree"), 0x4000, &mut mem)
+            .unwrap();
         assert_eq!(freed, 1, "HeapFree must report success");
 
         // A double free is refused rather than silently accepted.
-        let again = h.call_with_memory(&api("HeapFree"), 0x4000, &mut mem).unwrap();
+        let again = h
+            .call_with_memory(&api("HeapFree"), 0x4000, &mut mem)
+            .unwrap();
         assert_eq!(again, 0, "freeing the same block twice must fail");
     }
 
@@ -886,11 +1226,15 @@ mod tests {
         let (mut h, mut data) = heap_host();
         let mut mem = GuestMemory::new(&mut data);
         args(mem.data, 0x2000, &[0xDEAD_BEEF, 0, 64]);
-        let p = h.call_with_memory(&api("HeapAlloc"), 0x2000, &mut mem).unwrap();
+        let p = h
+            .call_with_memory(&api("HeapAlloc"), 0x2000, &mut mem)
+            .unwrap();
         assert_eq!(p, 0, "an unknown heap must yield NULL, not a pointer");
 
         args(mem.data, 0x3000, &[0xDEAD_BEEF, 0, 0x1000]);
-        let size = h.call_with_memory(&api("HeapSize"), 0x3000, &mut mem).unwrap();
+        let size = h
+            .call_with_memory(&api("HeapSize"), 0x3000, &mut mem)
+            .unwrap();
         assert_eq!(size, -1, "HeapSize reports (SIZE_T)-1 for a bad handle");
     }
 
@@ -898,10 +1242,14 @@ mod tests {
     fn get_process_heap_is_available_without_heap_create() {
         let (mut h, mut data) = heap_host();
         let mut mem = GuestMemory::new(&mut data);
-        let handle = h.call_with_memory(&api("GetProcessHeap"), 0, &mut mem).unwrap() as u32;
+        let handle = h
+            .call_with_memory(&api("GetProcessHeap"), 0, &mut mem)
+            .unwrap() as u32;
         assert_ne!(handle, 0);
         args(mem.data, 0x2000, &[handle, 0, 32]);
-        let p = h.call_with_memory(&api("HeapAlloc"), 0x2000, &mut mem).unwrap() as u32;
+        let p = h
+            .call_with_memory(&api("HeapAlloc"), 0x2000, &mut mem)
+            .unwrap() as u32;
         assert_ne!(p, 0, "the process heap must be usable");
     }
 
@@ -910,16 +1258,22 @@ mod tests {
         let (mut h, mut data) = heap_host();
         let mut mem = GuestMemory::new(&mut data);
         args(mem.data, 0x1000, &[0, 0x1000, 0]);
-        let handle = h.call_with_memory(&api("HeapCreate"), 0x1000, &mut mem).unwrap() as u32;
+        let handle = h
+            .call_with_memory(&api("HeapCreate"), 0x1000, &mut mem)
+            .unwrap() as u32;
         args(mem.data, 0x2000, &[handle, 0, 16]);
-        let p = h.call_with_memory(&api("HeapAlloc"), 0x2000, &mut mem).unwrap() as u32;
+        let p = h
+            .call_with_memory(&api("HeapAlloc"), 0x2000, &mut mem)
+            .unwrap() as u32;
         for (i, b) in b"ABCDEFGHIJKLMNOP".iter().enumerate() {
             mem.get_mut(p + i as u32, 1).unwrap()[0] = *b;
         }
 
         // HeapReAlloc(hHeap, flags, lpMem, dwBytes) -- grows, so it may move.
         args(mem.data, 0x3000, &[handle, 0, p, 256]);
-        let q = h.call_with_memory(&api("HeapReAlloc"), 0x3000, &mut mem).unwrap() as u32;
+        let q = h
+            .call_with_memory(&api("HeapReAlloc"), 0x3000, &mut mem)
+            .unwrap() as u32;
         assert_ne!(q, 0, "growing a small block must succeed");
         assert_eq!(
             mem.get(q, 16),
@@ -942,7 +1296,10 @@ mod tests {
         // default; reporting no flags must leave that bit clear.
         let flags = word(mem.data, si + startup::offset::DW_FLAGS);
         assert_eq!(flags & startup::STARTF_USESHOWWINDOW, 0);
-        assert_eq!(word(mem.data, si + startup::offset::CB), startup::STARTUPINFOA_SIZE);
+        assert_eq!(
+            word(mem.data, si + startup::offset::CB),
+            startup::STARTUPINFOA_SIZE
+        );
     }
 
     #[test]
@@ -959,7 +1316,10 @@ mod tests {
         let n = h
             .call_with_memory(&api("SetHandleCount"), 0x1000, &mut mem)
             .unwrap();
-        assert_eq!(n, 7, "the answer must follow the request, not be a constant");
+        assert_eq!(
+            n, 7,
+            "the answer must follow the request, not be a constant"
+        );
     }
 
     #[test]

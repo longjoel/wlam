@@ -1,8 +1,7 @@
 //! The IR the lifter produces and the emitter consumes.
 //!
 //! `wlam-emit` owns this contract (not the lifter) so that the emitter has no
-//! dependency on the Sleigh-backed front-end: the two live in separate Cargo
-//! workspaces because the vendored `rsleigh` declares its own. A lifter's job
+//! dependency on the Sleigh-backed front-end: both participate in the root workspace. A lifter's job
 //! is to produce these types; the emitter's job is to compile them.
 
 /// An operand: a value with a width in bytes.
@@ -20,7 +19,7 @@ pub enum Operand {
 
 impl Operand {
     /// Classify a Sleigh varnode: registers by (offset, size), temporaries by
-    /// their `inst_start << 16 | slot` encoding.
+    /// an instruction-scoped 32-bit namespace plus the decoder slot.
     pub(crate) fn from_varnode(v: &crate::pcode_ir::Varnode) -> Operand {
         use crate::pcode_ir::AddressSpaceId;
         match v.space {
@@ -129,6 +128,7 @@ pub enum ConvertOp {
 /// One IR operation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IR {
+    FloatUnary { op: wlam_emit::ir::FloatUnaryOp, dst: Operand, src: Operand },
     Copy { dst: Operand, src: Operand },
     Load { dst: Operand, addr: Operand, size: u32 },
     Store { addr: Operand, value: Operand, size: u32 },
@@ -150,6 +150,17 @@ pub enum IR {
     CallInd { target: Operand },
     Ret { target: Option<Operand> },
     Userop { id: u64, args: Vec<Operand>, dst: Option<Operand> },
+    /// A loop contained in one guest instruction, reconstructed from Sleigh's
+    /// `Const`-address branches (see the emitter's `IR::MicroLoop`).
+    MicroLoop {
+        head: Vec<IR>,
+        exit: Option<Operand>,
+        body: Vec<IR>,
+        repeat: Option<Operand>,
+        tail: Vec<IR>,
+    },
+    /// An operation whose semantics are not implemented. Emission must fail.
+    Unsupported(String),
     Nop,
 }
 
@@ -178,6 +189,9 @@ pub fn lower(op: &GhidraOp) -> IR {
         P::Store { ptr, val, .. } => {
             IR::Store { addr: operand(ptr), value: operand(val), size: val.size }
         }
+        P::Branch { dest } | P::CBranch { dest, .. }
+            if dest.space == crate::AddressSpaceId::Const =>
+            IR::Unsupported(format!("internal P-code branch: {op:?}")),
         P::Branch { dest } => IR::Branch { target: operand(dest) },
         P::CBranch { dest, cond } => IR::CBranch { cond: operand(cond), target: operand(dest) },
         // An *indirect* branch takes its destination from a register or
@@ -223,6 +237,19 @@ pub fn lower(op: &GhidraOp) -> IR {
         P::FloatNotEq { out, left, right } => flt(FloatOp::NotEq, out, left, right),
         P::FloatLess { out, left, right } => flt(FloatOp::Less, out, left, right),
         P::FloatLessEq { out, left, right } => flt(FloatOp::LessEq, out, left, right),
+        P::FloatNan { out, input } => flt(FloatOp::NotEq, out, input, input),
+        P::FloatNeg { out, input } | P::FloatAbs { out, input } |
+        P::FloatSqrt { out, input } | P::FloatCeil { out, input } |
+        P::FloatFloor { out, input } | P::FloatRound { out, input } => {
+            use wlam_emit::ir::FloatUnaryOp as U;
+            let kind=match op {
+                P::FloatNeg {..}=>U::Neg,P::FloatAbs {..}=>U::Abs,
+                P::FloatSqrt {..}=>U::Sqrt,P::FloatCeil {..}=>U::Ceil,
+                P::FloatFloor {..}=>U::Floor,P::FloatRound {..}=>U::Round,
+                _=>unreachable!(),
+            };
+            IR::FloatUnary {op:kind,dst:operand(out),src:operand(input)}
+        }
         // Typed conversions. `FSTP m64` lowers to `Float2Float ST0(80) ->
         // tmp(64)`, so without these the store receives an untyped temp and the
         // emitter refuses it with "i64 store".
@@ -246,7 +273,10 @@ pub fn lower(op: &GhidraOp) -> IR {
         // ordinary flag computation, not exotic.
         P::Popcount { out, input } => IR::Un { op: UnOp::Popcount, dst: operand(out), src: operand(input) },
         P::Lzcount { out, input } => IR::Un { op: UnOp::Lzcount, dst: operand(out), src: operand(input) },
-        P::BoolNot { out, input } => IR::Un { op: UnOp::Not, dst: operand(out), src: operand(input) },
+        P::BoolNot { out, input } => IR::Bin {
+            op: BinOp::Eq, dst: operand(out),
+            operands: Box::new((operand(input), Operand::Const { value: 0, size: input.size })),
+        },
         P::BoolAnd { out, left, right } => bin(BinOp::And, out, left, right),
         P::BoolOr { out, left, right } => bin(BinOp::Or, out, left, right),
         P::BoolXor { out, left, right } => bin(BinOp::Xor, out, left, right),
@@ -264,7 +294,7 @@ pub fn lower(op: &GhidraOp) -> IR {
         // Anything else is not yet lowered; reported honestly rather than
         // silently turned into a no-op. See `docs/sleigh-notes.md` for the
         // list of ops that still need lowering (float, multipliers, etc).
-        _ => IR::Nop,
+        _ => IR::Unsupported(format!("{op:?}")),
     }
 }
 
@@ -359,5 +389,19 @@ mod subpiece_tests {
             !lsbs.contains(&1),
             "a discarded byte count of 2 must not be divided by 8 to 0/1: {lsbs:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod unsupported_tests {
+    use super::*;
+
+    #[test]
+    fn unimplemented_pcode_survives_lowering_and_conversion() {
+        let value = GhidraVarnode { space: crate::AddressSpaceId::Const, offset: 1, size: 8 };
+        let raw = GhidraOp::Branch { dest: value };
+        let lowered = lower(&raw);
+        assert!(matches!(&lowered, IR::Unsupported(op) if op.contains("internal P-code branch")));
+        assert!(matches!(crate::emit::to_eir(&lowered), wlam_emit::IR::Unsupported(op) if op.contains("internal P-code branch")));
     }
 }

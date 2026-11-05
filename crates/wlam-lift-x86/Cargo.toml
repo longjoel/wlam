@@ -1,9 +1,9 @@
 [package]
 name = "wlam-lift-x86"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
-wlam-pcode.workspace = true
-iced-x86.workspace = true
+wlam-pcode = { path = "../wlam-pcode" }
+iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "std", "instr_info", "intel"] }

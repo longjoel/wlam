@@ -3,13 +3,16 @@ resolver = "2"
 members = [
     "crates/wlam-pe",
     "crates/wlam-pcode",
-    "crates/wlam-lift-x86",
+    "crates/wlam-sleigh",
     "crates/wlam-translate",
     "crates/wlam-emit",
     "crates/wlam-host",
+    "crates/wlam-browser-host",
     "crates/wlam-harness",
     "crates/wlam-cli",
 ]
+
+exclude = ["crates/wlam-lift-x86", "toolchain/rsleigh"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,7 +23,6 @@ repository = "https://github.com/example/wlam"
 [workspace.dependencies]
 wlam-pe = { path = "crates/wlam-pe" }
 wlam-pcode = { path = "crates/wlam-pcode" }
-wlam-lift-x86 = { path = "crates/wlam-lift-x86" }
 wlam-translate = { path = "crates/wlam-translate" }
 wlam-emit = { path = "crates/wlam-emit" }
 wlam-host = { path = "crates/wlam-host" }

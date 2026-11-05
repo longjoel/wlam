@@ -154,7 +154,12 @@ pub fn run_entry_raw(
         Ok(Err(e)) => Err(RunError::Trap(format!("{e}"))),
         // (wasmi reports the fault; guest memory is dumped by callers that need
         // to locate it, since the engine does not expose the address.)
-        Err(_) => Err(RunError::Trap("host panic".into())),
+        Err(payload) => {
+            let detail = payload.downcast_ref::<String>().map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic payload");
+            Err(RunError::Trap(format!("host panic: {detail}")))
+        },
     }
 }
 
@@ -194,7 +199,7 @@ pub const REG_SNAPSHOT_BASE: u32 = 0x8000;
 
 /// Write a 32-bit guest register into the snapshot area.
 pub fn seed_register(seed: &mut Vec<(u32, u32)>, index: u32, value: u32) {
-    seed.push((REG_SNAPSHOT_BASE + index * 4, value));
+    seed.push((wlam_emit::snapshot_address(index as usize) as u32, value));
 }
 
 /// One byte range the loader mapped into guest memory.

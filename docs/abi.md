@@ -1,18 +1,19 @@
 # Guest ↔ host ABI (work in progress)
 
 This document is the contract between the recompiled guest and the host layer.
-It is intentionally written down before the emitter exists, because every API
-decided here is expensive to change later.
+The current implementation is experimental; remaining semantic gaps are listed
+in roadmap.md.
 
 ## Namespaces
 
 Host imports use one wasm import namespace per Windows DLL:
 
 ```
-(import "kernel32" "VirtualAlloc" (func $os_VirtualAlloc (param i32 i32 i32 i32) (result i32)))
+(import "KERNEL32.dll" "VirtualAlloc" (func $os_VirtualAlloc (param i32 i32) (result i32)))
 ```
 
-Keeping the namespace means the import table can be walked straight from the
+The two arguments are a pointer to guest stack arguments and the guest return
+address. Results use i32. Keeping the namespace means the import table can be walked straight from the
 PE, and the compat matrix maps one-to-one onto generated imports.
 
 ## Guest ABI (x86-32)
@@ -37,7 +38,7 @@ program is entitled to address anything below 4 GiB.
 
 | Region | Range | Notes |
 | --- | --- | --- |
-| Register snapshot | `0x8000` | `REG_SNAPSHOT_BASE`; `GUEST_LOCALS` order |
+| Register snapshot | `0x8000` | `snapshot_address(index)` = base + index × 8; register order |
 | Loader stack | grows down from `0x70000` | the harness seeds ESP here |
 | TIB / SEH head | `0x60000` | `FS_OFFSET`; `fs:[0] = 0xFFFFFFFF` |
 | Image | its PE `ImageBase` (`0x400000` for PE32) | headers + every section |
@@ -69,14 +70,17 @@ two agree and that the region does not overlap the image or the stack.
   yields to the scheduler; the host never blocks the wasm thread on JS I/O
   except through `SharedArrayBuffer` + `Atomics.wait`, which must be given up
   before a physical thread is blocked.
-- A host function that cannot be implemented returns the documented failure
-  value *and* records a diagnostic, so the compat matrix stays truthful.
+- An unimplemented host function records a named refusal and traps. Probing
+  can request a return value, but cannot bypass an unsupported-instruction trap.
+- `wlam.unsupported` imports name unsupported P-code and user operations. They
+  always stop execution; the emitter appends `unreachable` after the import.
 
 ## Floating point
 
-- x87 80-bit values live in a 10-byte-per-register area of guest memory, not in
-  wasm locals (wasm has no x87). Software `f80` helpers operate on that area.
-- SSE doubles use wasm `f64` locals; `mxcsr` is emulated where exposed.
+- x87 stack registers currently use f64 locals and eight-byte snapshot slots.
+  This approximates 80-bit precision; full x87 fidelity is not implemented.
+- Sin/cos helpers use scratch doubles at `0x7000` and `0x7008`, below the
+  snapshot area, and require host implementations.
 
 ## Known-unresolvable area
 

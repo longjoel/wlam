@@ -48,7 +48,7 @@ fn run(module: &[u8], regs: &[String], esp: u32) -> (u32, u32, String) {
             "const fs=require('fs');const m=new WebAssembly.Module(fs.readFileSync({path:?}));\
              const i=new WebAssembly.Instance(m,{{}});\
              const d=new DataView(i.exports.memory.buffer);\
-             d.setUint32({base}+{esp_idx}*4,{esp},true);\
+             d.setUint32({base}+{esp_idx}*8,{esp},true);\
              try{{i.exports.entry();}}catch(e){{console.log('TRAP '+e.message);process.exit(0)}}\
              console.log(d.getUint32(0x10000,true)+' '+d.getUint32(0x10004,true));",
             base = wlam_emit::REG_SNAPSHOT_BASE,

@@ -17,7 +17,7 @@ wlam — Win32 PE -> WebAssembly recompiler
 
 USAGE:
     wlam analyze <exe|dll> [--matrix [OUT.md]] [--json] [--oracle-dir DIR]
-    wlam recompile <exe> -o <out.wlam>     (not implemented yet)
+    wlam recompile <exe> -o <bundle-directory>
     wlam run <out.wlam>                    (not implemented yet)
 
 COMMANDS:
@@ -60,11 +60,34 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         "analyze" => analyze(&args[1..]),
-        "recompile" | "run" => Err(format!(
-            "'{cmd}' is not implemented yet; only 'analyze' exists in this build"
+        "recompile" => recompile(&args[1..]),
+        "run" => Err(format!(
+            "'{cmd}' is not implemented yet; use the browser runner for execution"
         )),
         other => Err(format!("unknown command '{other}' (try `wlam --help`)")),
     }
+}
+
+fn recompile(args: &[String]) -> Result<ExitCode, String> {
+    if args.len() < 3 || args[1] != "-o" { return Err("usage: wlam recompile <exe> -o <bundle-directory> [--seed <virtual-address> ...]".into()); }
+    let mut seeds=Vec::new();
+    let mut i=3;
+    while i<args.len() {
+        if args[i]!="--seed" {return Err(format!("unexpected recompile argument '{}'",args[i]));}
+        let text=args.get(i+1).ok_or("--seed requires a virtual address")?;
+        let address=text.strip_prefix("0x").or_else(||text.strip_prefix("0X")).unwrap_or(text);
+        seeds.push(u64::from_str_radix(address,16).map_err(|_|format!("invalid seed address '{text}'"))?);
+        i+=2;
+    }
+    let bytes = std::fs::read(&args[0]).map_err(|e| e.to_string())?;
+    let compilation = wlam_sleigh::with_big_stack(move || wlam_sleigh::compile::compile_with_seeds(&bytes,&seeds))?;
+    let (manifest, image) = compilation.bundle_image();
+    let output = std::path::Path::new(&args[2]);
+    std::fs::create_dir(output).map_err(|e| format!("create bundle directory: {e}"))?;
+    std::fs::write(output.join("guest.wasm"), compilation.module).map_err(|e|e.to_string())?;
+    std::fs::write(output.join("image.bin"), image).map_err(|e|e.to_string())?;
+    std::fs::write(output.join("manifest.json"), manifest).map_err(|e|e.to_string())?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn analyze(args: &[String]) -> Result<ExitCode, String> {
@@ -231,7 +254,7 @@ mod tests {
 
     #[test]
     fn unimplemented_commands_say_so() {
-        let err = run(&["recompile".into()]).unwrap_err();
+        let err = run(&["run".into()]).unwrap_err();
         assert!(err.contains("not implemented"), "{err}");
     }
 

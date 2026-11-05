@@ -1,0 +1,56 @@
+diff --git a/slaspec/x86/ia.sinc b/slaspec/x86/ia.sinc
+index d216d90..9fab5d3 100644
+--- a/slaspec/x86/ia.sinc
++++ b/slaspec/x86/ia.sinc
+@@ -1142,10 +1142,13 @@ Mem: segWide^addr64 is $(LONGMODE_ON) & addrsize=2 & segWide; addr64
+ Mem: segWide^addr64 is $(LONGMODE_ON) & addrsize=2 & segWide & highseg=1; addr64 { tmp:$(SIZE) = segWide + addr64; export tmp; }
+ Mem: segWide^addr32 is $(LONGMODE_OFF) & addrsize=1 & segWide; addr32       		{ tmp:$(SIZE) = zext(addr32); export tmp; }
+ @else
+-Mem: segWide^addr32 is $(LONGMODE_OFF) & addrsize=1 & segWide; addr32       		{ export addr32; }
++# LOCAL PATCH (wlam): the base applies to every 32-bit address, not only when
++# the address is written `seg:[base+index*ss+disp]`. See the patch note below.
++Mem: segWide^addr32 is $(LONGMODE_OFF) & addrsize=1 & segWide; addr32       		{ tmp:$(SIZE) = segWide + zext(addr32); export tmp; }
+ @endif
+ Mem: segWide^addr32 is $(LONGMODE_OFF) & addrsize=1 & segWide & highseg=1; addr32 	{ tmp:$(SIZE) = segWide + zext(addr32); export tmp; }
+ 
++
+ rel8: reloc is simm8        [ reloc=inst_next+simm8; ] { export *[ram]:$(SIZE) reloc; }
+ rel16: reloc is simm16      [ reloc=((inst_next >> 16) << 16) | ((inst_next + simm16) & 0xFFFF); ] { export *[ram]:$(SIZE) reloc; }
+ rel32: reloc is simm32      [ reloc=inst_next+simm32; ] { export *[ram]:$(SIZE) reloc; }
+@@ -1447,6 +1450,36 @@ moffs64: segWide^[imm32]  is addrsize=1 & highseg=1 & segWide & imm32   { tmp:8
+ @endif
+ # TODO: segment register offset in 64bit might not be right
+ 
++
++# ---------------------------------------------------------------------------
++# LOCAL PATCH (wlam): the segment base must apply to absolute displacements.
++#
++# Upstream's `Mem`/`moffs` rules add the segment base only when the address is
++# *not* written as `seg:disp32` (`highseg` is the top bit of `segover`). An
++# absolute displacement such as `MOV dword ptr [0x41106c], EAX`
++# (`89 05 6c 10 41 00`) decodes as `seg:disp32` with segover=0, so the base is
++# skipped. With a zero DS base that costs nothing, but for `fs:`/`gs:` the base
++# IS the difference between the TIB and address 0.
++#
++# `MOV dword ptr FS:[0x0], ESP` at Uxn32's 0x40ccc8 is the case that exposed
++# it: the guest links its SEH frame into the TIB, and the store went to address
++# 0 instead, so the handler was never linked.
++#
++# These lines replace the `highseg=0` cases so the encoded form goes through
++# the same base computation as every other rule: `segWide` is
++# `FS_OFFSET`/`GS_OFFSET` for those segments and 0 otherwise, so the result is
++# right for all of them. A zero `imm32` gets an explicit `extend`, because
++# `zext(0)` has no width to extend and the rule would not match.
++moffs8:  segWide^[imm32] is addrsize=1 & segWide & imm32 { tmp:$(SIZE) = zext(segWide) + imm32; export *:1 tmp; }
++moffs16: segWide^[imm32] is addrsize=1 & segWide & imm32 { tmp:$(SIZE) = zext(segWide) + imm32; export *:2 tmp; }
++moffs32: segWide^[imm32] is addrsize=1 & segWide & imm32 { tmp:$(SIZE) = zext(segWide) + imm32; export *:4 tmp; }
++moffs8:  segWide^[imm32] is addrsize=1 & segWide & imm32=0 { tmp:$(SIZE) = zext(segWide) + 0:4; export *:1 tmp; }
++moffs16: segWide^[imm32] is addrsize=1 & segWide & imm32=0 { tmp:$(SIZE) = zext(segWide) + 0:4; export *:2 tmp; }
++moffs32: segWide^[imm32] is addrsize=1 & segWide & imm32=0 { tmp:$(SIZE) = zext(segWide) + 0:4; export *:4 tmp; }
++# TODO: segment register offset in 64bit might not be right
++
++
++
+ # String memory access
+ dseSI1: seg16^SI    is addrsize=0 & seg16 & SI  { tmp:4 = segment(seg16,SI); SI = SI + 1-2*zext(DF); export *:1 tmp; }
+ dseSI1: segWide^ESI   is addrsize=1 & segWide & ESI { tmp:4 = ESI; ESI = ESI + 1-2*zext(DF); export *:1 tmp; }

@@ -29,11 +29,9 @@ use wlam_sleigh::discover::discover;
 use wlam_sleigh::ir as sir;
 use wlam_sleigh::{with_big_stack, Block as SBlock, Terminator as STerm};
 
-#[path = "../tests/shared/mod.rs"]
-mod shared;
+use wlam_sleigh::emit as shared;
 
 /// Registers seeded the way a loader would: a stack, a TIB, and no SEH chain.
-const SEED_REGISTERS: &[(&str, u32)] = &[("ESP", 4), ("FS_OFFSET", 10)];
 const ESP_SLOT: u32 = 0x70000;
 const TIB: u32 = 0x60000;
 
@@ -90,10 +88,7 @@ fn main() {
         sr_blocks.insert(b.start, lifted);
     }
 
-    // Registers are written to the snapshot as 4-byte slots; an x87 slot is a
-    // double only in the *block* modules, so the probe's snapshot layout is
-    // i32 for every integer register and the x87 stack is simply not used by
-    // this image's path up to the entry.
+    // Use the same eight-byte register slots as the loader and chained emitter.
     let mut regs: Vec<String> = wlam_emit::seeded_registers();
     let mut used = BTreeSet::new();
     for b in blocks.values() {
@@ -109,7 +104,7 @@ fn main() {
     let slot_of: BTreeMap<String, u64> = regs
         .iter()
         .enumerate()
-        .map(|(i, r)| (r.clone(), REG_SNAPSHOT_BASE + i as u64 * 4))
+        .map(|(i, r)| (r.clone(), wlam_emit::snapshot_address(i)))
         .collect();
 
     // Compile every block once. A block that cannot be translated is reported
@@ -148,7 +143,6 @@ fn main() {
         wasmi::Engine::new(&c)
     };
     let mut instances: BTreeMap<u64, wasmi::Instance> = BTreeMap::new();
-    let instantiated = &mut compiled;
     let mut store = wasmi::Store::new(&engine, ());
     store.set_fuel(u64::MAX).ok();
     for (start, m) in &compiled {
@@ -159,7 +153,7 @@ fn main() {
                 continue;
             }
         };
-        let mut linker = wasmi::Linker::<()>::new(&engine);
+        let linker = wasmi::Linker::<()>::new(&engine);
         let inst = linker
             .instantiate(&mut store, &module)
             .expect("instantiate")

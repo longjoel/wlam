@@ -30,8 +30,8 @@ use wlam_pe::Pe;
 use wlam_sleigh::discover::discover;
 use wlam_sleigh::{lift_block, with_big_stack};
 
-const MAJOR_SLOT: usize = 0x415b80;
-const MINOR_SLOT: usize = 0x415b7c;
+const MAJOR_SLOT: usize = 0x415b7c;
+const MINOR_SLOT: usize = 0x415b80;
 const TAG_SLOT: usize = 0x415b78;
 
 /// Build Uxn32 with a memory covering its image, plus the page count.
@@ -138,6 +138,7 @@ fn the_guest_stores_the_version_the_host_reported() {
     // The image must be mapped before the guest runs: its stores are absolute,
     // and on an unmapped image every observation reads zeros.
     let (mut store, instance) = run_with_image(&module, Arc::clone(&host)).expect("link + load");
+    store.set_fuel(1_000_000).expect("fuel enabled");
     let result = run_entry_diagnosing(&mut store, &instance, &loader_seed(), &host);
 
     // The run must not be a GetVersion refusal any more.
@@ -149,8 +150,7 @@ fn the_guest_stores_the_version_the_host_reported() {
     let mem = instance
         .get_memory(&mut store, "memory")
         .expect("guest memory")
-        .data(&store)
-        .to_vec();
+        .data(&store);
     // Sanity: the image really is mapped. If this fails, every check below is
     // meaningless, so report it as itself rather than as a version mismatch.
     let text_head = peek(&mem, 0x401000);
@@ -165,11 +165,11 @@ fn the_guest_stores_the_version_the_host_reported() {
     );
     assert_eq!(minor, HOST_VERSION.minor as u32, "wrong minor version");
 
-    // The guest derives its platform tag as `(minor << 8) + major` (SHL ECX,8;
+    // The guest derives its platform tag as `(major << 8) + minor` (SHL ECX,8;
     // ADD ECX,EDX at 0x40ccf6). Assert the guest's own arithmetic rather than a
     // magic constant: with a 5.0 report the tag is 5, and any "NT" string
     // encoding would be a different computation entirely.
-    let expected_tag = (minor << 8).wrapping_add(major);
+    let expected_tag = (major << 8).wrapping_add(minor);
     assert_eq!(
         tag, expected_tag,
         "the derived platform tag disagrees with the version fields it came from"

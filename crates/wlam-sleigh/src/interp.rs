@@ -94,7 +94,7 @@ impl Machine {
                 IR::Bin { op, dst, operands } => {
                     let a = self.read(&operands.0);
                     let b = self.read(&operands.1);
-                    let v = eval_bin(*op, a, b);
+                    let v = eval_bin(*op, a, b, operands.0.size().max(operands.1.size()));
                     self.write(dst, v);
                 }
                 IR::Un { op, dst, src } => {
@@ -107,11 +107,29 @@ impl Machine {
                     let v = self.read(src) >> (lsb * 8);
                     self.write(dst, v);
                 }
-                IR::Userop { dst, .. } => {
-                    if let Some(d) = dst {
-                        self.write(d, 0);
+                IR::Userop { id, .. } => panic!("reference interpreter cannot execute userop {id}"),
+                IR::MicroLoop { head, exit, body, repeat, tail } => {
+                    let mut iterations = 0u64;
+                    loop {
+                        self.run(head);
+                        if exit.as_ref().is_some_and(|cond| self.read(cond) != 0) {
+                            break;
+                        }
+                        self.run(body);
+                        match repeat {
+                            Some(cond) if self.read(cond) != 0 => {}
+                            Some(_) => break,
+                            None => {}
+                        }
+                        iterations += 1;
+                        assert!(
+                            iterations < 100_000_000,
+                            "micro-loop did not terminate after {iterations} iterations"
+                        );
                     }
+                    self.run(tail);
                 }
+                IR::Unsupported(op) => panic!("unsupported P-code: {op}"),
                 IR::Nop => {}
                 other => panic!("reference interpreter cannot execute control flow: {other:?}"),
             }
@@ -137,7 +155,7 @@ fn sign_extend(v: u64, size: u32) -> i64 {
     }
 }
 
-fn eval_bin(op: BinOp, a: u64, b: u64) -> u64 {
+fn eval_bin(op: BinOp, a: u64, b: u64, size: u32) -> u64 {
     match op {
         BinOp::Add => a.wrapping_add(b),
         BinOp::Sub => a.wrapping_sub(b),
@@ -183,30 +201,14 @@ fn eval_bin(op: BinOp, a: u64, b: u64) -> u64 {
         BinOp::LessEqU => ((a & 0xffff_ffff) <= (b & 0xffff_ffff)) as u64,
         BinOp::LessS => (sign_extend(a, 4) < sign_extend(b, 4)) as u64,
         BinOp::LessEqS => (sign_extend(a, 4) <= sign_extend(b, 4)) as u64,
-        // Unsigned carry out of a 32-bit addition. The operands must be masked
-        // to 32 bits *before* widening: `a` arrives as u64, so 0xffffffff is
-        // already 4294967295 and the sum cannot overflow u64.
-        BinOp::Carry => {
-            let sum = (a & 0xffff_ffff) + (b & 0xffff_ffff);
-            (sum > 0xffff_ffff) as u64
-        }
-        // Signed overflow of a 32-bit addition: the operands share a sign that
-        // the 32-bit result does not. Everything must be done in 32-bit space —
-        // sign-extending to i64 first makes 0x80000000 positive, so the classic
-        // `(sa^r)&(sb^r) < 0` test never fires.
+        BinOp::Carry => (((a & mask(size)) as u128 + (b & mask(size)) as u128) > mask(size) as u128) as u64,
         BinOp::SCarry => {
-            let sa = a as u32;
-            let sb = b as u32;
-            let r = sa.wrapping_add(sb);
-            ((((sa ^ r) & (sb ^ r)) as i32) < 0) as u64
+            let result = a.wrapping_add(b);
+            (((a ^ result) & (b ^ result)) >> (size * 8 - 1)) & 1
         }
-        // Signed borrow out of a subtraction, i.e. the sign of
-        // (a ^ ((a ^ b) & (a ^ r))).
         BinOp::SBorrow => {
-            let sa = a as u32;
-            let sb = b as u32;
-            let r = sa.wrapping_sub(sb);
-            ((((sa ^ ((sa ^ sb) & (sa ^ r))) as i32) < 0) as u64) & 1
+            let result = a.wrapping_sub(b);
+            (((a ^ b) & (a ^ result)) >> (size * 8 - 1)) & 1
         }
     }
 }
@@ -248,13 +250,13 @@ mod tests {
     #[test]
     fn carry_and_overflow_match_hardware_semantics() {
         // 0xFFFFFFFF + 1: carry out, no signed overflow.
-        assert_eq!(eval_bin(BinOp::Carry, 0xffff_ffff, 1), 1);
-        assert_eq!(eval_bin(BinOp::SCarry, 0xffff_ffff, 1), 0);
+        assert_eq!(eval_bin(BinOp::Carry, 0xffff_ffff, 1, 4), 1);
+        assert_eq!(eval_bin(BinOp::SCarry, 0xffff_ffff, 1, 4), 0);
         // 0x7FFFFFFF + 1: signed overflow, no carry.
-        assert_eq!(eval_bin(BinOp::SCarry, 0x7fff_ffff, 1), 1);
-        assert_eq!(eval_bin(BinOp::Carry, 0x7fff_ffff, 1), 0);
+        assert_eq!(eval_bin(BinOp::SCarry, 0x7fff_ffff, 1, 4), 1);
+        assert_eq!(eval_bin(BinOp::Carry, 0x7fff_ffff, 1, 4), 0);
         // 5 - 3: no borrow.
-        assert_eq!(eval_bin(BinOp::SBorrow, 5, 3), 0);
+        assert_eq!(eval_bin(BinOp::SBorrow, 5, 3, 4), 0);
     }
 
     #[test]

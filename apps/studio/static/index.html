@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WLAM Studio</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <aside>
+    <a class="brand" href="/">w<span>↗</span> <strong>WLAM<span>STUDIO</span></strong></a>
+    <div class="section-label">WORKSPACE <span>LOCAL</span></div>
+    <button id="new-project" class="new">＋ Import project</button>
+    <nav id="projects" aria-label="Projects"></nav>
+    <div class="sidebar-bottom"><i></i> Native compiler worker<br><small>Windows binaries. Web possibilities.</small></div>
+  </aside>
+  <main>
+    <header><span>Workspace <b>/</b> <span id="breadcrumb">Overview</span></span><span class="version">EXPERIMENTAL <b>v0.1</b></span></header>
+    <section class="intro"><div><div class="eyebrow">FROM DESKTOP TO BROWSER</div><h1>Your next platform<br>is a URL<span>.</span></h1><p>Bring a Windows application. Inspect its compatibility,<br>recompile to WebAssembly, and launch it on the web.</p></div><div class="pipeline"><span>.exe</span><b>→</b><span class="wasm">wasm</span><b>→</b><span>↗ web</span><small>PE32 / i386 → WebAssembly</small></div></section>
+    <div id="notice" role="status"></div>
+    <section id="import-panel" class="panel">
+      <div class="panel-heading"><h2><span class="step">01</span> Bring your application</h2><span>ZIP ARCHIVE</span></div>
+      <label id="drop" class="drop" for="upload"><span class="upload-icon">↑</span><strong>Drop your project here</strong><span>or <u>browse files</u> to get started</span><small>A ZIP containing a Windows .exe and its assets · up to 64 MiB</small><input id="upload" type="file" accept=".zip,application/zip"></label>
+      <div class="panel-foot"><span>◈ Assets and folder structure stay together</span><span>PE32 applications supported</span></div>
+    </section>
+    <section id="project-panel" class="panel" hidden>
+      <div class="panel-heading"><h2 id="project-title"></h2><span id="state" class="badge"></span></div>
+      <div class="project-body"><label for="executable">ENTRY EXECUTABLE</label><select id="executable"></select><div class="actions"><button id="analyze" class="secondary">Inspect compatibility</button><button id="build" class="primary">Recompile & host ↗</button></div><p id="project-summary"></p><details><summary>Archive contents</summary><pre id="files"></pre></details></div>
+    </section>
+    <div class="work-grid">
+      <section class="panel"><div class="panel-heading"><h2><span class="step">02</span> Compatibility</h2><span id="architecture">PE → WASM</span></div><div id="analysis" class="empty"><span>◎</span><h3>Know before you compile.</h3><p>Inspect Windows API imports and find<br>what your application needs to run.</p></div></section>
+      <section class="panel"><div class="panel-heading"><h2><span class="step">03</span> Build output</h2><span id="build-label">AWAITING PROJECT</span></div><div id="output" class="empty"><span>⌘</span><h3>A browser is the destination.</h3><p>Your build logs and runnable output<br>will appear here.</p></div><pre id="log" hidden aria-label="Build log"></pre><div id="ready-actions" class="actions" hidden><button id="launch" class="primary">Launch application ↗</button><a id="download" class="secondary" download="wlam-browser-build.zip">Download bundle ↓</a></div></section>
+    </div>
+    <section id="player-panel" class="panel" hidden><div class="panel-heading"><h2>Application preview</h2><button id="stop" class="secondary">Stop preview</button></div><iframe id="player" title="Compiled application" sandbox="allow-scripts allow-same-origin allow-pointer-lock" allow="autoplay; fullscreen; cross-origin-isolated" allowfullscreen></iframe></section>
+    <footer><span>WLAM / WIN32 → WEBASSEMBLY</span><span>Diagnostic browser runtime · Use applications you trust</span></footer>
+  </main>
+</body>
+</html>

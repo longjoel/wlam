@@ -23,7 +23,7 @@ fn widths_of(op: &IR) -> Vec<u32> {
         IR::Float { dst, operands, .. } => {
             vec![dst.size(), operands.0.size(), operands.1.size()]
         }
-        IR::Convert { dst, src, .. } => vec![dst.size(), src.size()],
+        IR::FloatUnary { dst, src, .. } | IR::Convert { dst, src, .. } => vec![dst.size(), src.size()],
         IR::Subpiece { dst, src, .. } => vec![dst.size(), src.size()],
         IR::Branch { target } | IR::IndirectJump { target } | IR::Call { target } => {
             vec![target.size()]
@@ -38,7 +38,19 @@ fn widths_of(op: &IR) -> Vec<u32> {
             }
             v
         }
-        IR::Nop => Vec::new(),
+        IR::MicroLoop { head, exit, body, repeat, tail } => {
+            let mut v: Vec<u32> = head
+                .iter()
+                .chain(body)
+                .chain(tail)
+                .flat_map(widths_of)
+                .collect();
+            for cond in [exit, repeat].into_iter().flatten() {
+                v.push(cond.size());
+            }
+            v
+        }
+        IR::Unsupported(_) | IR::Nop => Vec::new(),
     }
 }
 

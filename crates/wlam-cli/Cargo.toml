@@ -11,3 +11,4 @@ path = "src/main.rs"
 [dependencies]
 wlam-pe.workspace = true
 wlam-translate.workspace = true
+wlam-sleigh = { path = "../wlam-sleigh" }

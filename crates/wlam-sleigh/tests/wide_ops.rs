@@ -53,11 +53,11 @@ fn run(module: &[u8], regs: &[String], eax: u32, ebx: u32) -> String {
             "const fs=require('fs');const m=new WebAssembly.Module(fs.readFileSync({path:?}));\
              const i=new WebAssembly.Instance(m,{{}});\
              const d=new DataView(i.exports.memory.buffer);\
-             d.setUint32({base}+{eax_i}*4,{eax},true);\
-             d.setUint32({base}+{ebx_i}*4,{ebx},true);\
-             d.setUint32({base}+{esp_i}*4,0x4000,true);\
+             d.setUint32({base}+{eax_i}*8,{eax},true);\
+             d.setUint32({base}+{ebx_i}*8,{ebx},true);\
+             d.setUint32({base}+{esp_i}*8,0x4000,true);\
              try{{i.exports.entry();\
-               console.log('eax='+d.getUint32({base}+{eax_i}*4,true)+' edx='+d.getUint32({base}+{edx_i}*4,true));}}\
+               console.log('eax='+d.getUint32({base}+{eax_i}*8,true)+' edx='+d.getUint32({base}+{edx_i}*8,true));}}\
              catch(e){{console.log('TRAP '+e.message)}}",
             base = wlam_emit::REG_SNAPSHOT_BASE,
             eax_i = idx("EAX"),

@@ -151,7 +151,7 @@ fn iat_call_executes_and_returns_into_the_guest() {
              const imports={{'KERNEL32.dll':{{GetTickCount:(esp,slot)=>0x1234}} }};\
              const i=new WebAssembly.Instance(m,imports);\
              const d=new DataView(i.exports.memory.buffer);\
-             d.setUint32({base}+{esp_idx}*4,0x4000,true);\
+             d.setUint32({base}+{esp_idx}*8,0x4000,true);\
              try{{i.exports.entry();}}catch(e){{console.log('TRAP '+e.message);process.exit(0)}}\
              console.log('EAX_STORED='+d.getUint32(0x10004,true));",
             base = wlam_emit::REG_SNAPSHOT_BASE,
@@ -167,4 +167,63 @@ fn iat_call_executes_and_returns_into_the_guest() {
         "host return value must reach EAX and the guest must resume: {text} {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+/// Two stdcall arguments and the CALL return address must all be consumed.
+#[test]
+fn host_stdcall_restores_the_guest_stack() {
+    let slot = 0x40110cu32;
+    // push 22; push 11; call [slot]; mov [0x10004],esp; ret
+    let mut code = vec![0x6a, 22, 0x6a, 11, 0xff, 0x15];
+    code.extend_from_slice(&slot.to_le_bytes());
+    code.extend_from_slice(&[0x89, 0x25, 4, 0, 1, 0, 0xc3]);
+    let blocks = blocks_from(&code, 0x1000, &[0x1000, 0x100a]);
+    let regs = registers(&blocks);
+    let mut program = partition(&[0x1000], &blocks, &regs);
+    program.register_host_imports(&blocks, |_| Some(HostImport {
+        library: "USER32.dll".into(), name: "ShowWindow".into(),
+    }));
+    let bytes = build_module(&program, &blocks).unwrap();
+    let engine = wlam_harness::wasmi::Engine::default();
+    let module = wlam_harness::wasmi::Module::new(&engine, &bytes[..]).unwrap();
+    let mut store = wlam_harness::wasmi::Store::new(&engine, ());
+    let mut linker = wlam_harness::wasmi::Linker::new(&engine);
+    linker.func_wrap("USER32.dll", "ShowWindow", |caller: wlam_harness::wasmi::Caller<'_, ()>, args: i32, _: i32| -> i32 {
+        let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
+        let data = memory.data(&caller);
+        assert_eq!(u32::from_le_bytes(data[args as usize..args as usize+4].try_into().unwrap()), 11);
+        assert_eq!(u32::from_le_bytes(data[args as usize+4..args as usize+8].try_into().unwrap()), 22);
+        1
+    }).unwrap();
+    let instance = linker.instantiate(&mut store, &module).unwrap().start(&mut store).unwrap();
+    let memory = instance.get_memory(&store, "memory").unwrap();
+    let esp = regs.iter().position(|r| r == "ESP").unwrap();
+    memory.write(&mut store, wlam_emit::snapshot_address(esp) as usize, &0x4000u32.to_le_bytes()).unwrap();
+    instance.get_typed_func::<(), ()>(&store, "entry").unwrap().call(&mut store, ()).unwrap();
+    assert_eq!(u32::from_le_bytes(memory.data(&store)[0x10004..0x10008].try_into().unwrap()), 0x4000);
+}
+
+#[test]
+fn cached_import_register_survives_calls_across_blocks() {
+    use wlam_harness::wasmi::{Engine,Module,Store,Linker,Caller};
+    let mut code=vec![0x8b,0x35];code.extend_from_slice(&0x40110cu32.to_le_bytes());
+    // Store both ESP and EAX after the second call to check stack cleanup and
+    // the host return value independently of the call-count assertions.
+    code.extend_from_slice(&[0x6a,11,0xff,0xd6,0x6a,22,0xff,0xd6,0x89,0x25,4,0,1,0,0xa3,8,0,1,0,0xc3]);
+    let blocks=blocks_from(&code,0x1000,&[0x1000,0x100a,0x100e]);let regs=registers(&blocks);
+    let mut program=partition(&[0x1000],&blocks,&regs);
+    program.register_host_imports(&blocks,|slot|(slot==0x40110c).then(||HostImport{library:"KERNEL32.dll".into(),name:"SetHandleCount".into()}));
+    assert!(program.iat_imports.contains_key(&0x40110c));
+    let bytes=build_module(&program,&blocks).unwrap();
+    let engine=Engine::default();let module=Module::new(&engine,&bytes[..]).unwrap();
+    let mut store=Store::new(&engine,0u32);let mut linker=Linker::new(&engine);
+    linker.func_wrap("KERNEL32.dll","SetHandleCount",|mut caller:Caller<'_,u32>,args:i32,_:i32|->i32 {
+        let memory=caller.get_export("memory").unwrap().into_memory().unwrap();let mut raw=[0;4];memory.read(&caller,args as usize,&mut raw).unwrap();
+        let value=u32::from_le_bytes(raw);assert_eq!(value,if *caller.data()==0 {11}else {22});*caller.data_mut()+=1;value as i32
+    }).unwrap();
+    let instance=linker.instantiate(&mut store,&module).unwrap().start(&mut store).unwrap();let memory=instance.get_memory(&store,"memory").unwrap();
+    let esp=regs.iter().position(|r|r=="ESP").unwrap();memory.write(&mut store,wlam_emit::snapshot_address(esp) as usize,&0x4000u32.to_le_bytes()).unwrap();
+    instance.get_typed_func::<(),()>(&store,"entry").unwrap().call(&mut store,()).unwrap();assert_eq!(*store.data(),2);
+    assert_eq!(u32::from_le_bytes(memory.data(&store)[0x10004..0x10008].try_into().unwrap()),0x4000);
+    assert_eq!(u32::from_le_bytes(memory.data(&store)[0x10008..0x1000c].try_into().unwrap()),22);
 }

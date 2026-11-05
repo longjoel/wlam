@@ -8,3 +8,4 @@ license.workspace = true
 wasmi.workspace = true
 wlam-host = { path = "../wlam-host" }
 wlam-pe = { path = "../wlam-pe" }
+wlam-emit = { path = "../wlam-emit" }

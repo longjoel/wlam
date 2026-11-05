@@ -1,8 +1,7 @@
 //! Debug helper: write the emitted module for an image to /tmp so the wabt
 //! tools can inspect it. Usage: `--example dump_module [path.exe] [out.wasm]`
 
-#[path = "../tests/shared/mod.rs"]
-mod shared;
+use wlam_sleigh::emit as shared;
 
 use std::collections::BTreeMap;
 use wlam_emit::chain::{build_module_with_memory, partition, HostImport};

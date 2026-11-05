@@ -1,0 +1,83 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+const guest = new WebAssembly.Memory({initial:65536});
+let host;
+function copy(address, pointer, length, write) {
+  address >>>= 0; pointer >>>= 0; length >>>= 0;
+  if(address+length>guest.buffer.byteLength || pointer+length>host.memory.buffer.byteLength)return 0;
+  const g = new Uint8Array(guest.buffer,address,length);
+  const h = new Uint8Array(host.memory.buffer,pointer,length);
+  if(write)g.set(h);else h.set(g);
+  return 1;
+}
+const bytes=readFileSync('target/wasm32-unknown-unknown/debug/wlam_browser_host.wasm');
+host=new WebAssembly.Instance(new WebAssembly.Module(bytes),{guest:{
+  guest_length:()=>BigInt(guest.buffer.byteLength),
+  read_guest:(address,pointer,length)=>copy(address,pointer,length,false),
+  write_guest:(address,pointer,length)=>copy(address,pointer,length,true),
+}}).exports;
+const decode=(pointer,length)=>new TextDecoder().decode(new Uint8Array(host.memory.buffer,pointer,length));
+const apis=new Map();
+for(let i=0;i<host.api_count();i++)apis.set(decode(host.api_text(i,1,0),host.api_text(i,1,1)),i);
+const view=new DataView(guest.buffer);
+const word=(address,value)=>view.setUint32(address,value,true);
+function call(name,args){args.forEach((v,i)=>word(0x3000+i*4,v));return host.dispatch(apis.get(name),0x3000);}
+host.initialize(0x400000);
+word(0x6000,0xcccccccc);
+assert.equal(call('GetStartupInfoA',[0x6000]),0);
+assert.equal(view.getUint32(0x6000,true),68);
+assert.equal(view.getUint32(0x602c,true),0);
+assert.equal(call('GetCommandLineA',[]),0);
+const commandLine=host.action_value();assert.notEqual(commandLine,0);
+assert.equal(view.getUint8(commandLine),0);
+assert.equal(call('GetCommandLineA',[]),0);assert.equal(host.action_value(),commandLine);
+assert.equal(call('GetEnvironmentStrings',[]),0);
+assert.equal(view.getUint16(host.action_value(),true),0);
+assert.equal(call('GetCPInfo',[1252,0x6100]),0);assert.equal(host.action_value(),1);
+assert.equal(view.getUint32(0x6100,true),1);
+new Uint8Array(guest.buffer,0x16200,9).set(new TextEncoder().encode('KERNEL32\0'));
+new Uint8Array(guest.buffer,0x16240,7).set(new TextEncoder().encode('GetACP\0'));
+host.register_import(apis.get('GetACP'),0x4ca7b0);
+assert.equal(call('LoadLibraryA',[0x16200]),0);const module=host.action_value();assert.notEqual(module,0);
+assert.equal(call('GetProcAddress',[module,0x16240]),0);assert.equal(host.action_value(),0x4ca7b0);
+assert.equal(call('GetProcAddress',[module,123]),0);assert.equal(host.action_value(),0);
+assert.equal(call('FreeLibrary',[module]),0);assert.equal(host.action_value(),1);
+new Uint8Array(guest.buffer,0x16300,3).set([65,0x80,0]);
+assert.equal(call('MultiByteToWideChar',[0,8,0x16300,0xffffffff,0,0]),0);assert.equal(host.action_value(),3);
+assert.equal(call('MultiByteToWideChar',[1252,0,0x16300,0xffffffff,0x16400,2]),0);assert.equal(host.action_value(),0);
+assert.equal(call('GetLastError',[]),0);assert.equal(host.action_value(),122);
+assert.equal(call('MultiByteToWideChar',[1252,0,0x16300,0xffffffff,0x16400,3]),0);assert.equal(host.action_value(),3);
+assert.equal(view.getUint16(0x16402,true),0x20ac);assert.equal(view.getUint16(0x16404,true),0);
+assert.equal(call('SetUnhandledExceptionFilter',[0x401000]),0);assert.equal(host.action_value(),0);
+assert.equal(call('SetUnhandledExceptionFilter',[0]),0);assert.equal(host.action_value(),0x401000);
+assert.equal(call('GetSystemInfo',[0x16500]),0);
+assert.equal(view.getUint32(0x16518,true),486);
+assert.equal(call('GlobalMemoryStatus',[0x16600]),0);
+assert.equal(view.getUint32(0x16600,true),32);
+assert.ok(view.getUint32(0x16608,true)>=8*1024*1024);
+new Uint8Array(guest.buffer,0x16700,6).set(new TextEncoder().encode('Hover\0'));
+assert.equal(call('CreateEventA',[0,1,0,0x16700]),0);const firstEvent=host.action_value();
+assert.equal(call('CreateEventA',[0,0,1,0x16700]),0);const secondEvent=host.action_value();
+assert.equal(call('GetLastError',[]),0);assert.equal(host.action_value(),183);
+assert.equal(call('WaitForSingleObject',[secondEvent,0]),0);assert.equal(host.action_value(),258);
+assert.equal(call('SetEvent',[firstEvent]),0);assert.equal(host.action_value(),1);
+assert.equal(call('WaitForSingleObject',[secondEvent,0]),0);assert.equal(host.action_value(),0);
+assert.equal(call('CloseHandle',[firstEvent]),0);assert.equal(host.action_value(),1);
+assert.equal(call('CloseHandle',[secondEvent]),0);assert.equal(host.action_value(),1);
+assert.equal(call('MessageBoxA',[0,0x16700,0x16700,1]),5);
+assert.equal(decode(host.dialog_text(0,0),host.dialog_text(0,1)),'Hover');
+assert.equal(host.action_value(),1);
+word(0x1000,48);word(0x1008,0x401000);word(0x1028,0x12000);
+new Uint8Array(guest.buffer,0x12000,5).set([100,101,109,111,0]);
+assert.equal(call('RegisterClassExA',[0x1000]),0);assert.equal(host.action_value(),1);
+assert.equal(call('CreateWindowExA',[0,0x12000,0,0,0,0,32,24,0,0,0x400000,0]),1);
+const window=host.action_argument(0);assert.equal(host.action_argument(1),129);
+assert.equal(host.resume(host.action_token(),1),1);assert.equal(host.action_argument(1),1);
+assert.equal(host.resume(host.action_token(),0),0);assert.equal(host.action_value(),window);
+assert.equal(call('BeginPaint',[window,0x5000]),0);
+assert.equal(view.getUint32(0x5000,true),host.action_value());
+assert.equal(call('EndPaint',[window,0x5000]),0);
+assert.notEqual(host.frame(window),0);assert.equal(host.frame_width(),32);assert.equal(host.frame_height(),24);
+assert.equal(host.dispatch(0xffffffff,0x3000),4);
+assert.match(decode(host.error_text(0),host.error_text(1)),/unknown browser API/);
+console.log('Browser-host Wasm adapter: memory bridge, callbacks, painting and diagnostics passed');

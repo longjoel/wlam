@@ -36,6 +36,7 @@ fn to_emit(ir: &sir::IR) -> eir::IR {
         }
     }
     match ir {
+        sir::IR::FloatUnary {op:kind,dst,src} => eir::IR::FloatUnary {op:*kind,dst:op(dst),src:op(src)},
         sir::IR::Copy { dst, src } => eir::IR::Copy { dst: op(dst), src: op(src) },
         sir::IR::Load { dst, addr, size } => {
             eir::IR::Load { dst: op(dst), addr: op(addr), size: *size }
@@ -123,6 +124,14 @@ fn to_emit(ir: &sir::IR) -> eir::IR {
             args: args.iter().map(op).collect(),
             dst: dst.as_ref().map(op),
         },
+        sir::IR::MicroLoop { head, exit, body, repeat, tail } => eir::IR::MicroLoop {
+            head: head.iter().map(to_emit).collect(),
+            exit: exit.as_ref().map(op),
+            body: body.iter().map(to_emit).collect(),
+            repeat: repeat.as_ref().map(op),
+            tail: tail.iter().map(to_emit).collect(),
+        },
+        sir::IR::Unsupported(op) => eir::IR::Unsupported(op.clone()),
         sir::IR::Nop => eir::IR::Nop,
     }
 }
@@ -134,62 +143,73 @@ fn registers(ops: &[sir::IR]) -> BTreeMap<String, u32> {
             out.insert(name.to_string(), *size);
         }
     }
-    let mut out = BTreeMap::new();
-    for ir in ops {
+    fn walk(ir: &sir::IR, out: &mut BTreeMap<String, u32>) {
         match ir {
             sir::IR::Copy { dst, src } => {
-                visit(dst, &mut out);
-                visit(src, &mut out);
+                visit(dst, out);
+                visit(src, out);
             }
             sir::IR::Float { dst, operands, .. } => {
-                visit(dst, &mut out);
-                visit(&operands.0, &mut out);
-                visit(&operands.1, &mut out);
+                visit(dst, out);
+                visit(&operands.0, out);
+                visit(&operands.1, out);
             }
-            sir::IR::Convert { dst, src, .. } => {
-                visit(dst, &mut out);
-                visit(src, &mut out);
+            sir::IR::FloatUnary { dst, src, .. } | sir::IR::Convert { dst, src, .. } => {
+                visit(dst, out);
+                visit(src, out);
             }
             sir::IR::Load { dst, addr, .. } => {
-                visit(dst, &mut out);
-                visit(addr, &mut out);
+                visit(dst, out);
+                visit(addr, out);
             }
             sir::IR::Store { addr, value, .. } => {
-                visit(addr, &mut out);
-                visit(value, &mut out);
+                visit(addr, out);
+                visit(value, out);
             }
             sir::IR::Bin { dst, operands, .. } => {
-                visit(dst, &mut out);
-                visit(&operands.0, &mut out);
-                visit(&operands.1, &mut out);
+                visit(dst, out);
+                visit(&operands.0, out);
+                visit(&operands.1, out);
             }
             sir::IR::Un { dst, src, .. } | sir::IR::Subpiece { dst, src, .. } => {
-                visit(dst, &mut out);
-                visit(src, &mut out);
+                visit(dst, out);
+                visit(src, out);
             }
             sir::IR::CBranch { cond, target } => {
-                visit(cond, &mut out);
-                visit(target, &mut out);
+                visit(cond, out);
+                visit(target, out);
             }
             sir::IR::Branch { target }
             | sir::IR::IndirectJump { target }
             | sir::IR::Call { target }
-            | sir::IR::CallInd { target } => visit(target, &mut out),
+            | sir::IR::CallInd { target } => visit(target, out),
             sir::IR::Ret { target } => {
                 if let Some(t) = target {
-                    visit(t, &mut out);
+                    visit(t, out);
                 }
             }
             sir::IR::Userop { args, dst, .. } => {
                 for a in args {
-                    visit(a, &mut out);
+                    visit(a, out);
                 }
                 if let Some(d) = dst {
-                    visit(d, &mut out);
+                    visit(d, out);
                 }
             }
-            sir::IR::Nop => {}
+            sir::IR::MicroLoop { head, exit, body, repeat, tail } => {
+                for op in head.iter().chain(body).chain(tail) {
+                    walk(op, out);
+                }
+                for cond in [exit, repeat].into_iter().flatten() {
+                    visit(cond, out);
+                }
+            }
+            sir::IR::Unsupported(_) | sir::IR::Nop => {}
         }
+    }
+    let mut out = BTreeMap::new();
+    for ir in ops {
+        walk(ir, &mut out);
     }
     out
 }
@@ -229,11 +249,11 @@ fn run_in_v8(
          const inst=new WebAssembly.Instance(m,{{}});\
          const init=new Uint32Array([{init_vals}]);\
          const iv=new DataView(inst.exports.memory.buffer);\
-         for(let i=0;i<init.length;i++){{iv.setUint32({base}+i*4,init[i],true);}}\
+         for(let i=0;i<init.length;i++){{iv.setUint32({base}+i*8,init[i],true);}}\
          inst.exports.run();\
          const view=new DataView(inst.exports.memory.buffer);\
          const out={{}};\
-         for(let i=0;i<{n_regs};i++){{out['r'+i]=view.getUint32({base}+i*4,true);}}\
+         for(let i=0;i<{n_regs};i++){{out['r'+i]=view.getUint32({base}+i*8,true);}}\
          for(const a of [{addrs}]){{out['mem:'+a]=view.getUint8(a>>>0);}}\
          console.log(JSON.stringify(out));",
         base = wlam_emit::REG_SNAPSHOT_BASE,
@@ -286,8 +306,6 @@ fn differential(bytes: &[u8], at: u64, setup: &dyn Fn(&mut Machine)) -> Option<S
     }
     let mut machine = Machine::new(512 * 1024);
     setup(&mut machine);
-    machine.run(&ops);
-
     let regs = registers(&ops);
     let names: Vec<String> = regs.keys().cloned().collect();
     // Capture the initial register values once, and give them to both sides:
@@ -296,6 +314,7 @@ fn differential(bytes: &[u8], at: u64, setup: &dyn Fn(&mut Machine)) -> Option<S
     // this the wasm started from zero while the interpreter started from the
     // test's setup, and the comparison was meaningless.
     let initial: Vec<u64> = names.iter().map(|n| machine.get(n)).collect();
+    machine.run(&ops);
     let locals = LocalMap::new(regs.iter().map(|(n, s)| (n.clone(), *s)));
     let emit_ops: Vec<eir::IR> = ops.iter().map(to_emit).collect();
     let translated = translate_ops(&emit_ops, locals).ok()?;
@@ -346,13 +365,17 @@ fn wasm_agrees_with_interpreter_on_lifted_instructions() {
     ];
     let mut compared = 0;
     let mut skipped = 0;
-    for (name, bytes) in cases {
-        match differential(bytes, 0x1000, &|m| m.set("EAX", 0xffff_fff0)) {
-            None => skipped += 1,
-            Some(problems) if problems.is_empty() => compared += 1,
-            Some(problems) => panic!("{name}: wasm disagreed with interpreter: {problems}"),
+    let seeds = [0xffff_fff0, 0xffff_fffc, 0x7fff_ffff, 0x8000_0000, 0, 1];
+    for seed in seeds {
+        for (name, bytes) in cases {
+            match differential(bytes, 0x1000, &|m| m.set("EAX", seed)) {
+                None => skipped += 1,
+                Some(problems) if problems.is_empty() => compared += 1,
+                Some(problems) => panic!("{name}, EAX={seed:#x}: {problems}"),
+            }
         }
     }
     eprintln!("differential: {compared} agreed, {skipped} unsupported");
-    assert!(compared >= 4, "only {compared} cases were actually compared");
+    assert_eq!(skipped, 0, "ordinary integer instructions must not be skipped");
+    assert_eq!(compared, cases.len() * seeds.len());
 }

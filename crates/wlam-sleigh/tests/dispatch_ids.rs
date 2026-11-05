@@ -112,7 +112,7 @@ fn runs_to_completion(module: &[u8], regs: &[String]) -> bool {
             "const fs=require('fs');const m=new WebAssembly.Module(fs.readFileSync({path:?}));\
              const i=new WebAssembly.Instance(m,{{}});\
              const d=new DataView(i.exports.memory.buffer);\
-             d.setUint32({base}+{esp}*4,0x4000,true);\
+             d.setUint32({base}+{esp}*8,0x4000,true);\
              try{{i.exports.entry();console.log('done');}}catch(e){{console.log('TRAP');}}",
             base = wlam_emit::REG_SNAPSHOT_BASE,
             esp = idx("ESP"),

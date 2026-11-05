@@ -679,3 +679,5 @@ mod tests {
         assert!(text.contains("mov EAX, 1"));
     }
 }
+
+pub mod abi;

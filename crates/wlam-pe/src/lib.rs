@@ -13,7 +13,7 @@ mod resource;
 mod types;
 
 pub use error::PeError;
-pub use resource::{ResourceEntry, ResourceTable};
+pub use resource::{ResourceEntry, ResourceName, ResourceTable};
 
 pub use types::*;
 
@@ -625,7 +625,14 @@ impl<'a> ImageView<'a> {
         // and leave stale values in it, so misaligned slots must be flagged
         // rather than trusted.
         let slots = self.address_count(iat_rva, names);
-        let aligned = slots >= names;
+        // An unbound IAT may mirror ordinal entries as well as name RVAs.
+        // Ordinal flags are not image addresses, but equality with the lookup
+        // array independently proves that these slots are parallel.
+        let mirrors = (0..names).all(|i| {
+            self.read_thunk(lookup_rva+i*width).ok() == self.read_thunk(iat_rva+i*width).ok()
+                && self.read_thunk(iat_rva+i*width).is_ok()
+        });
+        let aligned = mirrors || slots >= names;
         for i in 0..names {
             let entry = self.read_thunk(lookup_rva + i * width)?;
             let iat_slot = if aligned {
@@ -676,7 +683,8 @@ impl<'a> ImageView<'a> {
         if !name.bytes().all(|c| c.is_ascii_graphic()) {
             return None;
         }
-        if name.to_ascii_lowercase().ends_with(".dll") {
+        let lower=name.to_ascii_lowercase();
+        if lower.ends_with(".dll") || lower.ends_with(".drv") {
             Some(name)
         } else {
             None
@@ -778,6 +786,29 @@ impl<'a> ImageView<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drv_descriptors_do_not_hide_later_ordinal_imports() {
+        let mut data=vec![0;512];
+        let put=|data:&mut [u8],at:usize,words:&[u32]| {
+            for (i,value) in words.iter().enumerate() {data[at+i*4..at+i*4+4].copy_from_slice(&value.to_le_bytes());}
+        };
+        put(&mut data,0,&[0x1080,0,0,0x1100,0x10a0]);
+        put(&mut data,20,&[0x1090,0,0,0x1120,0x10b0]);
+        put(&mut data,0x80,&[0x1140,0]);put(&mut data,0xa0,&[0x1140,0]);
+        put(&mut data,0x90,&[0x80000011,0]);put(&mut data,0xb0,&[0x80000011,0]);
+        data[0x100..0x10d].copy_from_slice(b"WINSPOOL.DRV\0");
+        data[0x120..0x12d].copy_from_slice(b"COMCTL32.dll\0");
+        data[0x142..0x14f].copy_from_slice(b"OpenPrinterA\0");
+        let section=Section {name:".idata".into(),virtual_address:0x1000,virtual_size:512,file_offset:0,file_size:512,characteristics:0x40000040,data};
+        let sections=[section];
+        let image=ImageView {raw:&[],sections:&sections,image_base:0x400000,is64:false};
+        let imports=image.read_imports(Some(Directory {index:1,rva:0x1000,size:60}),None).unwrap();
+        assert_eq!(imports.len(),2);
+        assert_eq!(imports[1].ordinal,Some(17));
+        assert_eq!(imports[1].iat_rva,0x10b0);
+        assert!(imports.iter().all(|import|import.iat_slot_verified));
+    }
 
     #[test]
     fn rejects_non_mz() {

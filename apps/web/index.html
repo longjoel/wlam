@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Win32 guest runner</title>
+<style>body{font:16px system-ui;background:#182029;color:#e3ebf2;max-width:880px;margin:48px auto;padding:0 24px}input{width:100%;box-sizing:border-box;margin:8px 0 16px;padding:10px}button{padding:9px 18px;margin-right:8px}#resize-controls{display:flex;align-items:end;gap:12px;margin-top:16px}#resize-controls label{display:grid;gap:4px}#resize-controls input{width:110px;margin:0}canvas{display:block;image-rendering:pixelated;width:640px;max-width:100%;height:auto;background:#000;margin:24px 0;outline:2px solid #526779}canvas:focus{outline-color:#72dcbd}pre{white-space:pre-wrap;color:#ffb8a8}#status{margin-top:20px}</style>
+<h1>Win32 guest runner</h1><p>Click the image to focus and send mouse and keyboard input to the guest. Resize the guest surface with the width and height controls. Close guest requests a normal shutdown; Stop ends execution immediately.</p>
+<label>Bundle manifest<input id="manifest" value="/target/interactive/bundle/manifest.json"></label>
+<button id="start">Start / Restart</button><button id="stop" disabled>Stop</button><button id="close" disabled>Close guest</button>
+<div id="resize-controls"><label>Guest width<input id="guest-width" type="number" min="1" max="4096" value="400"></label><label>Guest height<input id="guest-height" type="number" min="1" max="4096" value="300"></label><button id="resize-guest" disabled>Resize guest</button></div>
+<div id="status" role="status">Ready</div><canvas id="screen" width="32" height="24" tabindex="0" aria-label="Guest window"></canvas><pre id="error"></pre>
+<dialog id="guest-dialog" aria-labelledby="dialog-title"><h2 id="dialog-title"></h2><p id="dialog-text" style="white-space:pre-wrap"></p><div id="dialog-buttons"></div></dialog>
+<script type="module" src="./page.mjs"></script></html>

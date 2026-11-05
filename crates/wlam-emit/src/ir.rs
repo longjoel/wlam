@@ -1,8 +1,7 @@
 //! The translation IR contract shared with the lifter.
 //!
 //! `wlam-emit` owns this contract (not the lifter) so that the emitter has no
-//! dependency on the Sleigh-backed front-end: the two live in separate Cargo
-//! workspaces because the vendored `rsleigh` declares its own. A lifter's job
+//! dependency on the Sleigh-backed front-end: both participate in the root workspace. A lifter's job
 //! is to produce these types; the emitter's job is to compile them.
 
 /// An operand: a value with a width in bytes.
@@ -89,6 +88,9 @@ pub enum FloatOp {
     LessEq,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatUnaryOp { Neg, Abs, Sqrt, Ceil, Floor, Round }
+
 /// Typed integer <-> real conversions. Mirrors `wlam_sleigh::ir::ConvertOp`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConvertOp {
@@ -103,6 +105,7 @@ pub enum ConvertOp {
 /// One IR operation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IR {
+    FloatUnary { op: FloatUnaryOp, dst: Operand, src: Operand },
     Copy {
         dst: Operand,
         src: Operand,
@@ -171,6 +174,43 @@ pub enum IR {
         args: Vec<Operand>,
         dst: Option<Operand>,
     },
+    /// A loop entirely inside one guest instruction, reconstructed from
+    /// Sleigh's `Const`-address branches.
+    ///
+    /// `REP`-prefixed string instructions are the motivating case: the x86
+    /// Sleigh spec implements them as a microcode loop whose back-edge targets
+    /// the instruction's own start and whose exit edge targets the next
+    /// instruction. Sleigh flattens that loop into its op list, so the branch
+    /// targets are instruction addresses, not block targets. Flattening it
+    /// again into the block list would invent a block that the discovery pass
+    /// never asked for; representing it as a structured loop keeps it inside
+    /// the block that contains the instruction.
+    ///
+    /// Semantics:
+    /// ```text
+    /// loop {
+    ///     head
+    ///     if exit != 0 { break }
+    ///     body
+    ///     if repeat is Some(c) { if c == 0 { break } } else { continue }
+    /// }
+    /// tail
+    /// ```
+    MicroLoop {
+        /// Ops re-executed at the top of every iteration (the counter test).
+        head: Vec<IR>,
+        /// Exit condition: `goto inst_next` when non-zero.
+        exit: Option<Operand>,
+        /// Ops executed after the exit test.
+        body: Vec<IR>,
+        /// Back-edge condition: `goto inst_start` when non-zero. `None` means
+        /// the back edge is unconditional.
+        repeat: Option<Operand>,
+        /// Ops after the back edge, executed once when the loop exits.
+        tail: Vec<IR>,
+    },
+    /// An operation whose semantics are not implemented. Emission must fail.
+    Unsupported(String),
     Nop,
 }
 

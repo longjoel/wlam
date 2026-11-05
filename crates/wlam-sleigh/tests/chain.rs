@@ -50,9 +50,9 @@ fn run(module: &[u8], regs: &[String], eax: u32, ecx: u32, mem: &[(u32, u32)]) -
     // Only seed registers the program actually uses: an absent register has no
     // snapshot slot, and indexing with `usize::MAX` silently produced a garbage
     // address (and a timeout) instead of a clear failure.
-    let mut seeds = vec![format!("d.setUint32({base}+{eax_idx}*4,{eax},true);", base = wlam_emit::REG_SNAPSHOT_BASE)];
+    let mut seeds = vec![format!("d.setUint32({base}+{eax_idx}*8,{eax},true);", base = wlam_emit::REG_SNAPSHOT_BASE)];
     if ecx_idx != usize::MAX {
-        seeds.push(format!("d.setUint32({base}+{ecx_idx}*4,{ecx},true);", base = wlam_emit::REG_SNAPSHOT_BASE));
+        seeds.push(format!("d.setUint32({base}+{ecx_idx}*8,{ecx},true);", base = wlam_emit::REG_SNAPSHOT_BASE));
     }
     let mem_js: Vec<String> = mem.iter().map(|(a, v)| format!("d.setUint32({a},{v},true);")).collect();
     let seeds_js = seeds.join("");
@@ -64,7 +64,7 @@ fn run(module: &[u8], regs: &[String], eax: u32, ecx: u32, mem: &[(u32, u32)]) -
          {seeds}\
          {} \
          try{{ i.exports.entry(); }}catch(e){{ console.log(JSON.stringify({{err:String(e.message)}})); process.exit(0); }}\
-         console.log(JSON.stringify({{eax:d.getUint32({base}+{eax_idx}*4,true)}}));",
+         console.log(JSON.stringify({{eax:d.getUint32({base}+{eax_idx}*8,true)}}));",
         mem_js.join(""),
         seeds = seeds_js,
         base = wlam_emit::REG_SNAPSHOT_BASE,
@@ -185,7 +185,7 @@ fn conditional_branch_takes_the_correct_path() {
                 "const fs=require('fs');const m=new WebAssembly.Module(fs.readFileSync({path:?}));\
                  const i=new WebAssembly.Instance(m,{{}});\
                  const d=new DataView(i.exports.memory.buffer);\
-                 d.setUint32({base}+{eax_idx}*4,{eax},true);\
+                 d.setUint32({base}+{eax_idx}*8,{eax},true);\
                  try{{i.exports.entry();}}catch(e){{console.log('TRAP '+e.message);process.exit(0)}}\
                  console.log('A='+d.getUint32(0x10000,true)+' B='+d.getUint32(0x10004,true));",
                 base = wlam_emit::REG_SNAPSHOT_BASE,

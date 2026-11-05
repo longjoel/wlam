@@ -1,12 +1,11 @@
 //! Progress oracle: how far does emission get on a real image, and what stops it?
 //!
 //! Prints a single scoreboard line plus a histogram of the reason emission
-//! stopped. This is the loop's exit condition: it must reach `RESULT: OK` with
+//! stopped. This is the loop's exit condition: it must reach `RESULT: VALIDATED` with
 //! zero blocking reasons.
 //!
 //! Usage: cargo run --example progress [path-to.exe]
-#[path = "../tests/shared/mod.rs"]
-mod shared;
+use wlam_sleigh::emit as shared;
 
 use std::collections::BTreeMap;
 use wlam_emit::chain::{build_module_with_memory, partition, HostImport};
@@ -153,6 +152,12 @@ fn main() {
     let mut p = partition(&entries, &blocks, &regs);
     p.register_host_imports(&blocks, |slot| by_slot.get(&slot).cloned());
 
+    let gaps = p.host_imports.values().filter(|i| i.library == "wlam.unsupported")
+        .map(|i| i.name.as_str()).collect::<std::collections::BTreeSet<_>>();
+    println!("SCOPE: module validation only; {} unsupported-operation diagnostics trap if reached", gaps.len());
+    for gap in gaps.iter().take(5) {
+        println!("GAP: {gap}");
+    }
     let cover = prog.block_starts().len();
     match build_module_with_memory(&p, &blocks, pages) {
         Ok(m) => {
@@ -163,7 +168,7 @@ fn main() {
             match validate(&m) {
                 Ok(()) => {
                     println!(
-                        "RESULT: OK  blocks={cover} functions={} imports={} bytes={}",
+                        "RESULT: VALIDATED  blocks={cover} functions={} imports={} bytes={}",
                         p.functions.len(),
                         p.host_imports.len(),
                         m.len()

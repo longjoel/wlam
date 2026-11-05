@@ -1,9 +1,7 @@
 //! Translation pipeline: discovery, call resolution, and compat reporting.
 //!
-//! The lifter (`wlam-lift-x86`) knows individual instructions; this crate only
-//! orchestrates it and answers whole-program questions. The first answer it
-//! needs to give is "what does this program actually import, and are we
-//! committed to providing it?" — see [`compat`].
+//! This crate currently provides import analysis and compatibility reporting.
+//! The active discovery/emission bridge lives in `wlam-sleigh`.
 
 pub mod compat;
 pub mod oracle;

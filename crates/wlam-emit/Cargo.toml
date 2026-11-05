@@ -7,3 +7,6 @@ license.workspace = true
 [dependencies]
 wlam-pcode.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+wasmi.workspace = true
