@@ -3,15 +3,32 @@ typedef unsigned char B; typedef unsigned int U; typedef int I; typedef unsigned
 #define API __declspec(dllimport) __stdcall
 typedef struct { U size; I width,height; W planes,bits; U compression,imageSize; I xppm,yppm; U used,important; } INFO;
 typedef struct { I left,top,right,bottom; } RECT;
+typedef struct { U style; I width,height; U color; } LOGPEN;
+typedef struct { U style; U color; I hatch; } LOGBRUSH;
+typedef struct { I height,width,escapement,orientation,weight; B italic,underline,strikeout,charset,outprecision,clipprecision,quality,pitch; B face[32]; } LOGFONTA;
+typedef struct { I type,width,height,widthBytes; W planes,bits; void *bitsPtr; } BITMAP;
 U API CreateCompatibleDC(U); U API CreateDIBSection(U,INFO*,U,U**,U,U);
 U API SelectObject(U,U); I API DeleteObject(U); I API DeleteDC(U);
-U API CreateSolidBrush(U); U API GetStockObject(I);
+U API CreateSolidBrush(U); U API GetStockObject(I); I API GetDeviceCaps(U,I);
 I API SaveDC(U); I API RestoreDC(U,I);
 U API SetTextColor(U,U); U API GetTextColor(U); U API SetBkColor(U,U); U API GetBkColor(U);
 I API SetBkMode(U,I); I API GetBkMode(U);
 I API IntersectClipRect(U,I,I,I,I); I API GetClipBox(U,RECT*);
 I API PatBlt(U,I,I,I,I,U); I API BitBlt(U,I,I,I,I,U,I,I,U);
+I API StretchBlt(U,I,I,I,I,U,I,I,I,I,U);
+I API StretchDIBits(U,I,I,I,I,I,I,I,I,const void*,INFO*,U,U);
+I API SetStretchBltMode(U,I); I API GetStretchBltMode(U);
+I API SetBrushOrgEx(U,I,I,RECT*); I API GetBrushOrgEx(U,RECT*);
 I API TextOutA(U,I,I,const char*,I); I API ExtTextOutA(U,I,I,U,RECT*,const char*,U,I*);
+U API CreatePen(I,I,U); I API SetROP2(U,I); I API GetROP2(U);
+U API CreateCompatibleBitmap(U,U,U); I API GetObjectType(U); I API GetObjectA(U,I,void*);
+U API GetNearestColor(U,U); I API GetTextFaceA(U,I,char*); I API GetCharWidthA(U,U,U,I*);
+I API SetTextCharacterExtra(U,I); I API GetTextCharacterExtra(U);
+I API SetPolyFillMode(U,I); I API GetPolyFillMode(U);
+U API SetMapperFlags(U,U); U API GetMapperFlags(U);
+I API GetTextExtentPointA(U,const char*,I,I*);
+I API MoveToEx(U,I,I,RECT*); I API GetCurrentPositionEx(U,RECT*); I API LineTo(U,I,I); I API Rectangle(U,I,I,I,I);
+U API GetPixel(U,I,I); U API SetPixel(U,I,I,U); I API SetPixelV(U,I,I,U);
 U API GetStdHandle(U); I API WriteFile(U,const void*,U,U*,void*); void API ExitProcess(U);
 static U output, failures;
 static void bytes(const char *s,U n) { U written; WriteFile(output,s,n,&written,0); }
@@ -24,6 +41,189 @@ static void result(const char *name,U observed,U expected) {
 static U dc,bitmap,oldBitmap,*pixels;
 static INFO info={40,8,-8,1,32,0,0,0,0,0,0};
 static struct { INFO header; U colors[256]; } indexed={{40,3,-2,1,8,0,0,0,0,256,0},{0}};
+static INFO scaleInfo={40,2,-2,1,32,0,0,0,0,0,0};
+static INFO bottomInfo={40,2,2,1,32,0,0,0,0,0,0};
+static U dibColors[4]={0x000000ff,0x00ffffff,0x00ff0000,0x0000ff00};
+static void scaling(void) {
+    U source,sourceBitmap,oldSource,*sourcePixels,i,j,expected,mode,previous,saved;
+    RECT origin,clip;
+    source=CreateCompatibleDC(0);sourceBitmap=CreateDIBSection(source,&scaleInfo,0,&sourcePixels,0,0);
+    if(!source||!sourceBitmap||!sourcePixels)ExitProcess(12);
+    oldSource=SelectObject(source,sourceBitmap);
+    sourcePixels[0]=0;sourcePixels[1]=0xffffff;sourcePixels[2]=0xffffff;sourcePixels[3]=0;
+    result("stretch.advertised-capabilities",GetDeviceCaps(dc,38)&0x2800,0x2800);
+    previous=SetStretchBltMode(dc,3);result("stretch.default-mode",previous,1);
+    result("stretch.enlarge",StretchBlt(dc,0,0,4,4,source,0,0,2,2,0x00cc0020)!=0,1);
+    for(j=0;j<4;j++)for(i=0;i<4;i++) {
+        expected=0;if((i/2)!=(j/2))expected=0xffffff;
+        result("stretch.enlarged-pixel",pixels[j*8+i]&0xffffff,expected);
+    }
+    for(mode=1;mode<=4;mode++) {
+        SetStretchBltMode(dc,mode);SetBrushOrgEx(dc,0,0,0);
+        result("stretch.reduce",StretchBlt(dc,0,0,1,1,source,0,0,2,2,0x00cc0020)!=0,1);
+        expected=0;if(mode==2)expected=0xffffff;if(mode==4)expected=0x808080;
+        result("stretch.reduce-mode-pixel",pixels[0]&0xffffff,expected);
+    }
+    /* Mirrors Microsoft's four-pane sample: repeatedly scale a source image
+       within the same DC, one destination pixel per stretch mode. */
+    pixels[4*8+4]=0;pixels[4*8+5]=0xffffff;
+    pixels[5*8+4]=0xffffff;pixels[5*8+5]=0;
+    for(mode=1;mode<=4;mode++) {
+        SetStretchBltMode(dc,mode);
+        result("stretch.sample-same-dc",StretchBlt(dc,mode-1,6,1,1,dc,4,4,2,2,0x00cc0020)!=0,1);
+        expected=0;if(mode==2)expected=0xffffff;if(mode==4)expected=0x808080;
+        result("stretch.sample-mode-pixel",pixels[6*8+mode-1]&0xffffff,expected);
+    }
+    result("stretch.sample-source-preserved",pixels[4*8+5]&0xffffff,0xffffff);
+    SetStretchBltMode(dc,3);
+    result("stretch.source-mirror",StretchBlt(dc,0,0,4,4,source,2,0,-2,2,0x00cc0020)!=0,1);
+    result("stretch.source-mirror-left",pixels[0]&0xffffff,0xffffff);
+    result("stretch.source-mirror-right",pixels[3]&0xffffff,0);
+    result("stretch.destination-mirror",StretchBlt(dc,4,0,-4,4,source,0,0,2,2,0x00cc0020)!=0,1);
+    result("stretch.destination-mirror-left",pixels[0]&0xffffff,0xffffff);
+    result("stretch.destination-mirror-right",pixels[3]&0xffffff,0);
+    result("stretch.vertical-mirror",StretchBlt(dc,0,4,4,-4,source,0,0,2,2,0x00cc0020)!=0,1);
+    result("stretch.vertical-mirror-top",pixels[0]&0xffffff,0xffffff);
+    result("stretch.vertical-mirror-bottom",pixels[24]&0xffffff,0);
+    for(i=0;i<64;i++)pixels[i]=0x00123456;
+    saved=SaveDC(dc);IntersectClipRect(dc,1,1,3,3);
+    result("stretch.clipped",StretchBlt(dc,0,0,4,4,source,0,0,2,2,0x00cc0020)!=0,1);
+    result("stretch.clip-outside",pixels[0]&0xffffff,0x00123456);
+    result("stretch.clip-sampling-black",pixels[9]&0xffffff,0);
+    result("stretch.clip-sampling-white",pixels[10]&0xffffff,0xffffff);
+    RestoreDC(dc,saved);
+    pixels[0]=0;pixels[1]=0xffffff;pixels[8]=0xffffff;pixels[9]=0;
+    result("stretch.overlap",StretchBlt(dc,0,0,4,4,dc,0,0,2,2,0x00cc0020)!=0,1);
+    result("stretch.overlap-snapshot",pixels[24]&0xffffff,0xffffff);
+    pixels[0]=0x00ff00ff;
+    result("stretch.xor",StretchBlt(dc,0,0,1,1,source,1,0,1,1,0x00660046)!=0,1);
+    result("stretch.xor-pixel",pixels[0]&0xffffff,0x0000ff00);
+    result("stretch.zero-width",StretchBlt(dc,0,0,0,1,source,0,0,2,2,0x00cc0020)!=0,0);
+    result("stretch.zero-width-preserves-pixel",pixels[0]&0xffffff,0x0000ff00);
+    saved=SaveDC(dc);SetStretchBltMode(dc,4);SetBrushOrgEx(dc,7,-3,&origin);
+    result("stretch.previous-origin-x",origin.left,0);
+    GetBrushOrgEx(dc,&origin);result("stretch.brush-origin-x",origin.left,7);
+    result("stretch.brush-origin-y",origin.top,(U)-3);
+    RestoreDC(dc,saved);result("stretch.restored-mode",GetStretchBltMode(dc),3);
+    GetBrushOrgEx(dc,&origin);result("stretch.restored-brush-origin",origin.left,0);
+    result("stretchdib.top-down-lines",StretchDIBits(dc,0,0,2,2,0,0,2,2,dibColors,&scaleInfo,0,0x00cc0020),2);
+    result("stretchdib.top-down-first",pixels[0]&0xffffff,0x000000ff);
+    result("stretchdib.top-down-last",pixels[9]&0xffffff,0x0000ff00);
+    result("stretchdib.bottom-up-lines",StretchDIBits(dc,0,0,2,2,0,0,2,2,dibColors,&bottomInfo,0,0x00cc0020),2);
+    result("stretchdib.bottom-up-first",pixels[0]&0xffffff,0x00ff0000);
+    result("stretchdib.bottom-up-last",pixels[9]&0xffffff,0x00ffffff);
+    result("stretchdib.bottom-origin-subrect",StretchDIBits(dc,0,0,2,1,0,0,2,1,dibColors,&bottomInfo,0,0x00cc0020),1);
+    result("stretchdib.bottom-origin-pixel",pixels[0]&0xffffff,0x000000ff);
+    sourcePixels[0]=0x00101010;sourcePixels[1]=0x00eeeeee;
+    result("stretch.noninteger-scale",StretchBlt(dc,0,0,3,1,source,0,0,2,1,0x00cc0020)!=0,1);
+    result("stretch.noninteger-left",pixels[0]&0xffffff,0x00101010);
+    result("stretch.noninteger-center",pixels[1]&0xffffff,0x00eeeeee);
+    result("stretch.noninteger-right",pixels[2]&0xffffff,0x00eeeeee);
+    result("stretch.nearest-reduction",StretchBlt(dc,0,0,1,1,source,0,0,2,1,0x00cc0020)!=0,1);
+    result("stretch.nearest-reduction-pixel",pixels[0]&0xffffff,0x00eeeeee);
+    SelectObject(source,oldSource);DeleteObject(sourceBitmap);DeleteDC(source);
+}
+static U rop2Expected[16]={0,0x111111,0x444444,0x555555,0x222222,0x333333,0x666666,0x777777,0x888888,0x999999,0xcccccc,0xdddddd,0xaaaaaa,0xbbbbbb,0xeeeeee,0xffffff};
+static void geometry(void) {
+    U i,pen,grayPen,brush,saved;RECT point;
+    saved=SaveDC(dc);pen=CreatePen(0,1,0x000000ff);grayPen=CreatePen(0,0,0x00aaaaaa);brush=CreateSolidBrush(0x0000ff00);
+    if(!pen||!grayPen||!brush)ExitProcess(13);
+    SelectObject(dc,pen);SetROP2(dc,13);
+    for(i=0;i<64;i++)pixels[i]=0;
+    result("line.move",MoveToEx(dc,1,1,&point)!=0,1);
+    result("line.previous-x",point.left,0);result("line.previous-y",point.top,0);
+    result("line.draw",LineTo(dc,6,1)!=0,1);
+    result("line.start-pixel",pixels[9]&0xffffff,0x00ff0000);
+    result("line.last-painted-pixel",pixels[13]&0xffffff,0x00ff0000);
+    result("line.excluded-endpoint",pixels[14]&0xffffff,0);
+    GetCurrentPositionEx(dc,&point);result("line.current-x",point.left,6);result("line.current-y",point.top,1);
+    SetROP2(dc,7);MoveToEx(dc,1,1,0);LineTo(dc,6,1);
+    result("line.xor-erases",pixels[9]&0xffffff,0);
+    SelectObject(dc,grayPen);
+    for(i=1;i<=16;i++) {
+        SetROP2(dc,i);pixels[0]=0x00cccccc;MoveToEx(dc,0,0,0);
+        result("line.rop2-draw",LineTo(dc,1,0)!=0,1);
+        result("line.rop2-pixel",pixels[0]&0xffffff,rop2Expected[i-1]);
+    }
+    SetROP2(dc,13);SelectObject(dc,pen);SelectObject(dc,brush);
+    result("rectangle.draw",Rectangle(dc,1,2,5,6)!=0,1);
+    result("rectangle.pen",pixels[17]&0xffffff,0x00ff0000);
+    result("rectangle.brush",pixels[26]&0xffffff,0x0000ff00);
+    result("rectangle.excluded-bottom-right",pixels[53]&0xffffff,0);
+    SelectObject(dc,GetStockObject(5));Rectangle(dc,0,0,8,8);
+    result("rectangle.null-brush-preserves-interior",pixels[26]&0xffffff,0x0000ff00);
+    result("pixel.set-returns-colorref",SetPixel(dc,7,7,0x00ff0000),0x00ff0000);
+    result("pixel.set-bgr-storage",pixels[63]&0xffffff,0x000000ff);
+    result("pixel.get-colorref",GetPixel(dc,7,7),0x00ff0000);
+    result("pixel.set-v",SetPixelV(dc,0,7,0x000000ff)!=0,1);
+    result("pixel.set-v-bgr-storage",pixels[56]&0xffffff,0x00ff0000);
+    i=SaveDC(dc);IntersectClipRect(dc,0,0,1,1);
+    result("pixel.get-outside-clip",GetPixel(dc,3,3),0xffffffff);
+    result("pixel.set-outside-clip",SetPixel(dc,3,3,0x00ff0000),0xffffffff);
+    RestoreDC(dc,i);result("pixel.clipped-write-preserves-data",pixels[27]&0xffffff,0x0000ff00);
+    RestoreDC(dc,saved);GetCurrentPositionEx(dc,&point);
+    result("line.restored-current-x",point.left,0);result("line.restored-current-y",point.top,0);
+    result("line.restored-rop2",GetROP2(dc),13);
+    result("geometry.delete-pen",DeleteObject(pen)!=0,1);
+    result("geometry.delete-gray-pen",DeleteObject(grayPen)!=0,1);
+    result("geometry.delete-brush",DeleteObject(brush)!=0,1);
+}
+static void objects(void) {
+    U stockFont,pen,brush,compatible,previous;
+    I widths[3],extent[2];
+    char face[16];
+    LOGPEN logpen; LOGBRUSH logbrush; LOGFONTA logfont; BITMAP bitmapInfo;
+    stockFont=GetStockObject(13);
+    result("object.dc-type",GetObjectType(dc),10);
+    result("object.bitmap-type",GetObjectType(bitmap),7);
+    result("object.font-type",GetObjectType(stockFont),6);
+    pen=CreatePen(0,2,0x00123456);brush=CreateSolidBrush(0x00abcdef);
+    if(!pen||!brush)ExitProcess(14);
+    result("object.pen-type",GetObjectType(pen),1);
+    result("object.brush-type",GetObjectType(brush),2);
+    result("object.pen-size",GetObjectA(pen,sizeof(LOGPEN),&logpen),sizeof(LOGPEN));
+    result("object.pen-style",logpen.style,0);
+    result("object.pen-width",logpen.width,2);
+    result("object.pen-color",logpen.color,0x00123456);
+    result("object.brush-size",GetObjectA(brush,sizeof(LOGBRUSH),&logbrush),sizeof(LOGBRUSH));
+    result("object.brush-style",logbrush.style,0);
+    result("object.brush-color",logbrush.color,0x00abcdef);
+    result("object.bitmap-size",GetObjectA(bitmap,sizeof(BITMAP),&bitmapInfo),sizeof(BITMAP));
+    result("object.bitmap-width",bitmapInfo.width,8);
+    result("object.bitmap-height",bitmapInfo.height,8);
+    result("object.bitmap-stride",bitmapInfo.widthBytes,32);
+    result("object.bitmap-planes",bitmapInfo.planes,1);
+    result("object.bitmap-bpp",bitmapInfo.bits,32);
+    result("object.bitmap-bits",bitmapInfo.bitsPtr==pixels,1);
+    result("object.font-size",GetObjectA(stockFont,sizeof(LOGFONTA),&logfont),sizeof(LOGFONTA));
+    result("object.font-height",(U)logfont.height,(U)-14);
+    result("object.text-face-size",GetTextFaceA(dc,16,face),6);
+    result("object.text-face-system",face[0]=='S'&&face[5]=='m',1);
+    result("object.char-widths",GetCharWidthA(dc,'A','C',widths),1);
+    result("object.text-extent",GetTextExtentPointA(dc,"A",1,extent),1);
+    result("object.char-width-a",(U)widths[0],extent[0]);
+    result("object.text-extra-previous",(U)SetTextCharacterExtra(dc,3),0);
+    result("object.text-extra-current",(U)GetTextCharacterExtra(dc),3);
+    result("object.text-extent-extra",GetTextExtentPointA(dc,"AA",2,extent),1);
+    result("object.text-extra-width",extent[0],(widths[0]+3)*2);
+    SetTextCharacterExtra(dc,0);
+    result("object.nearest-color",GetNearestColor(dc,0x00123456),0x00123456);
+    result("object.poly-previous",(U)SetPolyFillMode(dc,2),1);
+    result("object.poly-current",(U)GetPolyFillMode(dc),2);
+    SetPolyFillMode(dc,1);
+    result("object.mapper-previous",SetMapperFlags(dc,1),0);
+    result("object.mapper-current",GetMapperFlags(dc),1);
+    SetMapperFlags(dc,0);
+    compatible=CreateCompatibleBitmap(dc,8,8);
+    result("object.compatible-type",GetObjectType(compatible),7);
+    result("object.compatible-size",GetObjectA(compatible,sizeof(BITMAP),&bitmapInfo),sizeof(BITMAP));
+    result("object.compatible-width",bitmapInfo.width,8);
+    result("object.compatible-bpp",bitmapInfo.bits,32);
+    previous=SelectObject(dc,compatible);
+    result("object.compatible-select",previous!=0,1);
+    SelectObject(dc,previous);DeleteObject(compatible);
+    DeleteObject(pen);DeleteObject(brush);
+}
 void entry(void) {
     U i,red,blue,oldBrush,saved,second,other,stockFont,hasText;
     RECT clip,opaque={1,1,3,3},indexedRect={0,0,1,1};
@@ -99,9 +299,17 @@ void entry(void) {
     result("indexed.red-index",indices[0],42);
     result("indexed.blit-to-rgb",BitBlt(dc,0,0,1,1,dc8,0,0,0x00cc0020)!=0,1);
     result("indexed.rgb-result",pixels[0]&0xffffff,0x00ff0000);
+    pixels[0]=0x00ffffff;SetStretchBltMode(dc8,3);
+    result("indexed.stretch-from-rgb",StretchBlt(dc8,1,0,2,1,dc,0,0,1,1,0x00cc0020)!=0,1);
+    result("indexed.stretched-white-index",indices[1],200);
+    result("indexed.stretched-last-index",indices[2],200);
+    result("indexed.stretched-padding",indices[3],0x7a);
+    result("object.nearest-indexed",GetNearestColor(dc8,0x0000ff00),0x0000ff00);
     SelectObject(dc8,old8);DeleteObject(bmp8);DeleteDC(dc8);
+    scaling();geometry();objects();
     SelectObject(dc,oldBitmap);DeleteObject(bitmap);DeleteDC(dc);
     /* Font glyph shapes differ by Windows version; foreground presence is
        checked separately from exact raster-operation comparisons. */
+    result("suite.completed",1,1);
     ExitProcess(failures);
 }

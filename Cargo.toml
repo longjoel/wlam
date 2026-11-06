@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/wlam-pe",
+    "crates/wlam-ne",
     "crates/wlam-pcode",
     "crates/wlam-sleigh",
     "crates/wlam-translate",

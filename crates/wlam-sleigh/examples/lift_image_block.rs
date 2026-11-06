@@ -23,10 +23,16 @@ fn main() -> Result<(), String> {
         .checked_sub(base)
         .and_then(|v| u32::try_from(v).ok())
         .ok_or("address is below the image base")?;
-    let section = pe.section_of(rva).map(|i| &pe.sections[i]).ok_or("address is not in a section")?;
+    let section = pe
+        .section_of(rva)
+        .map(|i| &pe.sections[i])
+        .ok_or("address is not in a section")?;
     let slice = section.data[(rva - section.virtual_address) as usize..].to_vec();
     let lifted = with_big_stack(move || wlam_sleigh::lift_block(&slice, address));
-    println!("block {:#x}..{:#x} term={:?}", lifted.start, lifted.end, lifted.terminator);
+    println!(
+        "block {:#x}..{:#x} term={:?}",
+        lifted.start, lifted.end, lifted.terminator
+    );
     for insn in &lifted.instructions {
         if insn.unlowered > 0 {
             println!("      ({} unlowered op(s))", insn.unlowered);

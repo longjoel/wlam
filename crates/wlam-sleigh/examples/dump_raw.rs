@@ -4,11 +4,19 @@ use wlam_sleigh::{with_big_stack, Architecture, Decoder};
 
 fn main() {
     let addr: u64 = u64::from_str_radix(
-        std::env::args().nth(1).unwrap_or_else(|| "0x40ccc8".into()).trim_start_matches("0x"),
+        std::env::args()
+            .nth(1)
+            .unwrap_or_else(|| "0x40ccc8".into())
+            .trim_start_matches("0x"),
         16,
     )
     .unwrap();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
     let bytes = std::fs::read(root.join("north-star/bin/Uxn32.exe")).unwrap();
     let base = 0x400000u64;
     let off = (addr - base) as usize;

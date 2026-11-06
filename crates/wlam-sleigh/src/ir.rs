@@ -23,7 +23,10 @@ impl Operand {
     pub(crate) fn from_varnode(v: &crate::pcode_ir::Varnode) -> Operand {
         use crate::pcode_ir::AddressSpaceId;
         match v.space {
-            AddressSpaceId::Const => Operand::Const { value: v.offset, size: v.size },
+            AddressSpaceId::Const => Operand::Const {
+                value: v.offset,
+                size: v.size,
+            },
             AddressSpaceId::Register => {
                 let name: Box<str> = match crate::NamedRegister::lookup(v.offset, v.size) {
                     Some(n) => n.into(),
@@ -31,8 +34,14 @@ impl Operand {
                 };
                 Operand::Reg { name, size: v.size }
             }
-            AddressSpaceId::Unique => Operand::Temp { offset: v.offset, size: v.size },
-            AddressSpaceId::Ram => Operand::Ram { offset: v.offset, size: v.size },
+            AddressSpaceId::Unique => Operand::Temp {
+                offset: v.offset,
+                size: v.size,
+            },
+            AddressSpaceId::Ram => Operand::Ram {
+                offset: v.offset,
+                size: v.size,
+            },
         }
     }
 
@@ -128,28 +137,80 @@ pub enum ConvertOp {
 /// One IR operation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IR {
-    FloatUnary { op: wlam_emit::ir::FloatUnaryOp, dst: Operand, src: Operand },
-    Copy { dst: Operand, src: Operand },
-    Load { dst: Operand, addr: Operand, size: u32 },
-    Store { addr: Operand, value: Operand, size: u32 },
-    Bin { op: BinOp, dst: Operand, operands: Box<(Operand, Operand)> },
+    FloatUnary {
+        op: wlam_emit::ir::FloatUnaryOp,
+        dst: Operand,
+        src: Operand,
+    },
+    Copy {
+        dst: Operand,
+        src: Operand,
+    },
+    Load {
+        dst: Operand,
+        addr: Operand,
+        size: u32,
+    },
+    Store {
+        addr: Operand,
+        value: Operand,
+        size: u32,
+    },
+    Bin {
+        op: BinOp,
+        dst: Operand,
+        operands: Box<(Operand, Operand)>,
+    },
     /// A floating-point binary operation (`FloatAdd`, `FloatMult`, ...).
     ///
     /// Distinct from [`IR::Bin`] so the emitter cannot route it through an
     /// integer instruction. Operand widths are the *source* precision: a 10-byte
     /// `ST` register is modelled as `f64` (see the x87 note in `docs/roadmap.md`).
-    Float { op: FloatOp, dst: Operand, operands: Box<(Operand, Operand)> },
-    Un { op: UnOp, dst: Operand, src: Operand },
+    Float {
+        op: FloatOp,
+        dst: Operand,
+        operands: Box<(Operand, Operand)>,
+    },
+    Un {
+        op: UnOp,
+        dst: Operand,
+        src: Operand,
+    },
     /// A typed conversion between integer and real-number domains.
-    Convert { op: ConvertOp, dst: Operand, src: Operand },
-    Subpiece { dst: Operand, src: Operand, lsb: u32 },
-    Branch { target: Operand },
-    IndirectJump { target: Operand },
-    CBranch { cond: Operand, target: Operand },
-    Call { target: Operand },
-    CallInd { target: Operand },
-    Ret { target: Option<Operand> },
-    Userop { id: u64, args: Vec<Operand>, dst: Option<Operand> },
+    Convert {
+        op: ConvertOp,
+        dst: Operand,
+        src: Operand,
+    },
+    Subpiece {
+        dst: Operand,
+        src: Operand,
+        lsb: u32,
+    },
+    Branch {
+        target: Operand,
+    },
+    IndirectJump {
+        target: Operand,
+    },
+    CBranch {
+        cond: Operand,
+        target: Operand,
+    },
+    Call {
+        target: Operand,
+    },
+    CallInd {
+        target: Operand,
+    },
+    Ret {
+        target: Option<Operand>,
+    },
+    Userop {
+        id: u64,
+        args: Vec<Operand>,
+        dst: Option<Operand>,
+    },
     /// A loop contained in one guest instruction, reconstructed from Sleigh's
     /// `Const`-address branches (see the emitter's `IR::MicroLoop`).
     MicroLoop {
@@ -184,24 +245,52 @@ fn store_size(op: &GhidraOp) -> u32 {
 pub fn lower(op: &GhidraOp) -> IR {
     use GhidraOp as P;
     match op {
-        P::Copy { out, input } => IR::Copy { dst: operand(out), src: operand(input) },
-        P::Load { out, ptr, .. } => IR::Load { dst: operand(out), addr: operand(ptr), size: out.size },
-        P::Store { ptr, val, .. } => {
-            IR::Store { addr: operand(ptr), value: operand(val), size: val.size }
-        }
+        P::Copy { out, input } => IR::Copy {
+            dst: operand(out),
+            src: operand(input),
+        },
+        P::Load { out, ptr, .. } => IR::Load {
+            dst: operand(out),
+            addr: operand(ptr),
+            size: out.size,
+        },
+        P::Store { ptr, val, .. } => IR::Store {
+            addr: operand(ptr),
+            value: operand(val),
+            size: val.size,
+        },
         P::Branch { dest } | P::CBranch { dest, .. }
             if dest.space == crate::AddressSpaceId::Const =>
-            IR::Unsupported(format!("internal P-code branch: {op:?}")),
-        P::Branch { dest } => IR::Branch { target: operand(dest) },
-        P::CBranch { dest, cond } => IR::CBranch { cond: operand(cond), target: operand(dest) },
+        {
+            IR::Unsupported(format!("internal P-code branch: {op:?}"))
+        }
+        P::Branch { dest } => IR::Branch {
+            target: operand(dest),
+        },
+        P::CBranch { dest, cond } => IR::CBranch {
+            cond: operand(cond),
+            target: operand(dest),
+        },
         // An *indirect* branch takes its destination from a register or
         // memory, which is a jump table or a computed goto. Lowering it as a
         // plain Branch would silently drop the indirection.
-        P::BranchInd { dest } => IR::IndirectJump { target: operand(dest) },
-        P::Call { dest } => IR::Call { target: operand(dest) },
-        P::CallInd { dest } => IR::CallInd { target: operand(dest) },
-        P::Return { dest } => IR::Ret { target: Some(operand(dest)) },
-        P::CallOther { out, func_id, inputs } => IR::Userop {
+        P::BranchInd { dest } => IR::IndirectJump {
+            target: operand(dest),
+        },
+        P::Call { dest } => IR::Call {
+            target: operand(dest),
+        },
+        P::CallInd { dest } => IR::CallInd {
+            target: operand(dest),
+        },
+        P::Return { dest } => IR::Ret {
+            target: Some(operand(dest)),
+        },
+        P::CallOther {
+            out,
+            func_id,
+            inputs,
+        } => IR::Userop {
             id: *func_id,
             args: inputs.iter().map(operand).collect(),
             dst: out.as_ref().map(operand),
@@ -238,17 +327,27 @@ pub fn lower(op: &GhidraOp) -> IR {
         P::FloatLess { out, left, right } => flt(FloatOp::Less, out, left, right),
         P::FloatLessEq { out, left, right } => flt(FloatOp::LessEq, out, left, right),
         P::FloatNan { out, input } => flt(FloatOp::NotEq, out, input, input),
-        P::FloatNeg { out, input } | P::FloatAbs { out, input } |
-        P::FloatSqrt { out, input } | P::FloatCeil { out, input } |
-        P::FloatFloor { out, input } | P::FloatRound { out, input } => {
+        P::FloatNeg { out, input }
+        | P::FloatAbs { out, input }
+        | P::FloatSqrt { out, input }
+        | P::FloatCeil { out, input }
+        | P::FloatFloor { out, input }
+        | P::FloatRound { out, input } => {
             use wlam_emit::ir::FloatUnaryOp as U;
-            let kind=match op {
-                P::FloatNeg {..}=>U::Neg,P::FloatAbs {..}=>U::Abs,
-                P::FloatSqrt {..}=>U::Sqrt,P::FloatCeil {..}=>U::Ceil,
-                P::FloatFloor {..}=>U::Floor,P::FloatRound {..}=>U::Round,
-                _=>unreachable!(),
+            let kind = match op {
+                P::FloatNeg { .. } => U::Neg,
+                P::FloatAbs { .. } => U::Abs,
+                P::FloatSqrt { .. } => U::Sqrt,
+                P::FloatCeil { .. } => U::Ceil,
+                P::FloatFloor { .. } => U::Floor,
+                P::FloatRound { .. } => U::Round,
+                _ => unreachable!(),
             };
-            IR::FloatUnary {op:kind,dst:operand(out),src:operand(input)}
+            IR::FloatUnary {
+                op: kind,
+                dst: operand(out),
+                src: operand(input),
+            }
         }
         // Typed conversions. `FSTP m64` lowers to `Float2Float ST0(80) ->
         // tmp(64)`, so without these the store receives an untyped temp and the
@@ -271,11 +370,26 @@ pub fn lower(op: &GhidraOp) -> IR {
 
         // Flag support ops: counts and boolean operators. These are part of
         // ordinary flag computation, not exotic.
-        P::Popcount { out, input } => IR::Un { op: UnOp::Popcount, dst: operand(out), src: operand(input) },
-        P::Lzcount { out, input } => IR::Un { op: UnOp::Lzcount, dst: operand(out), src: operand(input) },
+        P::Popcount { out, input } => IR::Un {
+            op: UnOp::Popcount,
+            dst: operand(out),
+            src: operand(input),
+        },
+        P::Lzcount { out, input } => IR::Un {
+            op: UnOp::Lzcount,
+            dst: operand(out),
+            src: operand(input),
+        },
         P::BoolNot { out, input } => IR::Bin {
-            op: BinOp::Eq, dst: operand(out),
-            operands: Box::new((operand(input), Operand::Const { value: 0, size: input.size })),
+            op: BinOp::Eq,
+            dst: operand(out),
+            operands: Box::new((
+                operand(input),
+                Operand::Const {
+                    value: 0,
+                    size: input.size,
+                },
+            )),
         },
         P::BoolAnd { out, left, right } => bin(BinOp::And, out, left, right),
         P::BoolOr { out, left, right } => bin(BinOp::Or, out, left, right),
@@ -288,28 +402,37 @@ pub fn lower(op: &GhidraOp) -> IR {
         P::IntNot { out, input } => un(UnOp::Not, out, input),
         P::IntZext { out, input } => un(UnOp::Zext, out, input),
         P::IntSext { out, input } => un(UnOp::Sext, out, input),
-        P::Subpiece { out, input, lsb } => {
-            IR::Subpiece { dst: operand(out), src: operand(input), lsb: *lsb }
-        }
-        // Anything else is not yet lowered; reported honestly rather than
-        // silently turned into a no-op. See `docs/sleigh-notes.md` for the
-        // list of ops that still need lowering (float, multipliers, etc).
-        _ => IR::Unsupported(format!("{op:?}")),
+        P::Subpiece { out, input, lsb } => IR::Subpiece {
+            dst: operand(out),
+            src: operand(input),
+            lsb: *lsb,
+        },
     }
 }
 
 fn bin(op: BinOp, out: &GhidraVarnode, left: &GhidraVarnode, right: &GhidraVarnode) -> IR {
-    IR::Bin { op, dst: operand(out), operands: Box::new((operand(left), operand(right))) }
+    IR::Bin {
+        op,
+        dst: operand(out),
+        operands: Box::new((operand(left), operand(right))),
+    }
 }
 
 fn un(op: UnOp, out: &GhidraVarnode, input: &GhidraVarnode) -> IR {
-    IR::Un { op, dst: operand(out), src: operand(input) }
+    IR::Un {
+        op,
+        dst: operand(out),
+        src: operand(input),
+    }
 }
 
 fn flt(op: FloatOp, out: &GhidraVarnode, left: &GhidraVarnode, right: &GhidraVarnode) -> IR {
-    IR::Float { op, dst: operand(out), operands: Box::new((operand(left), operand(right))) }
+    IR::Float {
+        op,
+        dst: operand(out),
+        operands: Box::new((operand(left), operand(right))),
+    }
 }
-
 
 #[cfg(test)]
 mod subpiece_tests {
@@ -398,10 +521,16 @@ mod unsupported_tests {
 
     #[test]
     fn unimplemented_pcode_survives_lowering_and_conversion() {
-        let value = GhidraVarnode { space: crate::AddressSpaceId::Const, offset: 1, size: 8 };
+        let value = GhidraVarnode {
+            space: crate::AddressSpaceId::Const,
+            offset: 1,
+            size: 8,
+        };
         let raw = GhidraOp::Branch { dest: value };
         let lowered = lower(&raw);
         assert!(matches!(&lowered, IR::Unsupported(op) if op.contains("internal P-code branch")));
-        assert!(matches!(crate::emit::to_eir(&lowered), wlam_emit::IR::Unsupported(op) if op.contains("internal P-code branch")));
+        assert!(
+            matches!(crate::emit::to_eir(&lowered), wlam_emit::IR::Unsupported(op) if op.contains("internal P-code branch"))
+        );
     }
 }

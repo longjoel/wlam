@@ -29,22 +29,49 @@ fn to_emit(ir: &sir::IR) -> eir::IR {
     use sir::Operand as SO;
     fn op(o: &SO) -> EO {
         match o {
-            SO::Const { value, size } => EO::Const { value: *value, size: *size },
-            SO::Reg { name, size } => EO::Reg { name: name.clone(), size: *size },
-            SO::Temp { offset, size } => EO::Temp { offset: *offset, size: *size },
-            SO::Ram { offset, size } => EO::Ram { offset: *offset, size: *size },
+            SO::Const { value, size } => EO::Const {
+                value: *value,
+                size: *size,
+            },
+            SO::Reg { name, size } => EO::Reg {
+                name: name.clone(),
+                size: *size,
+            },
+            SO::Temp { offset, size } => EO::Temp {
+                offset: *offset,
+                size: *size,
+            },
+            SO::Ram { offset, size } => EO::Ram {
+                offset: *offset,
+                size: *size,
+            },
         }
     }
     match ir {
-        sir::IR::FloatUnary {op:kind,dst,src} => eir::IR::FloatUnary {op:*kind,dst:op(dst),src:op(src)},
-        sir::IR::Copy { dst, src } => eir::IR::Copy { dst: op(dst), src: op(src) },
-        sir::IR::Load { dst, addr, size } => {
-            eir::IR::Load { dst: op(dst), addr: op(addr), size: *size }
-        }
-        sir::IR::Store { addr, value, size } => {
-            eir::IR::Store { addr: op(addr), value: op(value), size: *size }
-        }
-        sir::IR::Bin { op: b, dst, operands } => eir::IR::Bin {
+        sir::IR::FloatUnary { op: kind, dst, src } => eir::IR::FloatUnary {
+            op: *kind,
+            dst: op(dst),
+            src: op(src),
+        },
+        sir::IR::Copy { dst, src } => eir::IR::Copy {
+            dst: op(dst),
+            src: op(src),
+        },
+        sir::IR::Load { dst, addr, size } => eir::IR::Load {
+            dst: op(dst),
+            addr: op(addr),
+            size: *size,
+        },
+        sir::IR::Store { addr, value, size } => eir::IR::Store {
+            addr: op(addr),
+            value: op(value),
+            size: *size,
+        },
+        sir::IR::Bin {
+            op: b,
+            dst,
+            operands,
+        } => eir::IR::Bin {
             op: match b {
                 sir::BinOp::Add => eir::BinOp::Add,
                 sir::BinOp::Sub => eir::BinOp::Sub,
@@ -85,7 +112,11 @@ fn to_emit(ir: &sir::IR) -> eir::IR {
             dst: op(dst),
             src: op(src),
         },
-        sir::IR::Float { op: f, dst, operands } => eir::IR::Float {
+        sir::IR::Float {
+            op: f,
+            dst,
+            operands,
+        } => eir::IR::Float {
             op: match f {
                 sir::FloatOp::Add => eir::FloatOp::Add,
                 sir::FloatOp::Sub => eir::FloatOp::Sub,
@@ -108,23 +139,34 @@ fn to_emit(ir: &sir::IR) -> eir::IR {
             dst: op(dst),
             src: op(src),
         },
-        sir::IR::Subpiece { dst, src, lsb } => {
-            eir::IR::Subpiece { dst: op(dst), src: op(src), lsb: *lsb }
-        }
+        sir::IR::Subpiece { dst, src, lsb } => eir::IR::Subpiece {
+            dst: op(dst),
+            src: op(src),
+            lsb: *lsb,
+        },
         sir::IR::Branch { target } => eir::IR::Branch { target: op(target) },
         sir::IR::IndirectJump { target } => eir::IR::IndirectJump { target: op(target) },
-        sir::IR::CBranch { cond, target } => {
-            eir::IR::CBranch { cond: op(cond), target: op(target) }
-        }
+        sir::IR::CBranch { cond, target } => eir::IR::CBranch {
+            cond: op(cond),
+            target: op(target),
+        },
         sir::IR::Call { target } => eir::IR::Call { target: op(target) },
         sir::IR::CallInd { target } => eir::IR::CallInd { target: op(target) },
-        sir::IR::Ret { target } => eir::IR::Ret { target: target.as_ref().map(op) },
+        sir::IR::Ret { target } => eir::IR::Ret {
+            target: target.as_ref().map(op),
+        },
         sir::IR::Userop { id, args, dst } => eir::IR::Userop {
             id: *id,
             args: args.iter().map(op).collect(),
             dst: dst.as_ref().map(op),
         },
-        sir::IR::MicroLoop { head, exit, body, repeat, tail } => eir::IR::MicroLoop {
+        sir::IR::MicroLoop {
+            head,
+            exit,
+            body,
+            repeat,
+            tail,
+        } => eir::IR::MicroLoop {
             head: head.iter().map(to_emit).collect(),
             exit: exit.as_ref().map(op),
             body: body.iter().map(to_emit).collect(),
@@ -196,7 +238,13 @@ fn registers(ops: &[sir::IR]) -> BTreeMap<String, u32> {
                     visit(d, out);
                 }
             }
-            sir::IR::MicroLoop { head, exit, body, repeat, tail } => {
+            sir::IR::MicroLoop {
+                head,
+                exit,
+                body,
+                repeat,
+                tail,
+            } => {
                 for op in head.iter().chain(body).chain(tail) {
                     walk(op, out);
                 }
@@ -220,7 +268,9 @@ fn touched_memory(ops: &[sir::IR]) -> BTreeSet<u64> {
     let mut out = BTreeSet::new();
     for ir in ops {
         if let sir::IR::Store { addr, size, .. } = ir {
-            if let sir::Operand::Const { value, .. } | sir::Operand::Ram { offset: value, .. } = addr {
+            if let sir::Operand::Const { value, .. } | sir::Operand::Ram { offset: value, .. } =
+                addr
+            {
                 for i in 0..*size as u64 {
                     out.insert(value + i);
                 }
@@ -260,7 +310,11 @@ fn run_in_v8(
         addrs = addrs.join(","),
         init_vals = init_js.join(","),
     );
-    let out = std::process::Command::new("node").arg("-e").arg(&script).output().unwrap();
+    let out = std::process::Command::new("node")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .unwrap();
     let _ = std::fs::remove_file(&path);
     assert!(
         out.status.success(),
@@ -269,8 +323,15 @@ fn run_in_v8(
     );
     let text = String::from_utf8_lossy(&out.stdout);
     let mut map = BTreeMap::new();
-    for part in text.trim().trim_start_matches('{').trim_end_matches('}').split(',') {
-        let Some((k, v)) = part.split_once(':') else { continue };
+    for part in text
+        .trim()
+        .trim_start_matches('{')
+        .trim_end_matches('}')
+        .split(',')
+    {
+        let Some((k, v)) = part.split_once(':') else {
+            continue;
+        };
         let key = k.trim().trim_matches('"').to_string();
         if let Ok(val) = v.trim().parse::<u64>() {
             map.insert(key, val);
@@ -289,7 +350,11 @@ fn differential(bytes: &[u8], at: u64, setup: &dyn Fn(&mut Machine)) -> Option<S
         let b = bytes.to_vec();
         move || lift_block(&b, at)
     });
-    let ops: Vec<sir::IR> = block.instructions.iter().flat_map(|i| i.ops.iter().cloned()).collect();
+    let ops: Vec<sir::IR> = block
+        .instructions
+        .iter()
+        .flat_map(|i| i.ops.iter().cloned())
+        .collect();
     if ops.iter().any(|o| {
         matches!(
             o,
@@ -335,9 +400,14 @@ fn differential(bytes: &[u8], at: u64, setup: &dyn Fn(&mut Machine)) -> Option<S
     }
     for a in &stores {
         let want = machine.load(*a, 1);
-        let got = observed.get(&format!("mem:{a}")).copied().unwrap_or(u64::MAX);
+        let got = observed
+            .get(&format!("mem:{a}"))
+            .copied()
+            .unwrap_or(u64::MAX);
         if want != got {
-            problems.push(format!("mem[{a:#x}]: interpreter {want:#x} vs wasm {got:#x}"));
+            problems.push(format!(
+                "mem[{a:#x}]: interpreter {want:#x} vs wasm {got:#x}"
+            ));
         }
     }
     Some(problems.join("; "))
@@ -376,6 +446,9 @@ fn wasm_agrees_with_interpreter_on_lifted_instructions() {
         }
     }
     eprintln!("differential: {compared} agreed, {skipped} unsupported");
-    assert_eq!(skipped, 0, "ordinary integer instructions must not be skipped");
+    assert_eq!(
+        skipped, 0,
+        "ordinary integer instructions must not be skipped"
+    );
     assert_eq!(compared, cases.len() * seeds.len());
 }

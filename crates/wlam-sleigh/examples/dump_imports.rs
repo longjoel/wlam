@@ -14,7 +14,11 @@ fn main() -> Result<(), String> {
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     let pe = Pe::parse(&bytes).map_err(|e| e.to_string())?;
     let base = pe.image_base as u32;
-    let verified = pe.imports.iter().filter(|import|import.iat_slot_verified).count();
+    let verified = pe
+        .imports
+        .iter()
+        .filter(|import| import.iat_slot_verified)
+        .count();
     for import in &pe.imports {
         let name = import
             .name

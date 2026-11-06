@@ -43,9 +43,11 @@ node apps/web/tests/opengl-fixture.mjs
 
 The PE creates a window and WGL context, checks the zero-argument
 `glGetError` import before, during and after drawing, verifies the
-`glBegin`/`glEnd` error rule, swaps a solid triangle, deletes the context,
-releases the DC and exits. The Node runner checks the captured pixels, reached
-lifecycle APIs and exit status.
+`glBegin`/`glEnd` error rule, swaps a solid triangle with a green point overlaid,
+deletes the context, releases the DC and exits. The Node runner checks CPU
+pixels, ordered triangle and point packet modes, reached lifecycle APIs and
+exit status. `node apps/web/tests/webgl-opengl-fixture.mjs` verifies that the
+GPU-only browser path presents both primitives in the expected colors.
 
 Together the fixtures cover primitive assembly, clipping, depth ordering,
 display-list capture/replay, transforms, resize, WGL handle/pixel-format

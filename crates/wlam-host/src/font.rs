@@ -38,6 +38,32 @@ pub fn glyph(byte: u8) -> &'static [u8] {
     let offset = 260 + byte as usize * 256;
     &DATA[offset..offset + 256]
 }
+/// Fallback control layout using the same measured advances as text output.
+pub fn wrap_lines(text: &[u8], width: u32, wrap: bool) -> Vec<Vec<u8>> {
+    let mut lines = Vec::new();
+    for paragraph in text.split(|byte| *byte == b'\n') {
+        let paragraph = paragraph.strip_suffix(b"\r").unwrap_or(paragraph);
+        if !wrap {
+            lines.push(paragraph.to_vec());
+            continue;
+        }
+        let mut line = Vec::new();
+        for word in paragraph
+            .split(|byte| matches!(*byte, b' ' | b'\t'))
+            .filter(|word| !word.is_empty())
+        {
+            if !line.is_empty() && extent(&line).0 + extent(b" ").0 + extent(word).0 > width {
+                lines.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(b' ');
+            }
+            line.extend_from_slice(word);
+        }
+        lines.push(line);
+    }
+    lines
+}
 #[cfg(test)]
 mod tests {
     use super::*;

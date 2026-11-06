@@ -96,7 +96,11 @@ impl Slot {
     /// `0x0000_ff00` and `AX` is `0x0000_ffff`.
     pub fn mask(self) -> u32 {
         let bits = self.width * 8;
-        let full = if bits >= 32 { u32::MAX } else { (1u32 << bits) - 1 };
+        let full = if bits >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << bits) - 1
+        };
         full << (self.offset * 8)
     }
 
@@ -214,7 +218,18 @@ mod tests {
     #[test]
     fn things_outside_the_register_file_are_not_slots() {
         // Each of these holds independent state and must keep its own local.
-        for name in ["CF", "ZF", "PF", "SF", "OF", "EIP", "FS_OFFSET", "ST0", "reg_10a0_2", "ES"] {
+        for name in [
+            "CF",
+            "ZF",
+            "PF",
+            "SF",
+            "OF",
+            "EIP",
+            "FS_OFFSET",
+            "ST0",
+            "reg_10a0_2",
+            "ES",
+        ] {
             assert!(slot_of(name).is_none(), "{name} must not alias a parent");
             assert!(!is_partial(name), "{name} must not be treated as partial");
         }

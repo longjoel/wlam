@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ir::{BinOp, IR, Operand, UnOp};
+use crate::ir::{BinOp, Operand, UnOp, IR};
 
 /// A machine state for interpreting IR: named registers, temps, memory, flags.
 pub struct Machine {
@@ -22,7 +22,11 @@ pub struct Machine {
 
 impl Machine {
     pub fn new(mem_size: usize) -> Self {
-        Machine { regs: BTreeMap::new(), temps: BTreeMap::new(), mem: vec![0; mem_size] }
+        Machine {
+            regs: BTreeMap::new(),
+            temps: BTreeMap::new(),
+            mem: vec![0; mem_size],
+        }
     }
 
     pub fn set(&mut self, reg: &str, value: u64) {
@@ -108,7 +112,13 @@ impl Machine {
                     self.write(dst, v);
                 }
                 IR::Userop { id, .. } => panic!("reference interpreter cannot execute userop {id}"),
-                IR::MicroLoop { head, exit, body, repeat, tail } => {
+                IR::MicroLoop {
+                    head,
+                    exit,
+                    body,
+                    repeat,
+                    tail,
+                } => {
                     let mut iterations = 0u64;
                     loop {
                         self.run(head);
@@ -201,7 +211,9 @@ fn eval_bin(op: BinOp, a: u64, b: u64, size: u32) -> u64 {
         BinOp::LessEqU => ((a & 0xffff_ffff) <= (b & 0xffff_ffff)) as u64,
         BinOp::LessS => (sign_extend(a, 4) < sign_extend(b, 4)) as u64,
         BinOp::LessEqS => (sign_extend(a, 4) <= sign_extend(b, 4)) as u64,
-        BinOp::Carry => (((a & mask(size)) as u128 + (b & mask(size)) as u128) > mask(size) as u128) as u64,
+        BinOp::Carry => {
+            (((a & mask(size)) as u128 + (b & mask(size)) as u128) > mask(size) as u128) as u64
+        }
         BinOp::SCarry => {
             let result = a.wrapping_add(b);
             (((a ^ result) & (b ^ result)) >> (size * 8 - 1)) & 1
@@ -236,9 +248,15 @@ mod tests {
     fn add_wraps_at_32_bits() {
         let ops = vec![IR::Bin {
             op: BinOp::Add,
-            dst: Operand::Reg { name: "EAX".into(), size: 4 },
+            dst: Operand::Reg {
+                name: "EAX".into(),
+                size: 4,
+            },
             operands: Box::new((
-                Operand::Const { value: 0xffff_ffff, size: 4 },
+                Operand::Const {
+                    value: 0xffff_ffff,
+                    size: 4,
+                },
                 Operand::Const { value: 2, size: 4 },
             )),
         }];
@@ -263,13 +281,25 @@ mod tests {
     fn store_then_load_round_trips() {
         let ops = vec![
             IR::Store {
-                addr: Operand::Const { value: 0x100, size: 4 },
-                value: Operand::Const { value: 0x1122_3344, size: 4 },
+                addr: Operand::Const {
+                    value: 0x100,
+                    size: 4,
+                },
+                value: Operand::Const {
+                    value: 0x1122_3344,
+                    size: 4,
+                },
                 size: 4,
             },
             IR::Load {
-                dst: Operand::Reg { name: "EAX".into(), size: 4 },
-                addr: Operand::Const { value: 0x100, size: 4 },
+                dst: Operand::Reg {
+                    name: "EAX".into(),
+                    size: 4,
+                },
+                addr: Operand::Const {
+                    value: 0x100,
+                    size: 4,
+                },
                 size: 4,
             },
         ];

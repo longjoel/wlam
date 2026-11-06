@@ -101,7 +101,8 @@ pub enum GpuOp {
 #[derive(Clone, Debug)]
 pub struct GpuDraw {
     pub state: GpuDrawState,
-    /// Triangle list; every three entries form one assembled primitive.
+    /// OpenGL primitive enum used by the browser draw call.
+    pub primitive: u32,
     pub vertices: Vec<GpuVertex>,
 }
 
@@ -306,25 +307,8 @@ impl Frame {
             }
             if !gpu_vertices.is_empty() {
                 self.gpu_ops.push(GpuOp::Draw(GpuDraw {
-                    state: GpuDrawState {
-                        viewport: state.viewport,
-                        depth_test: state.depth_test,
-                        depth_func: state.depth_func,
-                        cull_face: state.cull_face,
-                        cull_mode: state.cull_mode,
-                        front_ccw: state.front_ccw,
-                        two_sided_lighting: state.two_sided_lighting,
-                        blend: state.blend,
-                        blend_src: state.blend_src,
-                        blend_dst: state.blend_dst,
-                        dither: state.dither,
-                        fog: state.fog,
-                        fog_mode: state.fog_mode,
-                        fog_color: state.fog_color,
-                        fog_density: state.fog_density,
-                        fog_start: state.fog_start,
-                        fog_end: state.fog_end,
-                    },
+                    state: gpu_draw_state(state),
+                    primitive: 0x0004, // GL_TRIANGLES
                     vertices: gpu_vertices,
                 }));
             }
@@ -423,14 +407,51 @@ impl Frame {
     }
 
     fn draw_points(&mut self, state: &State, points: &[Vertex]) {
+        if state.viewport[2] <= 0 || state.viewport[3] <= 0 {
+            return;
+        }
         let transform = state.projection.multiply(state.modelview);
+        if self.gpu_capture {
+            let gpu_vertices = points
+                .iter()
+                .filter_map(|vertex| {
+                    let clip = transform4(transform, vertex.position);
+                    let eye = transform4(state.modelview, vertex.position);
+                    if clip[3] <= 0.0
+                        || !clip.iter().chain(eye.iter()).all(|value| value.is_finite())
+                    {
+                        return None;
+                    }
+                    let color = shade(state, *vertex, eye, false);
+                    Some(GpuVertex {
+                        clip_position: clip,
+                        eye_distance: -eye[2],
+                        front_color: color,
+                        back_color: color,
+                    })
+                })
+                .collect::<Vec<_>>();
+            if !gpu_vertices.is_empty() {
+                self.gpu_ops.push(GpuOp::Draw(GpuDraw {
+                    state: gpu_draw_state(state),
+                    primitive: 0x0000, // GL_POINTS
+                    vertices: gpu_vertices,
+                }));
+            }
+        }
+        if !self.cpu_render {
+            return;
+        }
         for vertex in points {
             let clip = transform4(transform, vertex.position);
             if !clip.iter().all(|x| x.is_finite())
                 || clip[3] <= 0.0
-                || clip[0] < -clip[3] || clip[0] > clip[3]
-                || clip[1] < -clip[3] || clip[1] > clip[3]
-                || clip[2] < -clip[3] || clip[2] > clip[3]
+                || clip[0] < -clip[3]
+                || clip[0] > clip[3]
+                || clip[1] < -clip[3]
+                || clip[1] > clip[3]
+                || clip[2] < -clip[3]
+                || clip[2] > clip[3]
             {
                 continue;
             }
@@ -440,8 +461,7 @@ impl Frame {
                 continue;
             }
             let x = ((vx as f32 + (clip[0] / w + 1.0) * 0.5 * vw as f32).floor()) as i32;
-            let y = (self.height as f32
-                - (vy as f32 + (clip[1] / w + 1.0) * 0.5 * vh as f32))
+            let y = (self.height as f32 - (vy as f32 + (clip[1] / w + 1.0) * 0.5 * vh as f32))
                 .floor() as i32;
             if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
                 continue;
@@ -477,8 +497,12 @@ impl Frame {
             let mut b = clip[1];
             // Homogeneous line clipping against the six canonical planes.
             let distance = |p: [f32; 4], plane: usize| match plane {
-                0 => p[0] + p[3], 1 => p[3] - p[0], 2 => p[1] + p[3],
-                3 => p[3] - p[1], 4 => p[2] + p[3], _ => p[3] - p[2],
+                0 => p[0] + p[3],
+                1 => p[3] - p[0],
+                2 => p[1] + p[3],
+                3 => p[3] - p[1],
+                4 => p[2] + p[3],
+                _ => p[3] - p[2],
             };
             let mut rejected = false;
             for plane in 0..6 {
@@ -491,29 +515,50 @@ impl Frame {
                 if da < 0.0 || db < 0.0 {
                     let t = da / (da - db);
                     let point = a.interpolate(b, t);
-                    if da < 0.0 { a = point; } else { b = point; }
+                    if da < 0.0 {
+                        a = point;
+                    } else {
+                        b = point;
+                    }
                 }
             }
-            if rejected || a.clip[3] <= 0.0 || b.clip[3] <= 0.0 { continue; }
-            let to_screen = |p: LineClipVertex| [
-                vx as f32 + (p.clip[0] / p.clip[3] + 1.0) * 0.5 * vw as f32,
-                self.height as f32 - (vy as f32 + (p.clip[1] / p.clip[3] + 1.0) * 0.5 * vh as f32),
-                p.clip[2] / p.clip[3] * 0.5 + 0.5,
-                1.0 / p.clip[3],
-            ];
+            if rejected || a.clip[3] <= 0.0 || b.clip[3] <= 0.0 {
+                continue;
+            }
+            let to_screen = |p: LineClipVertex| {
+                [
+                    vx as f32 + (p.clip[0] / p.clip[3] + 1.0) * 0.5 * vw as f32,
+                    self.height as f32
+                        - (vy as f32 + (p.clip[1] / p.clip[3] + 1.0) * 0.5 * vh as f32),
+                    p.clip[2] / p.clip[3] * 0.5 + 0.5,
+                    1.0 / p.clip[3],
+                ]
+            };
             let sa = to_screen(a);
             let sb = to_screen(b);
             let steps = (sb[0] - sa[0]).abs().max((sb[1] - sa[1]).abs()).ceil() as i32;
             if steps == 0 {
-                let color = if state.smooth_shading { b.color } else { b.flat_color };
-                self.write_fragment(state, sa[0].floor() as u32, sa[1].floor() as u32, sa[2], color);
+                let color = if state.smooth_shading {
+                    b.color
+                } else {
+                    b.flat_color
+                };
+                self.write_fragment(
+                    state,
+                    sa[0].floor() as u32,
+                    sa[1].floor() as u32,
+                    sa[2],
+                    color,
+                );
                 continue;
             }
             for step in 0..=steps {
                 let t = step as f32 / steps as f32;
                 let x = (sa[0] + (sb[0] - sa[0]) * t).floor() as i32;
                 let y = (sa[1] + (sb[1] - sa[1]) * t).floor() as i32;
-                if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 { continue; }
+                if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+                    continue;
+                }
                 let reciprocal_w = sa[3] + (sb[3] - sa[3]) * t;
                 let c0 = a.color;
                 let c1 = b.color;
@@ -521,7 +566,9 @@ impl Frame {
                     std::array::from_fn(|c| {
                         if reciprocal_w > 1e-20 {
                             (c0[c] * sa[3] * (1.0 - t) + c1[c] * sb[3] * t) / reciprocal_w
-                        } else { 0.0 }
+                        } else {
+                            0.0
+                        }
                     })
                 } else {
                     a.flat_color
@@ -529,13 +576,20 @@ impl Frame {
                 let depth = sa[2] * (1.0 - t) + sb[2] * t;
                 let output = if state.fog {
                     let distance = if reciprocal_w > 1e-20 {
-                        (a.eye_distance * sa[3] * (1.0 - t) + b.eye_distance * sb[3] * t) / reciprocal_w
-                    } else { 0.0 };
+                        (a.eye_distance * sa[3] * (1.0 - t) + b.eye_distance * sb[3] * t)
+                            / reciprocal_w
+                    } else {
+                        0.0
+                    };
                     let factor = fog_factor(state, distance);
                     let mut fogged = color;
-                    for c in 0..3 { fogged[c] = color[c] * factor + state.fog_color[c] * (1.0 - factor); }
+                    for c in 0..3 {
+                        fogged[c] = color[c] * factor + state.fog_color[c] * (1.0 - factor);
+                    }
                     fogged
-                } else { color };
+                } else {
+                    color
+                };
                 self.write_fragment(state, x as u32, y as u32, depth, output);
             }
         }
@@ -547,12 +601,22 @@ impl Frame {
         if state.depth_test && !depth_pass(state.depth_func, f64::from(depth), old_depth) {
             return;
         }
-        if state.depth_test { self.depth[at] = depth32(f64::from(depth)); }
+        if state.depth_test {
+            self.depth[at] = depth32(f64::from(depth));
+        }
         let offset = at * 4;
         let dst = std::array::from_fn(|c| self.rgba[offset + c] as f32 / 255.0);
-        let out = if state.blend { blend(state.blend_src, state.blend_dst, src, dst) } else { src };
+        let out = if state.blend {
+            blend(state.blend_src, state.blend_dst, src, dst)
+        } else {
+            src
+        };
         for c in 0..4 {
-            self.rgba[offset + c] = if state.dither { dithered_byte(out[c], x, y) } else { to_byte(out[c]) };
+            self.rgba[offset + c] = if state.dither {
+                dithered_byte(out[c], x, y)
+            } else {
+                to_byte(out[c])
+            };
         }
     }
 
@@ -685,6 +749,28 @@ impl Frame {
     }
 }
 
+fn gpu_draw_state(state: &State) -> GpuDrawState {
+    GpuDrawState {
+        viewport: state.viewport,
+        depth_test: state.depth_test,
+        depth_func: state.depth_func,
+        cull_face: state.cull_face,
+        cull_mode: state.cull_mode,
+        front_ccw: state.front_ccw,
+        two_sided_lighting: state.two_sided_lighting,
+        blend: state.blend,
+        blend_src: state.blend_src,
+        blend_dst: state.blend_dst,
+        dither: state.dither,
+        fog: state.fog,
+        fog_mode: state.fog_mode,
+        fog_color: state.fog_color,
+        fog_density: state.fog_density,
+        fog_start: state.fog_start,
+        fog_end: state.fog_end,
+    }
+}
+
 /// OpenGL immediate-mode accumulator. Attribute setters update current state;
 /// each vertex captures the values in effect at that call.
 #[derive(Debug)]
@@ -772,15 +858,18 @@ impl Immediate {
     pub fn is_inside_begin(&self) -> bool {
         self.mode.is_some()
     }
-
 }
 
 fn assemble_lines(mode: u32, vertices: &[Vertex]) -> Vec<[Vertex; 2]> {
     match mode {
         0x0001 => vertices.chunks_exact(2).map(|v| [v[0], v[1]]).collect(), // GL_LINES
         0x0002 => {
-            if vertices.len() < 2 { return Vec::new(); }
-            (0..vertices.len()).map(|i| [vertices[i], vertices[(i + 1) % vertices.len()]]).collect()
+            if vertices.len() < 2 {
+                return Vec::new();
+            }
+            (0..vertices.len())
+                .map(|i| [vertices[i], vertices[(i + 1) % vertices.len()]])
+                .collect()
         }
         0x0003 => vertices.windows(2).map(|v| [v[0], v[1]]).collect(), // GL_LINE_STRIP
         _ => Vec::new(),

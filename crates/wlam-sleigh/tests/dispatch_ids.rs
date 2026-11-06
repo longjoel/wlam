@@ -132,7 +132,10 @@ fn a_short_chain_dispatches() {
     let (blocks, regs) = chain(8);
     let prog = partition(&[0x1000], &blocks, &regs);
     let module = build_module(&prog, &blocks).expect("module");
-    assert!(runs_to_completion(&module, &regs), "an 8-block chain must run");
+    assert!(
+        runs_to_completion(&module, &regs),
+        "an 8-block chain must run"
+    );
 }
 
 /// 71 blocks puts the ids well past 64, where unsigned LEB128 is wrong.
@@ -171,6 +174,9 @@ fn an_id_of_64_is_encoded_as_signed_leb128() {
         "id 70 must not appear as -58: that is unsigned LEB128 read as signed"
     );
     for bad in ["i32.const -60", "i32.const -61", "i32.const -62"] {
-        assert!(!text.contains(bad), "found a sign-extended dispatch id: {bad}");
+        assert!(
+            !text.contains(bad),
+            "found a sign-extended dispatch id: {bad}"
+        );
     }
 }

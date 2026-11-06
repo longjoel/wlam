@@ -72,10 +72,13 @@ impl Modules {
                 .unwrap()
                 .exports
                 .insert(name.into(), address);
-            self.imports.insert(address,(dll.to_ascii_lowercase(),name.to_owned()));
+            self.imports
+                .insert(address, (dll.to_ascii_lowercase(), name.to_owned()));
         }
     }
-    pub fn import_at(&self,address:u32)->Option<(String,String)>{self.imports.get(&address).cloned()}
+    pub fn import_at(&self, address: u32) -> Option<(String, String)> {
+        self.imports.get(&address).cloned()
+    }
     pub fn procedure(&self, handle: u32, name: &str) -> Option<u32> {
         self.handles.get(handle)?.exports.get(name).copied()
     }

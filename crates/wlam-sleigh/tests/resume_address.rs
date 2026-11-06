@@ -22,8 +22,8 @@ use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction};
 mod shared;
 
 use wlam_pe::Pe;
-use wlam_sleigh::{with_big_stack, Terminator};
 use wlam_sleigh::discover::discover;
+use wlam_sleigh::{with_big_stack, Terminator};
 
 fn text_of(pe: &Pe) -> &[u8] {
     let idx = pe
@@ -75,7 +75,9 @@ fn covered_by_a_checked_block(image: &str) -> Option<bool> {
     };
     for (call, next) in calls {
         let rva = (call - base) as u32;
-        let Some(i) = pe.section_of(rva) else { continue };
+        let Some(i) = pe.section_of(rva) else {
+            continue;
+        };
         let sec = &pe.sections[i];
         let off = (rva - sec.virtual_address) as usize;
         let slice = sec.data[off..].to_vec();
@@ -109,7 +111,9 @@ fn check(image: &str) -> Option<(usize, Vec<String>, Vec<u64>)> {
         }
         // Re-lift: the discovered block does not keep its lifted form.
         let rva = (block.start - base) as u32;
-        let Some(i) = pe.section_of(rva) else { continue };
+        let Some(i) = pe.section_of(rva) else {
+            continue;
+        };
         let sec = &pe.sections[i];
         let off = (rva - sec.virtual_address) as usize;
         let slice = sec.data[off..].to_vec();
@@ -118,14 +122,24 @@ fn check(image: &str) -> Option<(usize, Vec<String>, Vec<u64>)> {
         let Terminator::CallInd { resume } = lifted.terminator else {
             continue;
         };
-        let expected = calls.iter().find(|(a, _)| *a == block.start).map(|(_, n)| *n).unwrap();
+        let expected = calls
+            .iter()
+            .find(|(a, _)| *a == block.start)
+            .map(|(_, n)| *n)
+            .unwrap();
         checked += 1;
         why_checked.push(block.start);
         if std::env::var("RESUME_TRACE").is_ok() {
-            println!("RESUME {:#x} -> {resume:#x} (expected {expected:#x})", block.start);
+            println!(
+                "RESUME {:#x} -> {resume:#x} (expected {expected:#x})",
+                block.start
+            );
         }
         if resume != expected {
-            bad.push(format!("{:#x}: resume {resume:#x}, next instruction is {expected:#x}", block.start));
+            bad.push(format!(
+                "{:#x}: resume {resume:#x}, next instruction is {expected:#x}",
+                block.start
+            ));
         }
     }
     Some((checked, bad, why_checked))
@@ -133,8 +147,13 @@ fn check(image: &str) -> Option<(usize, Vec<String>, Vec<u64>)> {
 
 #[test]
 fn indirect_calls_resume_at_the_next_instruction_uxn32() {
-    let Some((checked, bad, why_checked)) = check("../../north-star/bin/Uxn32.exe") else { return };
-    assert!(checked > 0, "the image has indirect calls; the check must find some");
+    let Some((checked, bad, why_checked)) = check("../../north-star/bin/Uxn32.exe") else {
+        return;
+    };
+    assert!(
+        checked > 0,
+        "the image has indirect calls; the check must find some"
+    );
     // Pin the one that exposed the bug: the entry point's `GetVersion` call
     // at 0x40ccd8 is the first indirect call the guest executes, so the sweep
     // above must actually have looked at it. Without this assertion the whole
@@ -152,14 +171,27 @@ fn indirect_calls_resume_at_the_next_instruction_uxn32() {
     }
     let all_start = covered_by_a_checked_block("../../north-star/bin/Uxn32.exe").unwrap_or(true);
     assert!(all_start, "no checked block contains 0x40ccd8");
-    assert!(bad.is_empty(), "{} of {checked} indirect calls resume at the wrong place: {:?}", bad.len(), &bad[..bad.len().min(8)]);
+    assert!(
+        bad.is_empty(),
+        "{} of {checked} indirect calls resume at the wrong place: {:?}",
+        bad.len(),
+        &bad[..bad.len().min(8)]
+    );
 }
 
 #[test]
 fn indirect_calls_resume_at_the_next_instruction_minesweeper() {
-    let Some((checked, bad, _)) = check("../../benchmarks/minesweeper/bin/minesweeper-x86.exe") else { return };
+    let Some((checked, bad, _)) = check("../../benchmarks/minesweeper/bin/minesweeper-x86.exe")
+    else {
+        return;
+    };
     assert!(checked > 0);
-    assert!(bad.is_empty(), "{} of {checked}: {:?}", bad.len(), &bad[..bad.len().min(8)]);
+    assert!(
+        bad.is_empty(),
+        "{} of {checked}: {:?}",
+        bad.len(),
+        &bad[..bad.len().min(8)]
+    );
 }
 
 #[test]
@@ -175,10 +207,22 @@ fn the_code_bytes_really_do_put_the_displacement_there() {
     let text = text_of(&pe);
     // `text_of` is the section's bytes; convert the RVA to a file offset.
     let call_off = (0xccd8 - 0x1000) as usize;
-    assert_eq!(&text[call_off..call_off + 6], &[0xff, 0x15, 0x6c, 0x10, 0x41, 0x00]);
+    assert_eq!(
+        &text[call_off..call_off + 6],
+        &[0xff, 0x15, 0x6c, 0x10, 0x41, 0x00]
+    );
     let next_off = call_off + 6;
-    let mut d = Decoder::with_ip(32, &text[next_off..next_off + 8], 0x40ccde, DecoderOptions::NONE);
+    let mut d = Decoder::with_ip(
+        32,
+        &text[next_off..next_off + 8],
+        0x40ccde,
+        DecoderOptions::NONE,
+    );
     let insn = d.decode();
     assert!(!insn.is_invalid());
-    assert_ne!(insn.ip(), 0x40cd0e, "0x40cd0e must not be an instruction boundary");
+    assert_ne!(
+        insn.ip(),
+        0x40cd0e,
+        "0x40cd0e must not be an instruction boundary"
+    );
 }

@@ -77,12 +77,19 @@ fn clipped_overlap_survives_resize_with_depth_ordering() {
 
 #[test]
 fn gpu_capture_preserves_ordered_clears_and_per_draw_state() {
-    let mut state = State { viewport: [0, 0, 32, 24], dither: false, ..State::default() };
+    let mut state = State {
+        viewport: [0, 0, 32, 24],
+        dither: false,
+        ..State::default()
+    };
     let mut frame = Frame::new(32, 24, &state).unwrap();
     assert!(frame.take_gpu_ops().is_empty());
     frame.set_gpu_capture(true);
     frame.clear(&state, 0x0000_4100);
-    assert!(matches!(frame.take_gpu_ops().as_slice(), [wlam_host::gl_renderer::GpuOp::Clear { .. }]));
+    assert!(matches!(
+        frame.take_gpu_ops().as_slice(),
+        [wlam_host::gl_renderer::GpuOp::Clear { .. }]
+    ));
 
     let mut immediate = Immediate::default();
     immediate.begin(0x0004).unwrap();
@@ -130,18 +137,23 @@ fn gpu_only_clear_records_work_without_touching_cpu_surfaces() {
 
     assert_eq!(frame.rgba, color_before);
     assert_eq!(frame.depth, depth_before);
-    assert!(matches!(frame.take_gpu_ops().as_slice(), [
-        wlam_host::gl_renderer::GpuOp::Clear {
+    assert!(matches!(
+        frame.take_gpu_ops().as_slice(),
+        [wlam_host::gl_renderer::GpuOp::Clear {
             mask: 0x0000_4100,
             color: [0.5, 0.5, 0.5, 0.0],
             depth: 0.25,
-        }
-    ]));
+        }]
+    ));
 }
 
 #[test]
 fn point_and_line_primitive_modes_render_clipped_samples() {
-    let state = State { viewport: [0, 0, 32, 32], dither: false, ..State::default() };
+    let state = State {
+        viewport: [0, 0, 32, 32],
+        dither: false,
+        ..State::default()
+    };
     let mut frame = Frame::new(32, 32, &state).unwrap();
     let mut immediate = Immediate::default();
 
@@ -159,8 +171,10 @@ fn point_and_line_primitive_modes_render_clipped_samples() {
     immediate.vertex3f([0.0, 0.0, -0.5]).unwrap();
     immediate.end(&state, &mut frame).unwrap();
     let clipped = pixel(&frame, 0, 16);
-    assert!(clipped[0] > 140 && clipped[2] < 120,
-        "clipped line endpoint keeps interpolated color: {clipped:?}");
+    assert!(
+        clipped[0] > 140 && clipped[2] < 120,
+        "clipped line endpoint keeps interpolated color: {clipped:?}"
+    );
 
     immediate.begin(0x0003).unwrap(); // GL_LINE_STRIP
     immediate.color3ub([0, 0, 255]);
@@ -176,17 +190,26 @@ fn point_and_line_primitive_modes_render_clipped_samples() {
         immediate.vertex3f(point).unwrap();
     }
     immediate.end(&state, &mut frame).unwrap();
-    assert!(frame.rgba.chunks_exact(4).any(|p| p[0] > 200 && p[1] > 200 && p[2] < 20));
+    assert!(frame
+        .rgba
+        .chunks_exact(4)
+        .any(|p| p[0] > 200 && p[1] > 200 && p[2] < 20));
 
-    let flat_state = State { smooth_shading: false, ..state };
+    let flat_state = State {
+        smooth_shading: false,
+        ..state
+    };
     immediate.begin(0x0001).unwrap();
     immediate.color3ub([255, 0, 0]);
     immediate.vertex3f([-0.5, 0.5, 0.0]).unwrap();
     immediate.color3ub([0, 0, 255]);
     immediate.vertex3f([0.5, 0.5, 0.0]).unwrap();
     immediate.end(&flat_state, &mut frame).unwrap();
-    assert_eq!(pixel(&frame, 16, 8), [0, 0, 255, 255],
-        "flat-shaded lines use their second vertex color");
+    assert_eq!(
+        pixel(&frame, 16, 8),
+        [0, 0, 255, 255],
+        "flat-shaded lines use their second vertex color"
+    );
 }
 
 fn gl_call(
@@ -482,7 +505,13 @@ fn display_lists_can_nest_and_be_called_inside_begin_end() {
     gl_call(&mut gl, &gdi, &mut memory, "glColor3ubv", &[0]);
     gl_call(&mut gl, &gdi, &mut memory, "glEndList", &[]);
 
-    gl_call(&mut gl, &gdi, &mut memory, "glNewList", &[first + 1, 0x1300]);
+    gl_call(
+        &mut gl,
+        &gdi,
+        &mut memory,
+        "glNewList",
+        &[first + 1, 0x1300],
+    );
     gl_call(&mut gl, &gdi, &mut memory, "glCallList", &[first]);
     gl_call(&mut gl, &gdi, &mut memory, "glEndList", &[]);
 
@@ -508,14 +537,32 @@ fn begin_end_legality_preserves_vertex_attributes_and_rejects_state_changes() {
 
     gl_call(&mut gl, &gdi, &mut memory, "glBegin", &[0x0004]);
     gl_call(&mut gl, &gdi, &mut memory, "glColor3ubv", &[32]);
-    gl_call(&mut gl, &gdi, &mut memory, "glVertex3f", &bits([-0.8, -0.8, 0.0]));
+    gl_call(
+        &mut gl,
+        &gdi,
+        &mut memory,
+        "glVertex3f",
+        &bits([-0.8, -0.8, 0.0]),
+    );
     // glClear is not legal between glBegin and glEnd and must not execute.
     gl_call(&mut gl, &gdi, &mut memory, "glClear", &[0x0000_4000]);
 
     // The invalid command is ignored; legal vertex commands that follow still
     // complete the active primitive, and glEnd does not add a second error.
-    gl_call(&mut gl, &gdi, &mut memory, "glVertex3f", &bits([0.8, -0.8, 0.0]));
-    gl_call(&mut gl, &gdi, &mut memory, "glVertex3f", &bits([0.0, 0.8, 0.0]));
+    gl_call(
+        &mut gl,
+        &gdi,
+        &mut memory,
+        "glVertex3f",
+        &bits([0.8, -0.8, 0.0]),
+    );
+    gl_call(
+        &mut gl,
+        &gdi,
+        &mut memory,
+        "glVertex3f",
+        &bits([0.0, 0.8, 0.0]),
+    );
     gl_call(&mut gl, &gdi, &mut memory, "glEnd", &[]);
     gl.present(1, 7, &mut gdi).unwrap();
     assert_eq!(presented_pixel(&gdi, 16, 12), [255, 0, 0, 255]);
@@ -561,7 +608,13 @@ fn negative_viewport_dimensions_report_invalid_value_and_keep_previous_viewport(
     let mut memory = GuestMemory::new(&mut bytes);
 
     gl_call(&mut gl, &gdi, &mut memory, "glViewport", &[2, 3, 20, 18]);
-    gl_call(&mut gl, &gdi, &mut memory, "glViewport", &[0, 0, u32::MAX, 12]);
+    gl_call(
+        &mut gl,
+        &gdi,
+        &mut memory,
+        "glViewport",
+        &[0, 0, u32::MAX, 12],
+    );
     assert_eq!(gl.take_error(1), 0x0501);
 
     // If the rejected viewport had been stored, this small triangle would

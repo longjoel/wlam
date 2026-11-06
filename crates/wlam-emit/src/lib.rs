@@ -22,14 +22,16 @@ pub mod translate;
 
 pub use ir::{BinOp, Operand, UnOp, IR};
 
+pub use translate::{
+    module_with_snapshot, snapshot_address, translate_ops, LocalMap, TranslateError,
+    TranslatedBlock, REG_SNAPSHOT_BASE,
+};
 /// Resolve an x86-32 register name to its byte window in the register file.
 ///
 /// Re-exported from `wlam-pcode::regfile` so the emitter and the lifter agree on
 /// which byte of which parent a name like `AH` refers to.
-pub use wlam_pcode::regfile::{is_partial, slot_of as regfile_slot, Parent as RegParent, Slot as RegSlot};
-pub use translate::{
-    module_with_snapshot, translate_ops, LocalMap, TranslateError, TranslatedBlock,
-    REG_SNAPSHOT_BASE, snapshot_address,
+pub use wlam_pcode::regfile::{
+    is_partial, slot_of as regfile_slot, Parent as RegParent, Slot as RegSlot,
 };
 
 pub use encode::{leb_s32, leb_u32, module_header, section_id, Encoder, SectionKind};

@@ -55,7 +55,10 @@ fn build_uxn32() -> Option<(Vec<u8>, &'static str)> {
                 base + i.iat_rva as u64,
                 HostImport {
                     library: i.library.clone(),
-                    name: i.name.clone().unwrap_or_else(|| format!("#{}", i.ordinal.unwrap_or(0))),
+                    name: i
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| format!("#{}", i.ordinal.unwrap_or(0))),
                 },
             )
         })
@@ -64,7 +67,9 @@ fn build_uxn32() -> Option<(Vec<u8>, &'static str)> {
     let mut blocks: BTreeMap<u64, eir::Block> = BTreeMap::new();
     for b in prog.blocks() {
         let rva = (b.start - base) as u32;
-        let Some(idx) = pe.section_of(rva) else { continue };
+        let Some(idx) = pe.section_of(rva) else {
+            continue;
+        };
         let sec = &pe.sections[idx];
         let off = (rva - sec.virtual_address) as usize;
         if off >= sec.data.len() {
@@ -119,7 +124,8 @@ type Linked = (
 );
 
 fn run_with_image(module: &[u8], host: Arc<Mutex<Host>>) -> Result<Linked, String> {
-    let (mut store, instance) = instantiate(module, Arc::clone(&host)).map_err(|e| e.to_string())?;
+    let (mut store, instance) =
+        instantiate(module, Arc::clone(&host)).map_err(|e| e.to_string())?;
     let pe = Pe::parse(&std::fs::read("../../north-star/bin/Uxn32.exe").unwrap()).unwrap();
     let mem = instance.get_memory(&mut store, "memory").unwrap();
     let data = mem.data_mut(&mut store);
@@ -154,7 +160,10 @@ fn the_guest_stores_the_version_the_host_reported() {
     // Sanity: the image really is mapped. If this fails, every check below is
     // meaningless, so report it as itself rather than as a version mismatch.
     let text_head = peek(&mem, 0x401000);
-    assert_ne!(text_head, 0, "the image's .text was not mapped into guest memory");
+    assert_ne!(
+        text_head, 0,
+        "the image's .text was not mapped into guest memory"
+    );
 
     let major = peek(&mem, MAJOR_SLOT);
     let minor = peek(&mem, MINOR_SLOT);
@@ -180,7 +189,9 @@ fn the_guest_stores_the_version_the_host_reported() {
 fn memory_covers_the_image_so_absolute_addresses_work() {
     // Without this the guest's first store to 0x415b80 traps out of bounds,
     // which is indistinguishable from a GetVersion that returned nothing.
-    let Some((module, _)) = build_uxn32() else { return };
+    let Some((module, _)) = build_uxn32() else {
+        return;
+    };
     use wlam_harness::instantiate as link;
     let host = Arc::new(Mutex::new(Host::new()));
     let (mut store, instance) = link(&module, host).expect("link");

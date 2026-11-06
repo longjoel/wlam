@@ -53,13 +53,40 @@ Chromium now confirms that startup reaches input waiting without an error,
 but the final 420×297 client surface is black. The page forwards F1–F12, and
 the host translates the original accelerator resource into synchronous
 WM_COMMAND callbacks. Focus the canvas and press **F2** to enter Start Game.
-This reaches game reset and the loading/progress paint path; it currently
-stops at unsupported `GDI32!SetTextColor` (white text on a window DC).
+This reaches game reset, paints progress text, and enters maze/object
+processing, then reaches dialog initialization. `CheckDlgButton` and
+`CheckRadioButton` now operate on dialog controls. The ANSI case-conversion
+group, window-state queries, and EnableWindow now execute. SetTextColor and
+ExtTextOutA also execute; ExtTextOutA's eight-argument ABI required rebuilding
+the guest to preserve stack cleanup.
 The preceding zero-ID multimedia timer cancellation, current-thread priority
 change, whole-window immediate redraw, and stock default palette lookup now
 execute. Nonzero multimedia timers remain unsupported. Redraw covers whole
 windows with invalidation and immediate erase/paint, with other flags refused.
 Menus are not yet displayed by the browser runner.
+
+The browser acceptance flow now dismisses Quick Help and recovers presentation
+from the destroyed owned dialog HWND back to Hover's main window. Sending F2
+again opens the expected “quit the game in progress?” prompt; choosing No
+returns to a 420×297 waiting surface without a guest error. That surface is
+still black, and an ArrowUp input has not yet produced visible pixels. This
+proves the dialog/input path, not gameplay rendering. Startup tracing observes
+one initial BitBlt and the help text's ExtTextOutA calls, but no subsequent
+gameplay GDI transfers. A fresh trace shows the F2 command creating the game
+shell and showing Quick Help (dialog resource 115), which returns IDOK, but the
+level-reset path that starts the game clock is never entered; the main loop
+only polls afterward. `timeSetEvent` is implemented now, but still has not been
+called. `ShowCursor` and a NULL-target `RedrawWindow` (desktop redraw) also
+execute instead of refusing.
+
+The game GDI foundation and portable behavior harness are documented in
+[`docs/game-gdi.md`](../../docs/game-gdi.md) and
+[`fixtures/gdi/README.md`](../../fixtures/gdi/README.md). The portable fixture
+currently passes 190 local observations, including four stretch modes and
+initial line/rectangle/pixel operations. Its same-DC four-mode reduction follows
+[Microsoft's scaling sample](https://learn.microsoft.com/en-us/windows/win32/gdi/scaling-an-image).
+Native Windows comparison remains outstanding. HALFTONE driver dithering is
+not yet reproduced.
 
 The host advertises an i486 instruction profile, a 640×480 8-bit display for Hover,
 and memory capacity derived from the guest linear memory. This is a virtual
@@ -71,10 +98,14 @@ Hover's asset packer sets `display.bitsPerPixel` to 8 in its manifest. Other
 bundles retain the default 32-bit profile. The indexed profile reports
 RC_PALETTE, 256 system palette entries and 20 reserved colors. Palette
 realization updates the available system entries while preserving the first
-and last ten static colors. Indexed RGB DIBs decode through their own RGBQUAD
-tables to the browser's RGBA canvas. Black/white PatBlt operations work on
-window DCs and indexed DIBs. This does not establish full palette animation,
-palette-change notifications, or DIB_PAL_COLORS support.
+and last ten static colors. Before application realization, those 236 slots
+use a deterministic 6×6×6 color cube and 20 gray levels. This is a practical
+virtual display profile, not a capture of a particular Windows 95 driver.
+Indexed RGB DIBs decode through their own RGBQUAD
+tables; final 8-bit window frames map colors through the realized system
+palette before reaching the browser's RGBA canvas. Black/white PatBlt operations
+work on window DCs and indexed DIBs. This does not establish full palette
+animation, palette-change notifications, or DIB_PAL_COLORS support.
 
 The current compiler handles recovered function pointers and jump tables,
 computed IAT calls, guest callbacks and instruction-scoped temporary values.
@@ -96,6 +127,8 @@ remain external; their loading and initialization are not yet implemented.
 node apps/web/tests/probe-worker.mjs target/hover/bundle
 # Chromium diagnostic; requires Playwright and the local server:
 WLAM_PROBE_MANIFEST=/target/hover/bundle/manifest.json node apps/web/tests/probe.mjs
+# Browser regression for Quick Help close, modal return and arrow input:
+WLAM_PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs node apps/web/tests/hover-start.mjs
 # Enter Start Game using the original F2 accelerator:
 WLAM_PROBE_KEY=F2 node apps/web/tests/probe.mjs
 # Require startup without the display warning:

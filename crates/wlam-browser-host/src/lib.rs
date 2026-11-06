@@ -55,7 +55,10 @@ impl MemoryAccess for Memory {
 const APIS: &[(&str, &str)] = &[
     ("USER32.dll", "LoadStringA"),
     ("KERNEL32.dll", "lstrlenA"),
+    ("KERNEL32.dll", "lstrlenW"),
     ("KERNEL32.dll", "lstrcpyA"),
+    ("KERNEL32.dll", "lstrcpyW"),
+    ("KERNEL32.dll", "lstrcatW"),
     ("KERNEL32.dll", "lstrcatA"),
     ("USER32.dll", "GetWindowLongA"),
     ("USER32.dll", "SetWindowLongA"),
@@ -64,6 +67,7 @@ const APIS: &[(&str, &str)] = &[
     ("USER32.dll", "GetWindowRect"),
     ("USER32.dll", "GetForegroundWindow"),
     ("USER32.dll", "SetFocus"),
+    ("USER32.dll", "GetFocus"),
     ("USER32.dll", "GetClassNameA"),
     ("USER32.dll", "wsprintfA"),
     ("USER32.dll", "CallNextHookEx"),
@@ -90,11 +94,59 @@ const APIS: &[(&str, &str)] = &[
     ("USER32.dll", "RegisterWindowMessageA"),
     ("USER32.dll", "LoadCursorA"),
     ("USER32.dll", "SetCursor"),
+    ("USER32.dll", "ShowCursor"),
+    ("WINMM.dll", "timeSetEvent"),
     ("GDI32.dll", "CreatePen"),
+    ("GDI32.dll", "CreatePenIndirect"),
+    ("GDI32.dll", "ExtCreatePen"),
     ("USER32.dll", "GetSysColor"),
     ("GDI32.dll", "CreateSolidBrush"),
+    ("GDI32.dll", "CreateHatchBrush"),
+    ("GDI32.dll", "CreatePatternBrush"),
+    ("GDI32.dll", "CreateBrushIndirect"),
+    ("GDI32.dll", "CreateDIBPatternBrushPt"),
+    ("GDI32.dll", "FillRect"),
     ("GDI32.dll", "GetTextExtentPointA"),
+    ("GDI32.dll", "GetTextExtentPoint32A"),
     ("GDI32.dll", "GetTextMetricsA"),
+    ("GDI32.dll", "GdiFlush"),
+    ("GDI32.dll", "UnrealizeObject"),
+    ("GDI32.dll", "GetTextFaceA"),
+    ("GDI32.dll", "GetCharWidthA"),
+    ("GDI32.dll", "SetTextCharacterExtra"),
+    ("GDI32.dll", "GetTextCharacterExtra"),
+    ("GDI32.dll", "SetMapperFlags"),
+    ("GDI32.dll", "GetMapperFlags"),
+    ("GDI32.dll", "SetPolyFillMode"),
+    ("GDI32.dll", "GetPolyFillMode"),
+    ("GDI32.dll", "GetObjectType"),
+    ("GDI32.dll", "GetCurrentObject"),
+    ("GDI32.dll", "GetObjectA"),
+    ("GDI32.dll", "GetObjectW"),
+    ("GDI32.dll", "GetNearestColor"),
+    ("GDI32.dll", "CreateCompatibleBitmap"),
+    ("GDI32.dll", "CreateDiscardableBitmap"),
+    ("GDI32.dll", "CreateBitmapIndirect"),
+    ("GDI32.dll", "CreateBitmap"),
+    ("GDI32.dll", "CreateDCA"),
+    ("GDI32.dll", "CreateDCW"),
+    ("USER32.dll", "EnumDisplayDevicesA"),
+    ("USER32.dll", "EnumDisplayDevicesW"),
+    ("USER32.dll", "EnumDisplaySettingsA"),
+    ("USER32.dll", "EnumDisplayMonitors"),
+    ("USER32.dll", "UnregisterClassA"),
+    ("USER32.dll", "UnregisterClassW"),
+    ("GDI32.dll", "GetBitmapBits"),
+    ("GDI32.dll", "SetBitmapBits"),
+    ("GDI32.dll", "GetDIBits"),
+    ("GDI32.dll", "SetDIBits"),
+    ("GDI32.dll", "GetDIBColorTable"),
+    ("GDI32.dll", "SetDIBColorTable"),
+    ("GDI32.dll", "SetDIBitsToDevice"),
+    ("KERNEL32.dll", "VirtualQuery"),
+    ("KERNEL32.dll", "GetTempFileNameA"),
+    ("KERNEL32.dll", "DeleteFileA"),
+    ("KERNEL32.dll", "DeleteFileW"),
     ("GDI32.dll", "CreateFontIndirectA"),
     ("USER32.dll", "GetDC"),
     ("USER32.dll", "GetWindowDC"),
@@ -154,6 +206,14 @@ const APIS: &[(&str, &str)] = &[
     ("KERNEL32.dll", "GlobalAddAtomA"),
     ("KERNEL32.dll", "GlobalDeleteAtom"),
     ("KERNEL32.dll", "GlobalGetAtomNameA"),
+    ("KERNEL32.dll", "GlobalAlloc"),
+    ("KERNEL32.dll", "GlobalFree"),
+    ("KERNEL32.dll", "GlobalLock"),
+    ("KERNEL32.dll", "GlobalUnlock"),
+    ("KERNEL32.dll", "GlobalFlags"),
+    ("KERNEL32.dll", "GlobalHandle"),
+    ("KERNEL32.dll", "LocalAlloc"),
+    ("KERNEL32.dll", "LocalFree"),
     ("KERNEL32.dll", "GetSystemInfo"),
     ("KERNEL32.dll", "GlobalMemoryStatus"),
     ("KERNEL32.dll", "CreateEventA"),
@@ -215,6 +275,7 @@ const APIS: &[(&str, &str)] = &[
     ("USER32.dll", "PostMessageA"),
     ("KERNEL32.dll", "GetModuleHandleA"),
     ("KERNEL32.dll", "GetPrivateProfileIntA"),
+    ("KERNEL32.dll", "GetPrivateProfileStringA"),
     ("KERNEL32.dll", "GetCurrentDirectoryA"),
     ("KERNEL32.dll", "OpenFile"),
     ("KERNEL32.dll", "CreateFileA"),
@@ -225,8 +286,59 @@ const APIS: &[(&str, &str)] = &[
     ("ADVAPI32.dll", "RegOpenKeyExA"),
     ("ADVAPI32.dll", "RegOpenKeyA"),
     ("ADVAPI32.dll", "RegCloseKey"),
+    ("ADVAPI32.dll", "RegCreateKeyExA"),
+    ("ADVAPI32.dll", "RegQueryValueExA"),
+    ("ADVAPI32.dll", "RegSetValueExA"),
+    ("ADVAPI32.dll", "RegDeleteKeyA"),
+    ("ADVAPI32.dll", "RegDeleteValueA"),
+    ("ADVAPI32.dll", "RegQueryValueA"),
+    ("USER32.dll", "GetPropA"),
+    ("USER32.dll", "SetPropA"),
+    ("USER32.dll", "RemovePropA"),
+    ("KERNEL32.dll", "IsWow64Process"),
     ("KERNEL32.dll", "GetLocalTime"),
     ("KERNEL32.dll", "GetTimeZoneInformation"),
+    ("MSVCRT.dll", "_adjust_fdiv"),
+    ("MSVCRT.dll", "__set_app_type"),
+    ("MSVCRT.dll", "_controlfp"),
+    ("MSVCRT.dll", "_control87"),
+    ("MSVCRT.dll", "__p__acmdln"),
+    ("MSVCRT.dll", "__p__commode"),
+    ("MSVCRT.dll", "__p__fmode"),
+    ("MSVCRT.dll", "__getmainargs"),
+    ("MSVCRT.dll", "_initterm"),
+    ("MSVCRT.dll", "_onexit"),
+    ("MSVCRT.dll", "atexit"),
+    ("MSVCRT.dll", "__dllonexit"),
+    ("MSVCRT.dll", "exit"),
+    ("MSVCRT.dll", "_exit"),
+    ("MSVCRT.dll", "_XcptFilter"),
+    ("MSVCRT.dll", "__CxxFrameHandler"),
+    ("MSVCRT.dll", "_except_handler3"),
+    ("MSVCRT.dll", "??2@YAPAXI@Z"),
+    ("MSVCRT.dll", "??3@YAXPAX@Z"),
+    ("MSVCRT.dll", "?set_terminate@@YAP6AXXZP6AXXZ@Z"),
+    ("MSVCRT.dll", "?terminate@@YAXXZ"),
+    ("MSVCRT.dll", "abort"),
+    ("MSVCRT.dll", "malloc"),
+    ("MSVCRT.dll", "free"),
+    ("MSVCRT.dll", "calloc"),
+    ("MSVCRT.dll", "realloc"),
+    ("MSVCRT.dll", "memset"),
+    ("MSVCRT.dll", "memcpy"),
+    ("MSVCRT.dll", "memmove"),
+    ("MSVCRT.dll", "memcmp"),
+    ("MSVCRT.dll", "strlen"),
+    ("MSVCRT.dll", "strcpy"),
+    ("MSVCRT.dll", "strcmp"),
+    ("MSVCRT.dll", "strncmp"),
+    ("MSVCRT.dll", "strchr"),
+    ("MSVCRT.dll", "strrchr"),
+    ("MSVCRT.dll", "atoi"),
+    ("MSVCRT.dll", "abs"),
+    ("KERNEL32.dll", "FileTimeToLocalFileTime"),
+    ("KERNEL32.dll", "FileTimeToDosDateTime"),
+    ("KERNEL32.dll", "GetWindowsDirectoryA"),
     ("KERNEL32.dll", "GetLastError"),
     ("KERNEL32.dll", "SetLastError"),
     ("KERNEL32.dll", "ExitProcess"),
@@ -252,6 +364,13 @@ const APIS: &[(&str, &str)] = &[
     ("USER32.dll", "BringWindowToTop"),
     ("USER32.dll", "GetLastActivePopup"),
     ("USER32.dll", "IsWindowVisible"),
+    ("USER32.dll", "IsWindow"),
+    ("USER32.dll", "IsIconic"),
+    ("USER32.dll", "IsZoomed"),
+    ("USER32.dll", "CheckDlgButton"),
+    ("USER32.dll", "IsDlgButtonChecked"),
+    ("USER32.dll", "CheckRadioButton"),
+    ("USER32.dll", "EnableWindow"),
     ("USER32.dll", "IsWindowEnabled"),
     ("USER32.dll", "DefWindowProcA"),
     ("USER32.dll", "PostQuitMessage"),
@@ -273,10 +392,63 @@ const APIS: &[(&str, &str)] = &[
     ("GDI32.dll", "GetTextAlign"),
     ("GDI32.dll", "GetStretchBltMode"),
     ("GDI32.dll", "GetROP2"),
+    ("GDI32.dll", "GetMapMode"),
+    ("GDI32.dll", "GetMiterLimit"),
+    ("GDI32.dll", "SetMiterLimit"),
+    ("GDI32.dll", "CreateRectRgn"),
+    ("GDI32.dll", "CreateRectRgnIndirect"),
+    ("GDI32.dll", "SetRectRgn"),
+    ("GDI32.dll", "GetRgnBox"),
+    ("GDI32.dll", "GetRegionData"),
+    ("GDI32.dll", "GetClipRgn"),
+    ("GDI32.dll", "GetBoundsRect"),
+    ("GDI32.dll", "GetDeviceGammaRamp"),
+    ("GDI32.dll", "ResetDCA"),
+    ("GDI32.dll", "CreateEnhMetaFileA"),
+    ("GDI32.dll", "CreateEnhMetaFileW"),
+    ("GDI32.dll", "CreateMetaFileA"),
+    ("GDI32.dll", "CreateMetaFileW"),
+    ("GDI32.dll", "CloseEnhMetaFile"),
+    ("GDI32.dll", "CloseMetaFile"),
+    ("GDI32.dll", "DeleteEnhMetaFile"),
+    ("GDI32.dll", "DeleteMetaFile"),
+    ("GDI32.dll", "ResetDCW"),
+    ("GDI32.dll", "SetDeviceGammaRamp"),
+    ("GDI32.dll", "SetBoundsRect"),
+    ("GDI32.dll", "SelectClipRgn"),
+    ("GDI32.dll", "SetMapMode"),
+    ("GDI32.dll", "GetViewportExtEx"),
+    ("GDI32.dll", "GetViewportOrgEx"),
+    ("GDI32.dll", "GetWindowExtEx"),
+    ("GDI32.dll", "GetWindowOrgEx"),
+    ("GDI32.dll", "SetViewportExtEx"),
+    ("GDI32.dll", "SetViewportOrgEx"),
+    ("GDI32.dll", "SetWindowExtEx"),
+    ("GDI32.dll", "SetWindowOrgEx"),
+    ("GDI32.dll", "OffsetViewportOrgEx"),
+    ("GDI32.dll", "OffsetWindowOrgEx"),
+    ("GDI32.dll", "SetLayout"),
+    ("GDI32.dll", "GetLayout"),
     ("GDI32.dll", "IntersectClipRect"),
     ("GDI32.dll", "GetClipBox"),
     ("GDI32.dll", "TextOutA"),
     ("GDI32.dll", "ExtTextOutA"),
+    ("USER32.dll", "CharUpperA"),
+    ("USER32.dll", "CharLowerA"),
+    ("USER32.dll", "CharUpperBuffA"),
+    ("USER32.dll", "CharLowerBuffA"),
+    ("GDI32.dll", "MoveToEx"),
+    ("GDI32.dll", "GetCurrentPositionEx"),
+    ("GDI32.dll", "LineTo"),
+    ("GDI32.dll", "Rectangle"),
+    ("GDI32.dll", "GetPixel"),
+    ("GDI32.dll", "SetPixel"),
+    ("GDI32.dll", "SetPixelV"),
+    ("GDI32.dll", "StretchBlt"),
+    ("GDI32.dll", "StretchDIBits"),
+    ("GDI32.dll", "SetBrushOrgEx"),
+    ("GDI32.dll", "FixBrushOrgEx"),
+    ("GDI32.dll", "GetBrushOrgEx"),
     ("GDI32.dll", "PatBlt"),
     ("USER32.dll", "SendMessageA"),
     ("USER32.dll", "DispatchMessageA"),
@@ -294,6 +466,7 @@ const APIS: &[(&str, &str)] = &[
     ("GDI32.dll", "GetNearestPaletteIndex"),
     ("GDI32.dll", "GetSystemPaletteEntries"),
     ("GDI32.dll", "CreateDIBSection"),
+    ("GDI32.dll", "CreateDIBitmap"),
     ("GDI32.dll", "GetStockObject"),
     ("WINMM.dll", "waveOutGetNumDevs"),
     ("WINMM.dll", "midiOutGetNumDevs"),
@@ -330,6 +503,7 @@ fn kind(state: &Bridge) -> u32 {
         Effect::Wait => 2,
         Effect::Exit(_) => 3,
         Effect::MessageBox { .. } => 5,
+        Effect::Retry => 6,
     }
 }
 #[no_mangle]
@@ -350,10 +524,15 @@ pub extern "C" fn initialize(image_base: u32) {
 #[no_mangle]
 pub extern "C" fn set_display_bits(bits: u32) -> u32 {
     let mut lock = STATE.lock().unwrap();
-    let Some(state) = lock.as_mut() else { return 0; };
+    let Some(state) = lock.as_mut() else {
+        return 0;
+    };
     match state.runtime.set_display_bits(bits) {
         Ok(()) => 1,
-        Err(error) => { state.error = error; 0 }
+        Err(error) => {
+            state.error = error;
+            0
+        }
     }
 }
 /// Register a read-only browser asset from guest memory. The runner stages
@@ -471,16 +650,33 @@ pub extern "C" fn dispatch(index: u32, arguments: u32) -> u32 {
         if *dll == "USER32.dll" && *name == "wsprintfA" {
             let format = wlam_host::runtime::read_c_string(&memory, args[1])
                 .map_err(|e| format!("wsprintf format: {e}"))?;
-            let count = format.iter().enumerate().filter(|(i,b)| {
-                if **b != b'%' { return false; }
-                let mut at=*i+1;
-                while at<format.len() && !b"diuoxXcCsSp%".contains(&format[at]) { at+=1; }
-                at<format.len() && format[at]!=b'%'
-            }).count();
+            let count = format
+                .iter()
+                .enumerate()
+                .filter(|(i, b)| {
+                    if **b != b'%' {
+                        return false;
+                    }
+                    let mut at = *i + 1;
+                    while at < format.len() && !b"diuoxXcCsSp%".contains(&format[at]) {
+                        at += 1;
+                    }
+                    at < format.len() && format[at] != b'%'
+                })
+                .count();
             for index in 0..count {
-                let offset=signature.argument_bytes.checked_add(index as u32*4).ok_or("wsprintf arguments overflow")?;
-                let address=arguments.checked_add(offset).ok_or("wsprintf argument address overflow")?;
-                args.push(memory.read_word(address).map_err(|e|format!("wsprintf arguments: {e:?}"))?);
+                let offset = signature
+                    .argument_bytes
+                    .checked_add(index as u32 * 4)
+                    .ok_or("wsprintf arguments overflow")?;
+                let address = arguments
+                    .checked_add(offset)
+                    .ok_or("wsprintf argument address overflow")?;
+                args.push(
+                    memory
+                        .read_word(address)
+                        .map_err(|e| format!("wsprintf arguments: {e:?}"))?,
+                );
             }
         }
         state.runtime.call(dll, name, &args, &mut memory)
@@ -613,6 +809,14 @@ pub extern "C" fn advance_time(elapsed: u32) -> u32 {
     }
 }
 #[no_mangle]
+pub extern "C" fn presentation_window(window: u32) -> u32 {
+    STATE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |state| state.runtime.presentation_window(window))
+}
+#[no_mangle]
 pub extern "C" fn frame(window: u32) -> u32 {
     let mut lock = STATE.lock().unwrap();
     let state = lock.as_mut().unwrap();
@@ -625,7 +829,10 @@ pub extern "C" fn frame(window: u32) -> u32 {
         }
         state.width = surface.width;
         state.height = surface.height;
-        state.frame = surface.rgba.clone();
+        state.frame = state
+            .runtime
+            .presented_frame(window)
+            .unwrap_or_else(|| surface.rgba.clone());
         state.runtime.gdi.acknowledge_present(window).unwrap();
         state.frame.as_ptr() as u32
     } else {
@@ -646,7 +853,9 @@ pub extern "C" fn frame_height() -> u32 {
 #[no_mangle]
 pub extern "C" fn set_gpu_capture(enabled: u32) -> u32 {
     let mut lock = STATE.lock().unwrap();
-    let Some(state) = lock.as_mut() else { return 0; };
+    let Some(state) = lock.as_mut() else {
+        return 0;
+    };
     state.runtime.set_gl_gpu_capture(enabled != 0);
     1
 }
@@ -654,7 +863,9 @@ pub extern "C" fn set_gpu_capture(enabled: u32) -> u32 {
 #[no_mangle]
 pub extern "C" fn set_gpu_mode(enabled: u32) -> u32 {
     let mut lock = STATE.lock().unwrap();
-    let Some(state) = lock.as_mut() else { return 0; };
+    let Some(state) = lock.as_mut() else {
+        return 0;
+    };
     state.runtime.set_gl_gpu_mode(enabled != 0);
     1
 }
@@ -664,8 +875,14 @@ pub extern "C" fn set_gpu_mode(enabled: u32) -> u32 {
 #[no_mangle]
 pub extern "C" fn gpu_frame(window: u32) -> u32 {
     let mut lock = STATE.lock().unwrap();
-    let Some(state) = lock.as_mut() else { return 0; };
-    let window = if window == 0 { state.runtime.current_gl_window() } else { window };
+    let Some(state) = lock.as_mut() else {
+        return 0;
+    };
+    let window = if window == 0 {
+        state.runtime.current_gl_window()
+    } else {
+        window
+    };
     let Some((width, height, operations)) = state.runtime.take_gl_gpu_ops(window) else {
         state.gpu_packet.clear();
         return 0;
@@ -676,7 +893,11 @@ pub extern "C" fn gpu_frame(window: u32) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn gpu_window() -> u32 {
-    STATE.lock().unwrap().as_ref().map_or(0, |state| state.runtime.current_gl_window())
+    STATE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |state| state.runtime.current_gl_window())
 }
 
 #[no_mangle]
@@ -693,7 +914,9 @@ fn encode_gpu_packet(width: u32, height: u32, operations: Vec<GpuOp>) -> Vec<u32
         match operation {
             GpuOp::Clear { mask, color, depth } => {
                 words.extend([0, mask]);
-                for value in color { push_float(&mut words, value); }
+                for value in color {
+                    push_float(&mut words, value);
+                }
                 push_float(&mut words, depth);
             }
             GpuOp::Draw(draw) => {
@@ -705,25 +928,36 @@ fn encode_gpu_packet(width: u32, height: u32, operations: Vec<GpuOp>) -> Vec<u32
                     | (u32::from(state.blend) << 4)
                     | (u32::from(state.dither) << 5)
                     | (u32::from(state.fog) << 6);
-                words.extend([1, draw.vertices.len() as u32, 0x0004]); // GL_TRIANGLES
+                words.extend([1, draw.vertices.len() as u32, draw.primitive]);
                 words.extend(state.viewport.map(|value| value as u32));
                 words.extend([
-                    flags, state.depth_func, state.cull_mode, state.blend_src,
-                    state.blend_dst, state.fog_mode,
+                    flags,
+                    state.depth_func,
+                    state.cull_mode,
+                    state.blend_src,
+                    state.blend_dst,
+                    state.fog_mode,
                 ]);
-                for value in state.fog_color { push_float(&mut words, value); }
+                for value in state.fog_color {
+                    push_float(&mut words, value);
+                }
                 for value in [state.fog_density, state.fog_start, state.fog_end] {
                     push_float(&mut words, value);
                 }
                 for vertex in draw.vertices {
-                    for value in vertex.clip_position { push_float(&mut words, value); }
+                    for value in vertex.clip_position {
+                        push_float(&mut words, value);
+                    }
                     push_float(&mut words, vertex.eye_distance);
-                    for value in vertex.front_color { push_float(&mut words, value); }
-                    for value in vertex.back_color { push_float(&mut words, value); }
+                    for value in vertex.front_color {
+                        push_float(&mut words, value);
+                    }
+                    for value in vertex.back_color {
+                        push_float(&mut words, value);
+                    }
                 }
             }
         }
     }
     words
 }
-

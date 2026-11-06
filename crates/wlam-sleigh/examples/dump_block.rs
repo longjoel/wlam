@@ -10,12 +10,22 @@ use wlam_sleigh::emit as shared;
 
 fn main() {
     let addr: u64 = u64::from_str_radix(
-        std::env::args().nth(1).unwrap_or_else(|| "0x40ccb2".into()).trim_start_matches("0x"),
+        std::env::args()
+            .nth(1)
+            .unwrap_or_else(|| "0x40ccb2".into())
+            .trim_start_matches("0x"),
         16,
     )
     .unwrap();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf();
-    let path = std::env::args().nth(2).unwrap_or_else(|| root.join("north-star/bin/Uxn32.exe").display().to_string());
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let path = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| root.join("north-star/bin/Uxn32.exe").display().to_string());
     let bytes = std::fs::read(&path).unwrap();
     let pe = Pe::parse(&bytes).unwrap();
     let base = pe.image_base as u64;
@@ -26,7 +36,10 @@ fn main() {
     let slice = sec.data[off..].to_vec();
     let start = addr;
     let lifted = with_big_stack(move || wlam_sleigh::lift_block(&slice, start));
-    println!("block {:#x}..{:#x} term={:?}", lifted.start, lifted.end, lifted.terminator);
+    println!(
+        "block {:#x}..{:#x} term={:?}",
+        lifted.start, lifted.end, lifted.terminator
+    );
     for insn in &lifted.instructions {
         if insn.unlowered > 0 {
             println!("  ({} unlowered op(s) at)", insn.unlowered);

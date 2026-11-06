@@ -21,7 +21,10 @@ fn main() {
         .get(1)
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| root.join("north-star/bin/Uxn32.exe"));
-    let out = args.get(2).cloned().unwrap_or_else(|| "/tmp/guest.wasm".into());
+    let out = args
+        .get(2)
+        .cloned()
+        .unwrap_or_else(|| "/tmp/guest.wasm".into());
     let bytes = std::fs::read(&path).expect("read image");
     let prog = {
         let b2 = bytes.clone();
@@ -38,7 +41,10 @@ fn main() {
                 base + i.iat_rva as u64,
                 HostImport {
                     library: i.library.clone(),
-                    name: i.name.clone().unwrap_or_else(|| format!("#{}", i.ordinal.unwrap_or(0))),
+                    name: i
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| format!("#{}", i.ordinal.unwrap_or(0))),
                 },
             )
         })
@@ -46,7 +52,9 @@ fn main() {
     let mut blocks = BTreeMap::new();
     for b in prog.blocks() {
         let rva = (b.start - base) as u32;
-        let Some(idx) = pe.section_of(rva) else { continue };
+        let Some(idx) = pe.section_of(rva) else {
+            continue;
+        };
         let sec = &pe.sections[idx];
         let off = (rva - sec.virtual_address) as usize;
         if off >= sec.data.len() {
@@ -56,7 +64,10 @@ fn main() {
         let start = b.start;
         let lifted = with_big_stack(move || lift_block(&slice, start));
         if b.start == 0x40ccb2 {
-            println!("DISCOVERED BLOCK AT {:#x}: start={:#x} end={:#x} terminator={:?}", b.start, lifted.start, lifted.end, lifted.terminator);
+            println!(
+                "DISCOVERED BLOCK AT {:#x}: start={:#x} end={:#x} terminator={:?}",
+                b.start, lifted.start, lifted.end, lifted.terminator
+            );
         }
         blocks.insert(b.start, shared::convert(&lifted));
         if b.start == 0x40ccb2 {
@@ -91,14 +102,32 @@ fn main() {
             }
         }
         if !found {
-            println!("{probe:#x}: NOT IN ANY FUNCTION (block exists: {})", blocks.contains_key(&probe));
+            println!(
+                "{probe:#x}: NOT IN ANY FUNCTION (block exists: {})",
+                blocks.contains_key(&probe)
+            );
         }
     }
-    println!("blocks map contains 0x40ccb2? {}", blocks.contains_key(&0x40ccb2));
-    println!("discovery: block_starts contains 0x40ccd8? {}", prog.block_starts().contains(&0x40ccd8));
-    let near: Vec<u64> = prog.block_starts().iter().copied().filter(|a| (0x40ccb0..0x40cd20).contains(a)).collect();
+    println!(
+        "blocks map contains 0x40ccb2? {}",
+        blocks.contains_key(&0x40ccb2)
+    );
+    println!(
+        "discovery: block_starts contains 0x40ccd8? {}",
+        prog.block_starts().contains(&0x40ccd8)
+    );
+    let near: Vec<u64> = prog
+        .block_starts()
+        .iter()
+        .copied()
+        .filter(|a| (0x40ccb0..0x40cd20).contains(a))
+        .collect();
     let near: Vec<String> = near.iter().map(|a| format!("{a:#x}")).collect();
     println!("blocks near: {}", near.join(" "));
-    println!("total functions={} total blocks in functions={}", p.functions.len(), p.functions.iter().map(|f| f.blocks.len()).sum::<usize>());
+    println!(
+        "total functions={} total blocks in functions={}",
+        p.functions.len(),
+        p.functions.iter().map(|f| f.blocks.len()).sum::<usize>()
+    );
     println!("wrote {} bytes to {out}", m.len());
 }

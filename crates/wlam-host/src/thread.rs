@@ -85,11 +85,17 @@ mod tests {
     #[test]
     fn priority_changes_only_the_current_guest_thread() {
         let mut thread = ThreadState::default();
-        assert_eq!(thread.call("SetThreadPriority", &[0xffff_fffe, 2]).unwrap(), 1);
+        assert_eq!(
+            thread.call("SetThreadPriority", &[0xffff_fffe, 2]).unwrap(),
+            1
+        );
         assert_eq!(thread.priority, 2);
         assert_eq!(thread.call("SetThreadPriority", &[1, 0]).unwrap(), 0);
         assert_eq!(thread.last_error, 6);
-        assert_eq!(thread.call("SetThreadPriority", &[0xffff_fffe, 3]).unwrap(), 0);
+        assert_eq!(
+            thread.call("SetThreadPriority", &[0xffff_fffe, 3]).unwrap(),
+            0
+        );
         assert_eq!(thread.last_error, 87);
         assert_eq!(thread.priority, 2);
     }

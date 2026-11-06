@@ -180,7 +180,10 @@ fn ax_reads_the_low_word_and_al_writes_only_a_byte() {
     let out = run(&module, &regs, 0x1234_BEEF, 0);
     // EAX is unchanged (0x1234BEEF == 305446639); DX took its low word, so
     // EDX = 0x0000BEEF == 48879.
-    assert_eq!(out, "eax=305446639 edx=48879 mem=48879", "0x0000BEEF == 48879");
+    assert_eq!(
+        out, "eax=305446639 edx=48879 mem=48879",
+        "0x0000BEEF == 48879"
+    );
 }
 
 /// A sub-register that is *written but never aliased back* would leave the

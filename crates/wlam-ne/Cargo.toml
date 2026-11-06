@@ -1,0 +1,14 @@
+[package]
+name = "wlam-ne"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rsleigh-api = { path = "../../toolchain/rsleigh/rsleigh-api" }
+pcode-ir = { path = "../../toolchain/rsleigh/pcode-ir" }
+thiserror.workspace = true
+wlam-host.workspace = true
+
+[dev-dependencies]
+wasmi.workspace = true

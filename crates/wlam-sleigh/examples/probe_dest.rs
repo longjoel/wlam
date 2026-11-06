@@ -48,7 +48,9 @@ fn main() {
 
     for _ in 0..6 {
         let at = base + (sec.virtual_address as u64) + off as u64;
-        let Ok(insn) = d.decode(&sec.data[off..], at) else { break };
+        let Ok(insn) = d.decode(&sec.data[off..], at) else {
+            break;
+        };
         println!("{at:#x}  {}", insn.disassembly);
         for op in &insn.ops {
             if let PcodeOp::Branch { dest } | PcodeOp::CBranch { dest, .. } = op {

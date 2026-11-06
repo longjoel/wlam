@@ -64,7 +64,8 @@ pub fn instantiate(
     // diagnosis. Fuel turns that into a named error.
     config.consume_fuel(true);
     let engine = wasmi::Engine::new(&config);
-    let module = wasmi::Module::new(&engine, module_bytes).map_err(|e| RunError::Load(e.to_string()))?;
+    let module =
+        wasmi::Module::new(&engine, module_bytes).map_err(|e| RunError::Load(e.to_string()))?;
 
     // Collect the declared imports so each gets a shim.
     let mut imports: BTreeMap<(String, String), ()> = BTreeMap::new();
@@ -155,11 +156,13 @@ pub fn run_entry_raw(
         // (wasmi reports the fault; guest memory is dumped by callers that need
         // to locate it, since the engine does not expose the address.)
         Err(payload) => {
-            let detail = payload.downcast_ref::<String>().map(String::as_str)
+            let detail = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
                 .or_else(|| payload.downcast_ref::<&str>().copied())
                 .unwrap_or("non-string panic payload");
             Err(RunError::Trap(format!("host panic: {detail}")))
-        },
+        }
     }
 }
 
@@ -288,7 +291,9 @@ pub fn load_image(
                 mem.len()
             )));
         }
-        let from_disk = (sec.file_size as usize).min(sec.data.len()).min(vsize as usize);
+        let from_disk = (sec.file_size as usize)
+            .min(sec.data.len())
+            .min(vsize as usize);
         mem[start..start + from_disk].copy_from_slice(&sec.data[..from_disk]);
         out.push(Loaded {
             start: va,

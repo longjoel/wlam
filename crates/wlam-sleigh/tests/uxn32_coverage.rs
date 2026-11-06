@@ -38,19 +38,43 @@ fn userop_surface_of_the_north_star() {
         return;
     };
     let cov: Coverage = with_big_stack(move || wlam_sleigh::scan(&text, base));
-    eprintln!("instructions={} undecodable={}", cov.instructions, cov.undecodable);
+    eprintln!(
+        "instructions={} undecodable={}",
+        cov.instructions, cov.undecodable
+    );
     for (id, mnemonics) in &cov.userops {
-        eprintln!("  userop {id}: {:?} -> {:?}", wlam_sleigh::classify_userop(*id), mnemonics);
+        eprintln!(
+            "  userop {id}: {:?} -> {:?}",
+            wlam_sleigh::classify_userop(*id),
+            mnemonics
+        );
     }
     // The decoded executable reaches exactly five userops, four of which are
     // ordinary instruction semantics (ports, INT3, locked xchg).
-    assert!(cov.instructions > 20_000, "decoded {} instructions", cov.instructions);
-    assert!(cov.undecodable < cov.instructions / 100, "resync rate is small");
+    assert!(
+        cov.instructions > 20_000,
+        "decoded {} instructions",
+        cov.instructions
+    );
+    assert!(
+        cov.undecodable < cov.instructions / 100,
+        "resync rate is small"
+    );
     let unknown: Vec<_> = cov.unknown_userops().collect();
-    assert!(unknown.is_empty(), "unclassified userops in real code: {unknown:?}");
-    let kinds: Vec<Userop> = cov.userops.keys().map(|id| wlam_sleigh::classify_userop(*id)).collect();
+    assert!(
+        unknown.is_empty(),
+        "unclassified userops in real code: {unknown:?}"
+    );
+    let kinds: Vec<Userop> = cov
+        .userops
+        .keys()
+        .map(|id| wlam_sleigh::classify_userop(*id))
+        .collect();
     for expected in [Userop::PortIn, Userop::Breakpoint, Userop::LockedXchg] {
-        assert!(kinds.contains(&expected), "expected {expected:?} in {kinds:?}");
+        assert!(
+            kinds.contains(&expected),
+            "expected {expected:?} in {kinds:?}"
+        );
     }
 }
 
@@ -92,7 +116,10 @@ fn registers_needed_for_real_code_are_covered() {
         .iter()
         .filter(|n| n.starts_with("reg_") || n.parse::<u32>().is_ok())
         .count();
-    assert_eq!(unnamed, 0, "every referenced register must have a known name: {coverage:?}");
+    assert_eq!(
+        unnamed, 0,
+        "every referenced register must have a known name: {coverage:?}"
+    );
 }
 
 fn collect_regs(ir: &IR, out: &mut std::collections::BTreeSet<String>) {
@@ -157,7 +184,13 @@ fn collect_regs(ir: &IR, out: &mut std::collections::BTreeSet<String>) {
                 visit(d, out);
             }
         }
-        IR::MicroLoop { head, exit, body, repeat, tail } => {
+        IR::MicroLoop {
+            head,
+            exit,
+            body,
+            repeat,
+            tail,
+        } => {
             for op in head.iter().chain(body).chain(tail) {
                 collect_regs(op, out);
             }
@@ -182,14 +215,19 @@ fn pcode_per_native_instruction_is_bounded() {
         (0..sample.len() / 3)
             .map(|i| lift_block(&sample[i..], base + i as u64))
             .filter(|b| !b.instructions.is_empty())
-            .fold((0usize, 0usize), |(o, n), b| (o + b.op_count(), n + b.native_instruction_count()))
+            .fold((0usize, 0usize), |(o, n), b| {
+                (o + b.op_count(), n + b.native_instruction_count())
+            })
     });
     let ratio = ops as f64 / insns.max(1) as f64;
     eprintln!("sample: {ops} pcode ops over {insns} native instructions (ratio {ratio:.1})");
     // Sleigh's x86 lift is verbose (flags, partial registers); anything near
     // this bound is still linear in the block, which is the property that
     // makes block-shaped emission legitimate rather than trace interpretation.
-    assert!(ratio < 20.0, "pcode/native ratio {ratio:.1} too high for a static emitter");
+    assert!(
+        ratio < 20.0,
+        "pcode/native ratio {ratio:.1} too high for a static emitter"
+    );
 }
 
 #[test]
@@ -198,9 +236,20 @@ fn entry_block_terminator_is_recognised() {
         return;
     };
     let block = with_big_stack(move || lift_block(&text, base));
-    assert!(block.instructions.len() > 4, "entry block lifts several instructions");
+    assert!(
+        block.instructions.len() > 4,
+        "entry block lifts several instructions"
+    );
     // The SEH prologue and an indirect call through the IAT appear early.
-    let has_call_ind = block.instructions.iter().flat_map(|i| &i.ops).any(|o| matches!(o, IR::CallInd { .. }));
+    let has_call_ind = block
+        .instructions
+        .iter()
+        .flat_map(|i| &i.ops)
+        .any(|o| matches!(o, IR::CallInd { .. }));
     assert!(has_call_ind, "entry block calls through the IAT");
-    assert!(!matches!(block.terminator, Terminator::Undecodable(_)), "{:?}", block.terminator);
+    assert!(
+        !matches!(block.terminator, Terminator::Undecodable(_)),
+        "{:?}",
+        block.terminator
+    );
 }

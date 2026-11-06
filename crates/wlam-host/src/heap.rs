@@ -150,10 +150,6 @@ impl HeapSet {
         self.heaps.iter().find(|h| h.handle == handle)
     }
 
-    fn heap_of(&self, ptr: u32) -> Option<&Heap> {
-        self.heaps.iter().find(|h| ptr >= h.start && ptr < h.end)
-    }
-
     /// Carve a new arena of `size` bytes (at least one block's worth).
     fn create_arena(&mut self, size: u32) -> Option<&Heap> {
         let size = round_up(size).max(HEADER + ALIGN);
@@ -364,7 +360,7 @@ mod tests {
     use crate::GuestMemory;
 
     fn heap() -> (HeapSet, Vec<u8>) {
-        let mut data = vec![0u8; 0x10_0000]; // 1 MiB of guest memory
+        let data = vec![0u8; 0x10_0000]; // 1 MiB of guest memory
         let set = HeapSet::new(0x1000, data.len() as u64);
         (set, data)
     }

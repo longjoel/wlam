@@ -8,6 +8,7 @@ varying vec4 vFrontColor;
 varying vec4 vBackColor;
 void main() {
   gl_Position = aClipPosition;
+  gl_PointSize = 1.0;
   vEyeDistance = aEyeDistance;
   vFrontColor = aFrontColor;
   vBackColor = aBackColor;
@@ -45,6 +46,7 @@ void main() {
 const MAGIC = 0x574c474c;
 const FLOATS_PER_VERTEX = 13;
 const TRIANGLES = 0x0004;
+const POINTS = 0x0000;
 
 function compile(gl, kind, source) {
   const shader = gl.createShader(kind);
@@ -78,6 +80,10 @@ export class WebGlRenderer {
     });
     if (!this.gl) throw new Error('This browser could not create a WebGL context.');
     const gl = this.gl;
+    this.capabilities = Object.freeze({
+      depthBits: gl.getParameter(gl.DEPTH_BITS),
+      subpixelBits: gl.getParameter(gl.SUBPIXEL_BITS),
+    });
     this.program = program(gl);
     this.buffer = gl.createBuffer();
     gl.useProgram(this.program);
@@ -159,11 +165,13 @@ export class WebGlRenderer {
         const fogDensity = this.float(words[at++]);
         const fogStart = this.float(words[at++]);
         const fogEnd = this.float(words[at++]);
-        if (primitive !== TRIANGLES || vertexCount % 3 !== 0) {
+        if ((primitive === TRIANGLES && vertexCount % 3 !== 0)
+            || (primitive !== TRIANGLES && primitive !== POINTS)
+            || vertexCount === 0) {
           throw new Error(`Unsupported WebGL primitive packet (${primitive}, ${vertexCount}).`);
         }
         this.draw({
-          vertexCount, viewport, flags, depthFunc, cullMode, blendSrc, blendDst,
+          vertexCount, primitive, viewport, flags, depthFunc, cullMode, blendSrc, blendDst,
           fogMode, fogColor, fogDensity, fogStart, fogEnd,
         }, words.subarray(at, at + vertexCount * FLOATS_PER_VERTEX));
         at += vertexCount * FLOATS_PER_VERTEX;
@@ -205,7 +213,7 @@ export class WebGlRenderer {
     const bitsView = new DataView(vertexWords.buffer, vertexWords.byteOffset, vertexWords.byteLength);
     for (let i = 0; i < floats.length; i++) floats[i] = bitsView.getFloat32(i * 4, true);
     gl.bufferData(gl.ARRAY_BUFFER, floats, gl.DYNAMIC_DRAW);
-    gl.drawArrays(gl.TRIANGLES, 0, batch.vertexCount);
+    gl.drawArrays(batch.primitive, 0, batch.vertexCount);
   }
 
   toggle(capability, enabled) {

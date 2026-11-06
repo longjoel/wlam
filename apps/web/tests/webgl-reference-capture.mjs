@@ -17,6 +17,7 @@ async function waitFrame(frame) {
 try {
   await page.goto(url.href);
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
+  await page.locator('#task-app').click();
   await page.click('#start');
   await waitFrame(1);
   await page.locator('#screen').focus();
@@ -24,6 +25,7 @@ try {
   await waitFrame(70);
   await page.keyboard.press('b');
   await waitFrame(80);
+  await page.locator('#task-app').click();
   await page.locator('#guest-width').fill('600');
   await page.locator('#guest-height').fill('450');
   await page.click('#resize-guest');

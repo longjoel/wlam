@@ -68,7 +68,11 @@ fn run(module: &[u8], regs: &[String], esp: u32, eax: u32, edi: u32) -> String {
     let _ = std::fs::remove_file(&path);
     let so = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let se = String::from_utf8_lossy(&out.stderr);
-    if so.is_empty() { format!("NO_OUTPUT stderr={}", se.trim()) } else { so }
+    if so.is_empty() {
+        format!("NO_OUTPUT stderr={}", se.trim())
+    } else {
+        so
+    }
 }
 
 /// ```text
@@ -128,12 +132,8 @@ fn indirect_call_reaches_the_intended_function() {
     let base = 0x1000u64;
     let callee = 0x1010u64;
     let code = vec![
-        0xFF, 0xD7,
-        0x89, 0x05, 0x04, 0x00, 0x01, 0x00,
-        0xC3,
-        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
-        0xB8, 0xAA, 0x00, 0x00, 0x00,
-        0xC3,
+        0xFF, 0xD7, 0x89, 0x05, 0x04, 0x00, 0x01, 0x00, 0xC3, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+        0x90, 0xB8, 0xAA, 0x00, 0x00, 0x00, 0xC3,
     ];
     let blocks = blocks_from(&code, base, &[base, base + 2, base + 8, callee, callee + 5]);
     let regs = registers(&blocks);
@@ -147,9 +147,26 @@ fn indirect_call_reaches_the_intended_function() {
     let entry_idx = prog.function_index[&base];
 
     eprintln!("callee idx={idx} entry idx={entry_idx}");
-    eprintln!("entry blocks={:?}", prog.functions[entry_idx as usize].blocks.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>());
-    eprintln!("callee blocks={:?}", prog.functions[idx as usize].blocks.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>());
+    eprintln!(
+        "entry blocks={:?}",
+        prog.functions[entry_idx as usize]
+            .blocks
+            .iter()
+            .map(|a| format!("{a:#x}"))
+            .collect::<Vec<_>>()
+    );
+    eprintln!(
+        "callee blocks={:?}",
+        prog.functions[idx as usize]
+            .blocks
+            .iter()
+            .map(|a| format!("{a:#x}"))
+            .collect::<Vec<_>>()
+    );
     let module = build_module(&prog, &blocks).expect("module");
     let out = run(&module, &regs, 0x4000, 0, callee as u32);
-    assert_eq!(out, "OK 170", "call edi must reach the callee and return to the caller");
+    assert_eq!(
+        out, "OK 170",
+        "call edi must reach the callee and return to the caller"
+    );
 }

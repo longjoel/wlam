@@ -17,5 +17,9 @@
 # Debug dumps from `--example dump_module` / lift probes.
 .scratch/
 
+# Python bytecode from local test/tooling runs.
+__pycache__/
+*.pyc
+
 # Module kept for inspection after a failed validation (`KEEP_WASM=1`).
 .scratch-out.wasm

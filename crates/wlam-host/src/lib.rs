@@ -30,6 +30,7 @@ use std::fmt;
 
 pub mod arena;
 pub mod atoms;
+pub mod buttons;
 pub mod dialog;
 pub mod events;
 pub mod files;
@@ -38,13 +39,15 @@ pub mod gdi;
 pub mod gl_context;
 pub mod gl_renderer;
 pub mod heap;
+pub mod icon;
 pub mod locale;
 pub mod memory;
 pub mod modules;
 pub mod objects;
-pub mod opengl_math;
 pub mod opengl;
+pub mod opengl_math;
 pub mod raster;
+pub mod registry;
 pub mod resources;
 pub mod runtime;
 pub mod startup;
@@ -964,6 +967,60 @@ pub fn kernel32(h: &mut Host) -> &mut Host {
             } else {
                 0
             }
+        });
+    }
+
+    // LocalAlloc/GlobalAlloc are the 16-bit-era process-heap allocators. MFC
+    // 3.0 uses LocalAlloc during DllMain; the ABI descriptor already declares
+    // (flags, bytes). LMEM_ZEROINIT/ GPTR share the same 0x40 bit; translate
+    // it to the arena's zero-fill flag.
+    for name in ["LocalAlloc", "GlobalAlloc"] {
+        let heap = std::sync::Arc::clone(&heap_shared);
+        h.implement_with_memory(api(name), move |c: Call<'_>| {
+            let flags = c.mem.read_u32(c.args_ptr).unwrap_or(0);
+            let bytes = c.mem.read_u32(c.args_ptr + 4).unwrap_or(0);
+            let heap_flags = if flags & 0x40 != 0 {
+                heap::HEAP_ZERO_MEMORY
+            } else {
+                0
+            };
+            let mut state = lock(&heap);
+            let handle = state.ensure_process_heap();
+            state.alloc(c.mem, handle, heap_flags, bytes).unwrap_or(0) as i32
+        });
+    }
+
+    // LocalFree/GlobalFree(lpMem) -> NULL on success, the block on failure.
+    for name in ["LocalFree", "GlobalFree"] {
+        let heap = std::sync::Arc::clone(&heap_shared);
+        h.implement_with_memory(api(name), move |c: Call<'_>| {
+            let ptr = c.mem.read_u32(c.args_ptr).unwrap_or(0);
+            let mut state = lock(&heap);
+            let handle = state.ensure_process_heap();
+            if state.free(c.mem, handle, ptr) {
+                0
+            } else {
+                ptr as i32
+            }
+        });
+    }
+
+    // Fixed local/global memory is directly addressable, as it is on Win32.
+    for name in ["LocalLock", "GlobalLock", "LocalHandle", "GlobalHandle"] {
+        h.implement_with_memory(api(name), move |c: Call<'_>| {
+            c.mem.read_u32(c.args_ptr).unwrap_or(0) as i32
+        });
+    }
+    for name in ["LocalUnlock", "GlobalUnlock"] {
+        h.implement(api(name), |_| 1);
+    }
+    for name in ["LocalSize", "GlobalSize"] {
+        let heap = std::sync::Arc::clone(&heap_shared);
+        h.implement_with_memory(api(name), move |c: Call<'_>| {
+            let ptr = c.mem.read_u32(c.args_ptr).unwrap_or(0);
+            let state = lock(&heap);
+            let handle = state.process_heap();
+            state.size(c.mem, handle, ptr).map_or(0, |n| n as i32)
         });
     }
 

@@ -91,6 +91,9 @@ with it.
 
 - `docs/architecture.md` — component responsibilities and data flow
 - `docs/abi.md` — guest/host ABI contract (work in progress)
+- `docs/crt.md` — how versioned MSVCRT/UCRT imports are satisfied by the host
+- `docs/linked-dlls.md` — supplying and statically linking non-system DLLs
+- `scripts/wine-tests/README.md` — run Wine's GDI conformance tests incrementally
 - `docs/compat-matrix.md` — every imported API: implemented / emulated /
   unsupported (generated)
 

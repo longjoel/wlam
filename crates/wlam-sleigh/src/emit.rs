@@ -58,7 +58,11 @@ pub fn to_eir(ir: &sir::IR) -> eir::IR {
         }
     }
     match ir {
-        sir::IR::FloatUnary {op:kind,dst,src} => eir::IR::FloatUnary {op:*kind,dst:op(dst),src:op(src)},
+        sir::IR::FloatUnary { op: kind, dst, src } => eir::IR::FloatUnary {
+            op: *kind,
+            dst: op(dst),
+            src: op(src),
+        },
         sir::IR::Copy { dst, src } => eir::IR::Copy {
             dst: op(dst),
             src: op(src),
@@ -166,7 +170,13 @@ pub fn to_eir(ir: &sir::IR) -> eir::IR {
             args: args.iter().map(op).collect(),
             dst: dst.as_ref().map(op),
         },
-        sir::IR::MicroLoop { head, exit, body, repeat, tail } => eir::IR::MicroLoop {
+        sir::IR::MicroLoop {
+            head,
+            exit,
+            body,
+            repeat,
+            tail,
+        } => eir::IR::MicroLoop {
             head: head.iter().map(to_eir).collect(),
             exit: exit.as_ref().map(op),
             body: body.iter().map(to_eir).collect(),
@@ -208,7 +218,10 @@ pub fn collect_regs(ir: &eir::IR, out: &mut std::collections::BTreeSet<String>) 
             v(&operands.0, out);
             v(&operands.1, out);
         }
-        I::FloatUnary { dst, src, .. } | I::Un { dst, src, .. } | I::Subpiece { dst, src, .. } | I::Convert { dst, src, .. } => {
+        I::FloatUnary { dst, src, .. }
+        | I::Un { dst, src, .. }
+        | I::Subpiece { dst, src, .. }
+        | I::Convert { dst, src, .. } => {
             v(dst, out);
             v(src, out);
         }
@@ -233,7 +246,13 @@ pub fn collect_regs(ir: &eir::IR, out: &mut std::collections::BTreeSet<String>) 
                 v(d, out);
             }
         }
-        I::MicroLoop { head, exit, body, repeat, tail } => {
+        I::MicroLoop {
+            head,
+            exit,
+            body,
+            repeat,
+            tail,
+        } => {
             for op in head.iter().chain(body).chain(tail) {
                 collect_regs(op, out);
             }

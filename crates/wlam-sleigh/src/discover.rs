@@ -76,7 +76,7 @@ pub struct Program {
     jump_table_targets: BTreeSet<u64>,
     /// Indirect jump sites whose targets were recovered from a table.
     resolved_indirect: BTreeSet<u64>,
-    indirect_targets: BTreeMap<u64,Vec<u64>>,
+    indirect_targets: BTreeMap<u64, Vec<u64>>,
     /// Indirect jumps that still have no known set of targets.
     unresolved: BTreeSet<u64>,
     /// Distinct userops reached, with the mnemonics that produce them.
@@ -97,7 +97,9 @@ pub struct Program {
 
 impl Program {
     /// Blocks in address order.
-    pub fn indirect_targets(&self)->&BTreeMap<u64,Vec<u64>> {&self.indirect_targets}
+    pub fn indirect_targets(&self) -> &BTreeMap<u64, Vec<u64>> {
+        &self.indirect_targets
+    }
 
     pub fn blocks(&self) -> impl Iterator<Item = &DiscoveredBlock> {
         self.blocks.values()
@@ -216,11 +218,20 @@ pub fn discover(pe: &Pe, max_passes: u32) -> Program {
 
 /// Let the compiler consume lifted blocks during discovery instead of lifting
 /// the entire image a second time after convergence.
-pub(crate) fn discover_observing(pe: &Pe, max_passes: u32, mut on_block: impl FnMut(&crate::Block)) -> Program {
-    discover_observing_with_seeds(pe,max_passes,&[],&mut on_block)
+pub(crate) fn discover_observing(
+    pe: &Pe,
+    max_passes: u32,
+    mut on_block: impl FnMut(&crate::Block),
+) -> Program {
+    discover_observing_with_seeds(pe, max_passes, &[], &mut on_block)
 }
 
-pub(crate) fn discover_observing_with_seeds(pe:&Pe,max_passes:u32,extra_seeds:&[u64],mut on_block:impl FnMut(&crate::Block))->Program {
+pub(crate) fn discover_observing_with_seeds(
+    pe: &Pe,
+    max_passes: u32,
+    extra_seeds: &[u64],
+    mut on_block: impl FnMut(&crate::Block),
+) -> Program {
     // This toolchain is 32-bit Win32 only. The Sleigh lifter decodes x86-32;
     // handing it an x86-64 or ARM64 image would decode 64-bit code as 32-bit
     // and produce plausible-looking nonsense. Refuse loudly instead: an empty
@@ -238,9 +249,15 @@ pub(crate) fn discover_observing_with_seeds(pe:&Pe,max_passes:u32,extra_seeds:&[
     let mut work: BTreeSet<(u64, &'static str)> = BTreeSet::new();
     // Seeds: entry point and exports are unambiguously code.
     work.insert((base as u64 + pe.entry_point_rva as u64, "entry point"));
-    for address in extra_seeds {work.insert((*address,"initialized data function pointer"));}
+    for address in extra_seeds {
+        work.insert((*address, "initialized data function pointer"));
+    }
     for e in &pe.exports {
-        if pe.section_of(e.rva).map(|i| pe.sections[i].is_executable()).unwrap_or(false) {
+        if pe
+            .section_of(e.rva)
+            .map(|i| pe.sections[i].is_executable())
+            .unwrap_or(false)
+        {
             work.insert((base as u64 + e.rva as u64, "export"));
         }
     }
@@ -260,7 +277,10 @@ pub(crate) fn discover_observing_with_seeds(pe:&Pe,max_passes:u32,extra_seeds:&[
             if prog.blocks.contains_key(&addr) {
                 continue;
             }
-            let Some(rva) = addr.checked_sub(base as u64).and_then(|v| u32::try_from(v).ok()) else {
+            let Some(rva) = addr
+                .checked_sub(base as u64)
+                .and_then(|v| u32::try_from(v).ok())
+            else {
                 continue;
             };
             let Some(section) = pe.section_of(rva).map(|i| &pe.sections[i]) else {
@@ -291,7 +311,12 @@ pub(crate) fn discover_observing_with_seeds(pe:&Pe,max_passes:u32,extra_seeds:&[
             for insn in &block.instructions {
                 for op in &insn.ops {
                     if let IR::Userop { id, .. } = op {
-                        let mnemonic = insn.disassembly.split(' ').next().unwrap_or("?").to_string();
+                        let mnemonic = insn
+                            .disassembly
+                            .split(' ')
+                            .next()
+                            .unwrap_or("?")
+                            .to_string();
                         prog.userops.entry(*id).or_default().insert(mnemonic);
                     }
                 }
@@ -309,7 +334,10 @@ pub(crate) fn discover_observing_with_seeds(pe:&Pe,max_passes:u32,extra_seeds:&[
                         prog.unresolved.insert(block.start);
                     }
                     work.insert((*not_taken, "fall-through"));
-                    Edge::Conditional { taken: *taken, not_taken: *not_taken }
+                    Edge::Conditional {
+                        taken: *taken,
+                        not_taken: *not_taken,
+                    }
                 }
                 Terminator::IndirectJump => {
                     prog.unresolved.insert(block.start);
@@ -336,14 +364,23 @@ pub(crate) fn discover_observing_with_seeds(pe:&Pe,max_passes:u32,extra_seeds:&[
             // instruction after the call continues this block's chain.
             for insn in &block.instructions {
                 for op in &insn.ops {
-                    if let IR::Call { target: crate::Operand::Ram { offset, .. }, .. } = op {
+                    if let IR::Call {
+                        target: crate::Operand::Ram { offset, .. },
+                        ..
+                    } = op
+                    {
                         prog.functions.insert(*offset);
                         work.insert((*offset, "call target"));
                     }
                     // An initialized global may hold a callback even when its
                     // eventual CALL lives in a different block. Keep the guest
                     // pointer in memory and discover its executable destination.
-                    if let IR::Load { addr: Operand::Const { value, .. }, size: 4, .. } = op {
+                    if let IR::Load {
+                        addr: Operand::Const { value, .. },
+                        size: 4,
+                        ..
+                    } = op
+                    {
                         if let Some(target) = image_code_pointer(pe, *value) {
                             prog.functions.insert(target);
                             work.insert((target, "global function pointer"));
@@ -352,20 +389,32 @@ pub(crate) fn discover_observing_with_seeds(pe:&Pe,max_passes:u32,extra_seeds:&[
                     // CRT initializer ranges and callback tables are often
                     // passed by address, then traversed through a register.
                     let literal = match op {
-                        IR::Copy { src:Operand::Const {value,..}, .. } |
-                        IR::Store { value:Operand::Const {value,..}, .. } => Some(*value),
+                        IR::Copy {
+                            src: Operand::Const { value, .. },
+                            ..
+                        }
+                        | IR::Store {
+                            value: Operand::Const { value, .. },
+                            ..
+                        } => Some(*value),
                         _ => None,
                     };
-                    if let Some(address)=literal {
-                        let call_instruction=insn.ops.iter().any(|op|matches!(op,IR::Call {..}|IR::CallInd {..}));
-                        let instruction_pointer=matches!(op,IR::Copy {dst:Operand::Reg {name,..},..} if name.as_ref()=="FPUInstructionPointer");
-                        if !call_instruction && !instruction_pointer && points_into_code(pe,pe.image_base,address) {
+                    if let Some(address) = literal {
+                        let call_instruction = insn
+                            .ops
+                            .iter()
+                            .any(|op| matches!(op, IR::Call { .. } | IR::CallInd { .. }));
+                        let instruction_pointer = matches!(op,IR::Copy {dst:Operand::Reg {name,..},..} if name.as_ref()=="FPUInstructionPointer");
+                        if !call_instruction
+                            && !instruction_pointer
+                            && points_into_code(pe, pe.image_base, address)
+                        {
                             prog.functions.insert(address);
-                            work.insert((address,"code address literal"));
+                            work.insert((address, "code address literal"));
                         }
-                        for target in image_function_table(pe,address) {
+                        for target in image_function_table(pe, address) {
                             prog.functions.insert(target);
-                            work.insert((target,"referenced function table"));
+                            work.insert((target, "referenced function table"));
                         }
                     }
                 }
@@ -398,7 +447,7 @@ pub(crate) fn discover_observing_with_seeds(pe:&Pe,max_passes:u32,extra_seeds:&[
             }
             prog.jump_table_targets.extend(targets.iter().copied());
             prog.resolved_indirect.insert(site);
-            prog.indirect_targets.insert(site,targets.clone());
+            prog.indirect_targets.insert(site, targets.clone());
             prog.unresolved.remove(&site);
             for t in targets {
                 work.insert((t, "jump table"));
@@ -413,24 +462,43 @@ pub(crate) fn discover_observing_with_seeds(pe:&Pe,max_passes:u32,extra_seeds:&[
 fn image_code_pointer(pe: &Pe, address: u64) -> Option<u64> {
     let rva = u32::try_from(address.checked_sub(pe.image_base)?).ok()?;
     let section = &pe.sections[pe.section_of(rva)?];
-    if section.is_executable() { return None; }
+    if section.is_executable() {
+        return None;
+    }
     let offset = (rva - section.virtual_address) as usize;
     let target = u32::from_le_bytes(section.data.get(offset..offset + 4)?.try_into().ok()?) as u64;
     let target_rva = u32::try_from(target.checked_sub(pe.image_base)?).ok()?;
-    pe.sections[pe.section_of(target_rva)?].is_executable().then_some(target)
+    pe.sections[pe.section_of(target_rva)?]
+        .is_executable()
+        .then_some(target)
 }
 
-fn image_function_table(pe:&Pe,address:u64)->Vec<u64> {
-    let Some(rva)=address.checked_sub(pe.image_base).and_then(|r|u32::try_from(r).ok()) else {return vec![];};
-    let Some(section)=pe.section_of(rva).map(|i|&pe.sections[i]) else {return vec![];};
-    if section.is_executable() || address%4!=0 {return vec![];}
-    let offset=(rva-section.virtual_address) as usize;
-    let Some(bytes)=section.data.get(offset..) else {return vec![];};
-    let mut result=Vec::new();
+fn image_function_table(pe: &Pe, address: u64) -> Vec<u64> {
+    let Some(rva) = address
+        .checked_sub(pe.image_base)
+        .and_then(|r| u32::try_from(r).ok())
+    else {
+        return vec![];
+    };
+    let Some(section) = pe.section_of(rva).map(|i| &pe.sections[i]) else {
+        return vec![];
+    };
+    if section.is_executable() || address % 4 != 0 {
+        return vec![];
+    }
+    let offset = (rva - section.virtual_address) as usize;
+    let Some(bytes) = section.data.get(offset..) else {
+        return vec![];
+    };
+    let mut result = Vec::new();
     for word in bytes.chunks_exact(4) {
-        let target=u32::from_le_bytes(word.try_into().unwrap()) as u64;
-        if target==0 {continue;}
-        if !points_into_code(pe,pe.image_base,target) {break;}
+        let target = u32::from_le_bytes(word.try_into().unwrap()) as u64;
+        if target == 0 {
+            continue;
+        }
+        if !points_into_code(pe, pe.image_base, target) {
+            break;
+        }
         result.push(target);
     }
     result
@@ -444,21 +512,52 @@ mod callback_tests {
         use wlam_pe::{Machine, PeKind, ResourceTable, Section};
         let mut code = vec![0xcc; 64];
         // mov eax,[0x402000]; test eax,eax; jz ret; call eax; ret
-        code[..12].copy_from_slice(&[0xa1,0,0x20,0x40,0,0x85,0xc0,0x74,2,0xff,0xd0,0xc3]);
-        code[11..17].copy_from_slice(&[0x68,4,0x20,0x40,0,0xc3]);
+        code[..12].copy_from_slice(&[
+            0xa1, 0, 0x20, 0x40, 0, 0x85, 0xc0, 0x74, 2, 0xff, 0xd0, 0xc3,
+        ]);
+        code[11..17].copy_from_slice(&[0x68, 4, 0x20, 0x40, 0, 0xc3]);
         code[32] = 0xc3;
         code[36] = 0xc3;
         let section = |name: &str, rva, flags, data: Vec<u8>| Section {
-            name:name.into(),virtual_address:rva,virtual_size:data.len() as u32,
-            file_offset:0,file_size:data.len() as u32,characteristics:flags,data,
+            name: name.into(),
+            virtual_address: rva,
+            virtual_size: data.len() as u32,
+            file_offset: 0,
+            file_size: data.len() as u32,
+            characteristics: flags,
+            data,
         };
         let pe = Pe {
-            kind:PeKind::Pe32,machine:Machine::I386,image_base:0x400000,entry_point_rva:0x1000,
-            section_alignment:4096,file_alignment:512,subsystem:2,dll_characteristics:0,
-            size_of_image:0x3000,size_of_headers:512,
-            sections:vec![section(".text",0x1000,0x60000020,code),section(".data",0x2000,0xc0000040,[0x401020u32,0,0x401024,0,123].into_iter().flat_map(u32::to_le_bytes).collect())],
-            directories:vec![],imports:vec![],exports:vec![],relocations:vec![],
-            resources:ResourceTable::default(),unwind_info_rva:0,unwind_info_size:0,raw:vec![],
+            kind: PeKind::Pe32,
+            machine: Machine::I386,
+            image_base: 0x400000,
+            entry_point_rva: 0x1000,
+            section_alignment: 4096,
+            file_alignment: 512,
+            subsystem: 2,
+            dll_characteristics: 0,
+            size_of_image: 0x3000,
+            size_of_headers: 512,
+            sections: vec![
+                section(".text", 0x1000, 0x60000020, code),
+                section(
+                    ".data",
+                    0x2000,
+                    0xc0000040,
+                    [0x401020u32, 0, 0x401024, 0, 123]
+                        .into_iter()
+                        .flat_map(u32::to_le_bytes)
+                        .collect(),
+                ),
+            ],
+            directories: vec![],
+            imports: vec![],
+            exports: vec![],
+            relocations: vec![],
+            resources: ResourceTable::default(),
+            unwind_info_rva: 0,
+            unwind_info_size: 0,
+            raw: vec![],
         };
         let discovered = crate::with_big_stack(move || discover(&pe, 16));
         assert!(!discovered.incomplete());
@@ -537,8 +636,12 @@ pub fn recover_tables_at(pe: &Pe, sites: &[u64]) -> Vec<(u64, Vec<u64>)> {
     // The recovery needs the site's block, so lift just that block.
     let base = pe.image_base as u64;
     for &site in sites {
-        let Some(rva) = rva_of(base, site) else { continue };
-        let Some(idx) = pe.section_of(rva) else { continue };
+        let Some(rva) = rva_of(base, site) else {
+            continue;
+        };
+        let Some(idx) = pe.section_of(rva) else {
+            continue;
+        };
         let sec = &pe.sections[idx];
         let off = (rva - sec.virtual_address) as usize;
         let bytes = sec.data[off.min(sec.data.len())..].to_vec();
@@ -571,7 +674,11 @@ pub fn recovery_report(pe: &Pe, prog: &Program) -> Vec<(u64, Option<u64>, bool)>
     prog.unresolved
         .iter()
         .map(|&site| {
-            let ops = prog.blocks.get(&site).map(|b| block_ops(pe, b)).unwrap_or_default();
+            let ops = prog
+                .blocks
+                .get(&site)
+                .map(|b| block_ops(pe, b))
+                .unwrap_or_default();
             let has_indexed_load = ops.iter().any(|o| {
                 matches!(o, IR::Bin { op: BinOp::Mul, operands, .. }
                     if operands.1.const_or_ram() == Some(4))
@@ -603,7 +710,9 @@ pub(crate) fn recover_jump_tables(pe: &Pe, prog: &Program) -> Vec<(u64, Vec<u64>
     let base = pe.image_base as u64;
     let mut out = Vec::new();
     for &site in &prog.unresolved {
-        let Some(block) = prog.blocks.get(&site) else { continue };
+        let Some(block) = prog.blocks.get(&site) else {
+            continue;
+        };
         if !matches!(block.edge, Edge::IndirectJump { .. }) {
             continue;
         }
@@ -614,17 +723,27 @@ pub(crate) fn recover_jump_tables(pe: &Pe, prog: &Program) -> Vec<(u64, Vec<u64>
         }) else {
             continue;
         };
-        let Some(expression)=table_expression(&ops,&jump_target) else {continue;};
-        if expression.indexed && expression.scale!=4 {continue;}
-        let table=Some(expression.base);
+        let Some(expression) = table_expression(&ops, &jump_target) else {
+            continue;
+        };
+        if expression.indexed && expression.scale != 4 {
+            continue;
+        }
+        let table = Some(expression.base);
         let Some(table) = table else { continue };
-        let Some(table_rva) = rva_of(base, table) else { continue };
+        let Some(table_rva) = rva_of(base, table) else {
+            continue;
+        };
         // Tables may live in writable data OR in .text: MSVC places jump tables
         // in .text right after the function (verified: Uxn32's .text has
         // rawsize 0x10000 with .rdata starting at VA 0x11000, so RVA 0x2938 is
         // inside .text and holds the table). Only require the RVA to be mapped.
-        let Some(_) = pe.section_of(table_rva) else { continue };
-        let cap = expression.bound.or_else(||scan_back_for_bound(pe, block.end, 96))
+        let Some(_) = pe.section_of(table_rva) else {
+            continue;
+        };
+        let cap = expression
+            .bound
+            .or_else(|| scan_back_for_bound(pe, block.end, 96))
             .map(|b| b as usize + 1)
             .unwrap_or(256)
             .min(256);
@@ -633,8 +752,12 @@ pub(crate) fn recover_jump_tables(pe: &Pe, prog: &Program) -> Vec<(u64, Vec<u64>
         // because probe code used RVAs while discovery passed VAs.
         let mut targets = Vec::new();
         for i in 0..cap {
-            let Some(slot_rva) = table_rva.checked_add((i as u32) * 4) else { break };
-            let Some(raw) = pe.read_rva(slot_rva, 4) else { break };
+            let Some(slot_rva) = table_rva.checked_add((i as u32) * 4) else {
+                break;
+            };
+            let Some(raw) = pe.read_rva(slot_rva, 4) else {
+                break;
+            };
             let v = u64::from(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]));
             if !points_into_code(pe, base, v) {
                 break;
@@ -648,51 +771,115 @@ pub(crate) fn recover_jump_tables(pe: &Pe, prog: &Program) -> Vec<(u64, Vec<u64>
     out
 }
 
-#[derive(Clone,Copy)]
-struct TableExpression {base:u64,indexed:bool,scale:u64,bound:Option<u64>}
-fn table_expression(ops:&[IR],target:&Operand)->Option<TableExpression> {
-    fn constant(value:u64)->TableExpression {TableExpression {base:value,indexed:false,scale:0,bound:Some(0)}}
-    fn resolve(ops:&[IR],operand:&Operand,depth:u32)->Option<TableExpression> {
-        if depth>64 {return None;}
-        let unknown=||matches!(operand,Operand::Reg {..}).then_some(TableExpression {base:0,indexed:true,scale:1,bound:None});
-        if let Operand::Const {value,..}=operand {return Some(constant(*value));}
-        let producer=ops.iter().enumerate().rev().find(|(_,op)|match op {
-            IR::Copy {dst,..}|IR::Un {dst,..}|IR::Bin {dst,..}|IR::Load {dst,..}=>dst==operand,
-            _=>false,
+#[derive(Clone, Copy)]
+struct TableExpression {
+    base: u64,
+    indexed: bool,
+    scale: u64,
+    bound: Option<u64>,
+}
+fn table_expression(ops: &[IR], target: &Operand) -> Option<TableExpression> {
+    fn constant(value: u64) -> TableExpression {
+        TableExpression {
+            base: value,
+            indexed: false,
+            scale: 0,
+            bound: Some(0),
+        }
+    }
+    fn resolve(ops: &[IR], operand: &Operand, depth: u32) -> Option<TableExpression> {
+        if depth > 64 {
+            return None;
+        }
+        let unknown = || {
+            matches!(operand, Operand::Reg { .. }).then_some(TableExpression {
+                base: 0,
+                indexed: true,
+                scale: 1,
+                bound: None,
+            })
+        };
+        if let Operand::Const { value, .. } = operand {
+            return Some(constant(*value));
+        }
+        let producer = ops.iter().enumerate().rev().find(|(_, op)| match op {
+            IR::Copy { dst, .. }
+            | IR::Un { dst, .. }
+            | IR::Bin { dst, .. }
+            | IR::Load { dst, .. } => dst == operand,
+            _ => false,
         });
-        let Some((at,producer))=producer else {
+        let Some((at, producer)) = producer else {
             return unknown();
         };
-        let earlier=&ops[..at];
+        let earlier = &ops[..at];
         match producer {
-            IR::Copy {src,..}|IR::Un {op:crate::UnOp::Zext,src,..}=>resolve(earlier,src,depth+1),
-            IR::Bin {op,operands,..}=>{
-                let left=resolve(earlier,&operands.0,depth+1)?;
-                let right=resolve(earlier,&operands.1,depth+1)?;
+            IR::Copy { src, .. }
+            | IR::Un {
+                op: crate::UnOp::Zext,
+                src,
+                ..
+            } => resolve(earlier, src, depth + 1),
+            IR::Bin { op, operands, .. } => {
+                let left = resolve(earlier, &operands.0, depth + 1)?;
+                let right = resolve(earlier, &operands.1, depth + 1)?;
                 match op {
-                    BinOp::Add if !(left.indexed&&right.indexed)=>Some(TableExpression {
-                        base:left.base.wrapping_add(right.base)&0xffffffff,
-                        indexed:left.indexed||right.indexed,scale:left.scale+right.scale,
-                        bound:if left.indexed {left.bound} else {right.bound},
+                    BinOp::Add if !(left.indexed && right.indexed) => Some(TableExpression {
+                        base: left.base.wrapping_add(right.base) & 0xffffffff,
+                        indexed: left.indexed || right.indexed,
+                        scale: left.scale + right.scale,
+                        bound: if left.indexed {
+                            left.bound
+                        } else {
+                            right.bound
+                        },
                     }),
-                    BinOp::Mul if !right.indexed=>Some(TableExpression {base:left.base.wrapping_mul(right.base)&0xffffffff,scale:left.scale*right.base,..left}),
-                    BinOp::Mul if !left.indexed=>Some(TableExpression {base:right.base.wrapping_mul(left.base)&0xffffffff,scale:right.scale*left.base,..right}),
-                    BinOp::And if !right.indexed=>Some(TableExpression {base:0,indexed:true,scale:1,bound:Some(right.base)}),
-                    BinOp::And if !left.indexed=>Some(TableExpression {base:0,indexed:true,scale:1,bound:Some(left.base)}),
-                    _=>unknown(),
+                    BinOp::Mul if !right.indexed => Some(TableExpression {
+                        base: left.base.wrapping_mul(right.base) & 0xffffffff,
+                        scale: left.scale * right.base,
+                        ..left
+                    }),
+                    BinOp::Mul if !left.indexed => Some(TableExpression {
+                        base: right.base.wrapping_mul(left.base) & 0xffffffff,
+                        scale: right.scale * left.base,
+                        ..right
+                    }),
+                    BinOp::And if !right.indexed => Some(TableExpression {
+                        base: 0,
+                        indexed: true,
+                        scale: 1,
+                        bound: Some(right.base),
+                    }),
+                    BinOp::And if !left.indexed => Some(TableExpression {
+                        base: 0,
+                        indexed: true,
+                        scale: 1,
+                        bound: Some(left.base),
+                    }),
+                    _ => unknown(),
                 }
             }
             // A loaded value can itself be a pre-decoded switch index, as
             // in MSVC's byte-map + DWORD target-table pattern. Its value is
             // unknown statically, but it still participates as the index.
-            IR::Load { .. } => Some(TableExpression {base:0,indexed:true,scale:1,bound:None}),
-            _=>unknown(),
+            IR::Load { .. } => Some(TableExpression {
+                base: 0,
+                indexed: true,
+                scale: 1,
+                bound: None,
+            }),
+            _ => unknown(),
         }
     }
-    let target=if let Operand::Ram {offset,size}=target {
-        Operand::Temp {offset:*offset,size:*size}
-    } else {target.clone()};
-    resolve(ops,&target,0)
+    let target = if let Operand::Ram { offset, size } = target {
+        Operand::Temp {
+            offset: *offset,
+            size: *size,
+        }
+    } else {
+        target.clone()
+    };
+    resolve(ops, &target, 0)
 }
 
 /// Upper bound on a switch's index, from the `cmp <reg>, imm` encoding.
@@ -718,13 +905,21 @@ fn scan_back_for_bound(pe: &Pe, site: u64, limit: u64) -> Option<u64> {
     for i in 0..window.len() {
         let imm = match window[i] {
             0x3c => window.get(i + 1).map(|b| *b as u64),
-            0x80 if window.get(i + 1).map(|b| (b >> 3) & 7 == 7).unwrap_or(false) => {
+            0x80 if window
+                .get(i + 1)
+                .map(|b| (b >> 3) & 7 == 7)
+                .unwrap_or(false) =>
+            {
                 window.get(i + 2).map(|b| *b as u64)
             }
             0x3d => window
                 .get(i + 1..i + 5)
                 .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u64),
-            0x83 if window.get(i + 1).map(|b| (b >> 3) & 7 == 7).unwrap_or(false) => {
+            0x83 if window
+                .get(i + 1)
+                .map(|b| (b >> 3) & 7 == 7)
+                .unwrap_or(false) =>
+            {
                 window.get(i + 2).map(|b| *b as i8 as i64 as u64)
             }
             _ => None,
@@ -735,7 +930,6 @@ fn scan_back_for_bound(pe: &Pe, site: u64, limit: u64) -> Option<u64> {
     }
     best
 }
-
 
 /// Convert a virtual address to an RVA, refusing addresses below the base.
 ///
@@ -760,14 +954,22 @@ fn points_into_code(pe: &Pe, base: u64, addr: u64) -> bool {
 /// sizes, so this is a targeted re-decode rather than cached IR).
 fn block_ops(pe: &Pe, block: &DiscoveredBlock) -> Vec<IR> {
     let base = pe.image_base as u64;
-    let Some(rva) = rva_of(base, block.start) else { return Vec::new() };
-    let Some(idx) = pe.section_of(rva) else { return Vec::new() };
+    let Some(rva) = rva_of(base, block.start) else {
+        return Vec::new();
+    };
+    let Some(idx) = pe.section_of(rva) else {
+        return Vec::new();
+    };
     let sec = &pe.sections[idx];
     let off = (rva - sec.virtual_address) as usize;
     let bytes = sec.data[off.min(sec.data.len())..].to_vec();
     let start = block.start;
     crate::with_big_stack(move || {
-        lift_block(&bytes, start).instructions.into_iter().flat_map(|i| i.ops).collect()
+        lift_block(&bytes, start)
+            .instructions
+            .into_iter()
+            .flat_map(|i| i.ops)
+            .collect()
     })
 }
 
@@ -847,11 +1049,18 @@ mod tests {
         };
         let entries = prologue_candidates(&pe);
         let prog = crate::with_big_stack(move || discover(&pe, 64));
-        assert!(prog.functions().len() > 10, "found {} functions", prog.functions().len());
+        assert!(
+            prog.functions().len() > 10,
+            "found {} functions",
+            prog.functions().len()
+        );
         // A workable partial translation should cover a meaningful slice.
         // Completeness, not just a count: do the function entry points found
         // (by an independent scan for prologues) appear as blocks?
-        let covered = entries.iter().filter(|a| prog.blocks().any(|b| b.start == **a)).count();
+        let covered = entries
+            .iter()
+            .filter(|a| prog.blocks().any(|b| b.start == **a))
+            .count();
         eprintln!(
             "coverage: {covered}/{} prologue-derived entry points have blocks",
             entries.len()
@@ -883,7 +1092,10 @@ mod tests {
                 "unresolved site {site:#x} must be a block"
             );
         }
-        eprintln!("unresolved indirect sites: {}", prog.unresolved_indirect().len());
+        eprintln!(
+            "unresolved indirect sites: {}",
+            prog.unresolved_indirect().len()
+        );
     }
 
     #[test]
@@ -893,7 +1105,11 @@ mod tests {
         };
         let prog = crate::with_big_stack(move || discover(&pe, 64));
         let unknown = prog.unknown_userops();
-        assert!(unknown.is_empty(), "unknown userops reached: {unknown:?} via {:?}", prog.userops());
+        assert!(
+            unknown.is_empty(),
+            "unknown userops reached: {unknown:?} via {:?}",
+            prog.userops()
+        );
     }
 
     #[test]
@@ -965,7 +1181,10 @@ mod table_tests {
         // `jmp [0x411124]` is an IAT thunk: the slot holds 0x125da, not code.
         let sites = vec![0x40dde0u64, 0x40ddcbu64];
         let recovered = crate::with_big_stack(move || recover_tables_at(&pe, &sites));
-        assert!(recovered.is_empty(), "thunks must not yield tables: {recovered:?}");
+        assert!(
+            recovered.is_empty(),
+            "thunks must not yield tables: {recovered:?}"
+        );
     }
 }
 
@@ -978,11 +1197,16 @@ mod machine_guard_tests {
     /// error. Both benchmark builds are present, so this is testable directly.
     #[test]
     fn amd64_image_is_refused_not_misdecoded() {
-        let Ok(bytes) = std::fs::read("../../benchmarks/minesweeper/bin/minesweeper-x64.exe") else {
+        let Ok(bytes) = std::fs::read("../../benchmarks/minesweeper/bin/minesweeper-x64.exe")
+        else {
             return;
         };
         let Ok(pe) = Pe::parse(&bytes) else { return };
-        assert_eq!(pe.machine, wlam_pe::Machine::Amd64, "fixture must be the x64 build");
+        assert_eq!(
+            pe.machine,
+            wlam_pe::Machine::Amd64,
+            "fixture must be the x64 build"
+        );
         let prog = crate::with_big_stack(move || discover(&pe, 8));
         assert!(prog.refused(), "an amd64 image must be refused");
         assert!(prog.blocks().count() == 0, "no blocks may be produced");
@@ -991,13 +1215,18 @@ mod machine_guard_tests {
 
     #[test]
     fn i386_image_is_accepted() {
-        let Ok(bytes) = std::fs::read("../../benchmarks/minesweeper/bin/minesweeper-x86.exe") else {
+        let Ok(bytes) = std::fs::read("../../benchmarks/minesweeper/bin/minesweeper-x86.exe")
+        else {
             return;
         };
         let pe = Pe::parse(&bytes).expect("parse");
         assert_eq!(pe.machine, wlam_pe::Machine::I386);
         let prog = crate::with_big_stack(move || discover(&pe, 8));
-        assert!(!prog.refused(), "a PE32 image must be accepted: {:?}", prog.problems());
+        assert!(
+            !prog.refused(),
+            "a PE32 image must be accepted: {:?}",
+            prog.problems()
+        );
     }
 
     /// An address below the image base must not be mistaken for RVA 0.
@@ -1025,7 +1254,10 @@ mod machine_guard_tests {
         // everything and "pass" for the wrong reason.
         let entry = base + pe.entry_point_rva as u64;
         assert!(rva_of(base, entry).is_some(), "the entry point must map");
-        assert!(points_into_code(&pe, base, entry), "the entry point is code");
+        assert!(
+            points_into_code(&pe, base, entry),
+            "the entry point is code"
+        );
     }
 
     /// Discovery must never claim a block outside the image.
@@ -1039,7 +1271,9 @@ mod machine_guard_tests {
             "../../north-star/bin/Uxn32.exe",
             "../../benchmarks/minesweeper/bin/minesweeper-x86.exe",
         ] {
-            let Ok(data) = std::fs::read(path) else { continue };
+            let Ok(data) = std::fs::read(path) else {
+                continue;
+            };
             let Ok(pe) = Pe::parse(&data) else { continue };
             let base = pe.image_base as u64;
             // `with_big_stack` requires `'static`, so collect the mapped section

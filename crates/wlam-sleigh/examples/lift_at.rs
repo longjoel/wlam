@@ -20,9 +20,15 @@ fn main() {
     let off = (rva - sec.virtual_address) as usize;
     let slice = sec.data[off..].to_vec();
     let lb = with_big_stack(move || lift_block(&slice, start));
-    println!("{start:#x}: end={:#x} terminator={:?}", lb.end, lb.terminator);
+    println!(
+        "{start:#x}: end={:#x} terminator={:?}",
+        lb.end, lb.terminator
+    );
     for ins in &lb.instructions {
-        println!("  {:#x}  {:<38} unlowered={}", ins.address, ins.disassembly, ins.unlowered);
+        println!(
+            "  {:#x}  {:<38} unlowered={}",
+            ins.address, ins.disassembly, ins.unlowered
+        );
         if std::env::var("OPS").is_ok() {
             for op in &ins.ops {
                 println!("        {op:?}");

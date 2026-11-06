@@ -16,6 +16,19 @@ or active pipeline and has known failing semantic tests.
 - A real PE32 fixture tested in Wasmi and Chromium: exact framebuffer pixels,
   click/key interaction, repainting, normal exit, responsive waiting, Stop/Restart
   and termination of runaway guest execution. See apps/web/README.md.
+- A desktop recompile wizard: drop a ZIP on the web runner, select the entry
+  executable, inspect import compatibility, recompile with the native CLI, and
+  publish the bundle plus JSON/Markdown reports under `target/`. The wizard uses
+  the same analyzer/compiler boundary as Studio; the compiler itself still runs
+  natively, not in a browser worker.
+- A host-provided MSVCRT layer for versioned CRT DLL imports: allocator,
+  `__getmainargs`, `_initterm` guest-initializer callbacks, `_onexit`/`exit`,
+  CRT globals, and the floating-point control word. See
+  [crt.md](crt.md); SEH/C++ unwinding and stdio remain deliberate gaps.
+- Static linking of user-supplied non-system DLLs by name or ordinal, with
+  IAT patching, merged discovery, DllMain invocation, and `linked` analysis.
+  See [linked-dlls.md](linked-dlls.md). Rebasing, forwarders, and runtime
+  `LoadLibrary` of supplied DLLs are not implemented.
 - Register snapshots use eight bytes per register through one shared address
   function. Block execution loads the snapshot before guest operations.
 - Guest calls adopt the callee's resulting ESP, including return/argument cleanup.

@@ -1,8 +1,9 @@
-# Win16 design and OpenGL status
+# Win16 and OpenGL status
 
-Win16 remains a design proposal. OpenGL support is being developed against the
-external TOLYMPIC demo. Keep both tracks independent of the Hover Win32 API
-work.
+Win16 has a checked NE loader and limited 16-bit execution prototype; its
+Windows API runtime is still under development. OpenGL support is being
+developed against the external TOLYMPIC demo. Keep both tracks independent of
+the Hover Win32 API work.
 
 ## Recommendation
 
@@ -16,19 +17,24 @@ and OpenGL is not established as a Hover dependency.
 
 ## What the repository provides
 
-- `wlam-pe` parses PE images, not NE executables.
-- `wlam-sleigh/src/lib.rs` still executes through its existing 32-bit lifter.
+- `wlam-pe` parses PE images. `wlam-ne` parses MZ/NE metadata, loads
+  selector-backed segments, applies supported fixups and steps a limited
+  subset of decoded 16-bit x86 instructions.
+- `wlam-sleigh/src/lib.rs` still executes PE code through its existing 32-bit
+  lifter; the separate `NeMachine` bridge handles the limited Win16 subset.
   `rsleigh-api` exposes a decoder-only `X86_16Protected` mode backed by the
   generated x86-32 language with 16-bit default operand/address sizes. This
-  establishes a decoding path, not a 16-bit execution mode.
+  establishes a decoding path; the separate `NeMachine` bridge executes only a
+  subset of its P-code.
 - Discovery, compilation and bundle metadata use flat image addresses.
 - `docs/abi.md` specifies a 32-bit stack and Win32 imports.
 - `wlam-host` now has a narrow OPENGL32/GLU32 host surface and WGL/pixel-format
   lifecycle for the TOLYMPIC path. It is not a complete OpenGL 1.1 surface.
 - `wlam-browser-host` is the browser-facing API adapter. Browser presentation
   reuses the window/DC surface lifecycle and `SwapBuffers` path.
-- The x86 lifter remains 32-bit only. No NE parser, selector model or Win16 ABI
-  has been implemented.
+- The general x86 lifter remains 32-bit only. `wlam-ne` has a separate,
+  checked instruction-step bridge and bounded NE resource-data access. Broad
+  CPU coverage and the Win16 ABI are not implemented.
 
 ## Win16
 
@@ -41,8 +47,8 @@ DOS executables, real-mode Windows, drivers, Win32s and arbitrary mixed
 1. Prove the CPU mode first with a tiny decoder experiment: default-16
    instruction decoding, 16-bit effective addresses, operand/address overrides,
    and far transfers. Record which behavior the pinned Sleigh decoder provides
-   and which needs an extension. This is a low-cost go/no-go gate before the
-   executable loader grows around a 32-bit-only decoder.
+   and which needs an extension. This was the low-cost go/no-go gate before
+   growing an executable loader around a 32-bit-only decoder.
    **Decoder-only step implemented:** `rsleigh-api::Architecture::X86_16Protected`
    uses the generated x86-32 language with `addrsize=0`, `opsize=0`, and
    `protectedMode=1`, and reports a 2-byte address size. A direct generated-language probe configured
@@ -52,49 +58,113 @@ DOS executables, real-mode Windows, drivers, Win32s and arbitrary mixed
    target `0x56781234`; the real-mode processor spec instead linearizes it as
    `0x000579b4`. The patterns exist, but the generated context alone is not a
    Win16 runtime: the public mode still needs selector or segment-base
-   semantics at execution, and the x86 lifter does not yet consume it. The
+   semantics at execution, and the general x86 lifter does not consume it. A
+   separate `NeMachine` bridge now handles a limited operation subset. The
    public `Decoder` API was compiled with the pinned Rust toolchain and
    exercised for `MOV AX,imm16`, `[BX+SI]`, 66/67 overrides, `CALLF`, `RETF`,
    and CS override; its address-size query returns 2. In
    `toolchain/rsleigh/rsleigh-api/examples/x86_16_protected.rs` this probe is
-   retained as a runnable P-Code inspection example. The API now normalizes
-   direct near-relative branch and call targets to the instruction's selector
-   and wraps their 16-bit IP; a call crossing IP `0xffff` stores return IP
-   `0x0001`. The 66-overridden near branch remains 32-bit and is not normalized.
-   A fresh compile of the public API and example against the cached generated
-   crates confirms a remaining defect: indirect near CALL/JMP at `CS:FFFE`
-   writes `CS+1` into the CS register before transfer. The attempted source
-   rewrite did not fix that behavior and was removed. Direct near-relative
-   targets are covered, but indirect transfers and segment-aware execution
-   remain open.
+   retained as a runnable P-Code inspection example. The API normalizes direct
+   near-relative branch and call targets to the instruction's selector and
+   wraps their 16-bit IP; a call crossing IP `0xffff` stores return IP `0x0001`.
+   Default-16 indirect near CALL/JMP now retain the instruction's selector
+   across IP wrap. Regression tests cover both transfers at `CS:FFFE` and a
+   non-wrapping address; the runnable example shows their CS assignments as
+   `0x1234`. The 66-overridden near branch remains 32-bit and is not normalized.
+   General segment-aware execution remains open beyond the limited bridge.
    `X86_32`, `0x67` does
    decode a 16-bit effective address and `0x66` a 16-bit operand, but these are
    overrides inside a 32-bit-default decoder. A CS override is printed without
    adding a selector base to the load address. Worse, `66 9a 78 56 bc 9a`, an
    operand-size-overridden far call carrying `9abc:5678`, decodes to a bogus
    near-like target. Therefore `X86_32` cannot serve as the Win16 execution
-   mode. The public 16-bit decoder still is not ready to feed the existing
-   flat lifter: near targets are normalized in decoder P-Code, but CS/offset
-   remain packed rather than resolved through an NE selector table. A far call
-   decodes its target as packed `selector:offset` (`0x9abc5678` here), while
-   its stack accesses use segmented-memory userops; those semantics must
-   resolve through the selector table. A 66-overridden near transfer requires
+   mode. The public 16-bit decoder still cannot feed the existing flat lifter
+   directly: CS:IP targets remain packed rather than resolved through an NE
+   selector table. The separate `NeMachine` bridge handles a limited subset.
+   Immediate default-16 far CALL/JMP targets are normalized to packed `selector:offset`
+   (`0x9abc5678` for the probe) because the generated P-Code mispacked them;
+   their stack accesses still use segmented-memory userops that must resolve
+   through the selector table. Indirect far transfers also need selector-aware
+   execution. A 66-overridden near transfer requires
    a code-location representation that can carry a 32-bit offset separately
-   from CS. Keep selector-aware execution and that override as gates before
-   adding the NE loader.
+   from CS. The NE parser and selector loader now exist; selector-aware
+   execution and the 66 override remain gates before expanding binary support.
 2. Add an NE parser and loader, preferably in a separate `wlam-ne` crate.
-   Decode segments, entry bundles, module references, imports by ordinal/name,
-   segment relocation chains, resources and initial CS:IP / SS:SP / DGROUP.
-   Validate file ranges, relocation targets and allocation sizes. A zero-sized
-   encoded segment can represent 64 KiB; do not treat it as an empty allocation.
-3. Introduce a guest selector table with base, limit and access metadata.
-   Protected-mode selectors are table references, not real-mode `segment << 4`
-   addresses. Translate and validate selector:offset accesses with the relevant
-   operand/address width. Preserve aliasing when selectors share storage.
+   **Parser milestone implemented:** `wlam-ne` locates the NE header through
+   the DOS stub, validates the header and segment-table ranges, checks each
+   file-backed segment range, and exposes initial CS:IP / SS:SP, flags, and
+   allocation metadata. Encoded zero length for a file-backed segment and zero
+   minimum allocation are represented as 64 KiB; sector offset zero instead
+   denotes uninitialized storage with no file bytes. It also parses segment
+   relocation records and validates non-additive source chains against segment
+   bytes, rejecting cycles and truncated/out-of-range sources. Internal targets
+   are checked against segment allocation bounds or movable entry ordinals;
+   import targets are checked against module/name tables, using the NE
+   one-based module index. Target words remain available in parsed records for
+   inspection. It also parses
+   fixed, movable and unused entry bundles into ordinal/segment/offset records,
+   validating table bounds, segment references and offsets. Unit fixtures cover
+   valid metadata, alignment scaling, 64 KiB segments, entry bundles, valid and
+   additive relocations, malformed chains, invalid signatures/alignment and
+   truncated segment data. It also parses module-reference indices and the
+   length-prefixed imported names they reference, plus imported names used by
+   import-name relocations; names remain raw bytes. Import ordinal/name indices
+   are range-checked. `NeImage::load_segments` now allocates segment storage,
+   copies initialized bytes, zero-fills allocation tails, and maps segment
+   numbers to selectors (successive descriptors advance the selector index by
+   eight). Selector reads, writes and execute checks validate
+   limits and code/data/read-only permissions; aliases share the same backing
+   storage. `NeLoadedImage::apply_relocations` applies internal segment/entry
+   targets for byte, selector, 16-bit offset and 32-bit far-pointer fixups;
+   additive fixups add the target to the existing source value. The typed
+   resolver binds imported names or ordinals to explicit guest far addresses
+   inside mapped selectors and applies them through the same all-or-nothing
+   fixup path. Unsupported fixup kinds and unresolved imports fail without
+   committing partial changes.
+   `NeImage::start_state` resolves initial CS:IP and SS:SP to allocated
+   selectors, checking that CS is executable, IP is in bounds, and SS:SP has
+   writable stack storage (SP may equal the allocation limit). `NeLoadedImage::decode_next`
+   fetches through execute-checked selector memory and decodes using
+   `X86_16Protected`; it wraps instruction fetch at IP overflow when the
+   selector allocation is at least 64 KiB. The loader reserves declared heap
+   and stack sizes; start-state setup aligns SP and reserves the initial
+   four-byte task frame. If header SP is zero, it derives the stack top from
+   the declared segment allocation. `NeMachine::new` initializes DS
+   from the automatic data segment and leaves ES null until task startup
+   supplies the PSP selector. `NeLoadedImage::add_region` maps task-owned
+   memory through `NeLoadedImage::add_region_auto`,
+   `NeMachine::initialize_task_psp` fills the 256-byte DOS-compatible
+   process block and command tail, and `NeMachine::initialize_task_start` sets
+   ES and the Windows entry registers from caller-supplied task handles. The
+   caller still allocates parent/environment/instance selectors, supplies the
+   DOS dispatcher target, and provides the API runtime. The checked `NeMachine::step` bridge
+   executes a limited set of decoded integer, boolean, shift, load/store and
+   transfer P-code operations.
+   Handcrafted coverage currently includes a far call, `RETF`, and a
+   register-immediate move. Indirect branches resolve decoder RAM-varnode
+   aliases to their produced Unique temporary when that target is present.
+   Unsupported P-code traps explicitly; this is not a complete 8086/286 CPU
+   and does not yet establish compatibility with real Win16 binaries.
+   `NeImage::parse` now reads the Windows NE resource table,
+   preserves named/ordinal type and resource identifiers, and validates
+   payload offsets and lengths after applying the table's alignment shift;
+   `resource_data` exposes bounded raw bytes. The `inspect_ne` example prints
+   resource IDs, payload ranges and lengths for real NE binaries.
+   `NeResourceManager` provides lazy Find/Load/Lock/Unlock/Free operations with
+   separate 16-bit resource/global handles, guest identifier-pointer decoding,
+   and selector-backed payloads up to one 64 KiB region. Host KERNEL export
+   wiring, full TDB/task structures, instance-handle management and API runtime
+   startup remain unimplemented.
+3. Expand selector-aware CPU execution. Protected-mode selectors are table
+   references, not real-mode `segment << 4` addresses. The `NeMachine` bridge
+   now routes decoded fetches and data loads/stores through selector checks and
+   preserves shared selector storage. Expand instruction and address-size
+   coverage while retaining those bounds and permissions.
 4. Integrate the verified decoder mode with execution and extend it only where
    the experiment showed gaps.
    Cover default operand/address sizes, overrides, segment register loads,
-   near/far calls and returns, stack wrapping and cross-segment dispatch.
+   near/far calls and returns, stack wrapping, conditional and internal P-code
+   control flow, and cross-segment dispatch.
    Code identity needs segment/mode context; a flat byte address alone is not
    a sufficient general key. Do not globally switch the existing PE decoder.
 5. Define a Win16 guest ABI: word-sized arguments, Pascal conventions where
@@ -117,9 +187,11 @@ verified fallback. Never silently execute stale compiled code.
 ### Acceptance sequence
 
 - Decoder probe demonstrating the 16-bit mode behavior and concrete gaps.
-- Handcrafted NE parser fixtures for malformed segments and relocation chains.
-- CPU fixtures for selector aliases, bounds, near/far calls, DS changes and
-  16-bit stack behavior.
+- Handcrafted NE fixtures now cover segment allocation and selector loading,
+  relocation chains, additive fixups, internal and caller-resolved targets,
+  and initial register mapping.
+- CPU fixtures for selector aliases, bounds, near/far calls, DS changes,
+  conditional flow and 16-bit stack behavior.
 - A redistributable Win16 application creates a window, receives input and
   paints text through a callback with the expected DS.
 - A dialog/resource/global-memory fixture, followed by one named historical
@@ -164,6 +236,10 @@ decay to zero. See the CPU capture in
 [`benchmarks/glint/tolympic-settled.png`](../benchmarks/glint/tolympic-settled.png).
 The WebGL frame-90 capture is in
 [`benchmarks/glint/tolympic-webgl-frame90.png`](../benchmarks/glint/tolympic-webgl-frame90.png).
+The original executable also ran under Proton/Wine 11.0 on Mesa llvmpipe.
+Its 400×300 frame differs from the browser CPU capture in 8 pixels, with
+0.00304 mean absolute channel error on an 8-bit scale. See
+[`benchmarks/glint/tolympic-wine-settled.png`](../benchmarks/glint/tolympic-wine-settled.png).
 The CPU rasterizer applies inverse-transpose normal transformation and
 perspective-correct interpolation for smooth colors and fog distance. It
 respects the default disabled `GL_NORMALIZE` state and supports enabling normal
@@ -175,7 +251,8 @@ The `b` blend and `d` geometry callbacks reach the guest GL path, and Escape
 exits cleanly. Teardown successfully unbinds and deletes the WGL context,
 releases the DC and destroys the window. Browser Stop and Restart also produce
 a fresh frame after restart. Functional resize is demonstrated; pixel-level
-fidelity remains provisional until a native reference is available.
+comparison against the documented Wine/Mesa run is near pixel-identical;
+native Windows driver-specific behavior remains unverified.
 
 The settled `b` key path enables blending for the green ring. TOLYMPIC selects
 `GL_SRC_ALPHA, GL_ONE`; the enabled capture differs from the disabled frame
@@ -198,8 +275,8 @@ flat-shading semantics.
 
 The supported renderer is target-driven. Textures, client arrays, alpha test,
 raster operations, selection/feedback, broad GLU and extensions remain outside
-the current demonstrated subset. A native reference capture is still needed
-to judge pixel-level fidelity.
+the current demonstrated subset. A native Windows capture would further check
+driver-specific fidelity beyond the documented Wine/Mesa comparison.
 
 Integrate presentation with the existing HWND/HDC surface model. Define how
 OpenGL surfaces and GDI content compose, how resize works, and when SwapBuffers
@@ -212,7 +289,9 @@ an explicit worker/backend response path. Account for browser context loss.
    display lists and presents frames in Chromium (demonstrated; see
    `benchmarks/glint/tolympic-plan.md`).
 2. The guest reaches its settled five-ring framing after 65 swaps in the
-   diagnostic run; compare with a native reference capture for fidelity.
+   diagnostic run; a Proton/Wine Mesa frame provides a documented reference
+   with only 8 differing RGB pixels. A native Windows capture would further
+   check driver-specific fidelity.
 3. Exercise Space, `b`, `d`, Escape, context teardown, resize, Stop and Restart
    (all are demonstrated).
 4. Expand the documented API subset only against a named target and its actual
@@ -234,6 +313,7 @@ not reasons to interrupt its current startup work.
 - [Khronos fixed-function pipeline](https://wikis.khronos.org/opengl/Fixed_Function_Pipeline)
 - [Khronos WebGL specifications and tests](https://github.com/KhronosGroup/WebGL)
 - [Wine developer hints: selectors and NE segments](https://goma.googlesource.com/wine/+/14f9b844ce56a2f160a230da1da79a3da4d2f124/DEVELOPERS-HINTS)
+- [WineVDM NE task startup register setup](https://github.com/otya128/winevdm/blob/master/krnl386/ne_module.c#L1383-L1468)
 
 The implementation choices and milestone ordering above are proposals derived
 from these API models and the current repository, not claims of compatibility.

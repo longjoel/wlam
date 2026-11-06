@@ -23,7 +23,9 @@ fn widths_of(op: &IR) -> Vec<u32> {
         IR::Float { dst, operands, .. } => {
             vec![dst.size(), operands.0.size(), operands.1.size()]
         }
-        IR::FloatUnary { dst, src, .. } | IR::Convert { dst, src, .. } => vec![dst.size(), src.size()],
+        IR::FloatUnary { dst, src, .. } | IR::Convert { dst, src, .. } => {
+            vec![dst.size(), src.size()]
+        }
         IR::Subpiece { dst, src, .. } => vec![dst.size(), src.size()],
         IR::Branch { target } | IR::IndirectJump { target } | IR::Call { target } => {
             vec![target.size()]
@@ -38,7 +40,13 @@ fn widths_of(op: &IR) -> Vec<u32> {
             }
             v
         }
-        IR::MicroLoop { head, exit, body, repeat, tail } => {
+        IR::MicroLoop {
+            head,
+            exit,
+            body,
+            repeat,
+            tail,
+        } => {
             let mut v: Vec<u32> = head
                 .iter()
                 .chain(body)
@@ -62,90 +70,120 @@ fn main() {
     let pe = Pe::parse(&bytes).expect("parse");
     let base = pe.image_base as u64;
 
-    let (total, wide_blocks, wide_ops, examples, mnemonics, x87_addr_list, reach) = wlam_sleigh::with_big_stack(move || {
-        let prog = discover(&pe, 64);
-        let mut wide_blocks = 0usize;
-        let mut wide_ops = 0usize;
-        let mut examples: Vec<(u64, String)> = Vec::new();
-        let mut distinct: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
-        let mut mnemonics: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
-        let mut x87_addr_list: Vec<(u64, String)> = Vec::new(); // x87_addr_list
-        for b in prog.blocks() {
-            // Re-lift the block: discovery caches sizes, not full IR.
-            let Some(rva) = b.start.checked_sub(base).and_then(|v| u32::try_from(v).ok()) else {
-                continue;
-            };
-            let Some(idx) = pe.section_of(rva) else { continue };
-            let sec = &pe.sections[idx];
-            let off = (rva - sec.virtual_address) as usize;
-            let Some(rest) = sec.data.get(off..) else { continue };
-            let rest = rest.to_vec();
-            let start = b.start;
-            let block = wlam_sleigh::with_big_stack(move || wlam_sleigh::lift_block(&rest, start));
-            let mut hit = false;
-            for insn in &block.instructions {
-                for op in &insn.ops {
-                    for w in widths_of(op) {
-                        if w == 10 {
-                            wide_ops += 1;
-                            hit = true;
+    let (total, wide_blocks, wide_ops, examples, mnemonics, x87_addr_list, reach) =
+        wlam_sleigh::with_big_stack(move || {
+            let prog = discover(&pe, 64);
+            let mut wide_ops = 0usize;
+            let mut examples: Vec<(u64, String)> = Vec::new();
+            let mut distinct: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+            let mut mnemonics: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            let mut x87_addr_list: Vec<(u64, String)> = Vec::new(); // x87_addr_list
+            for b in prog.blocks() {
+                // Re-lift the block: discovery caches sizes, not full IR.
+                let Some(rva) = b
+                    .start
+                    .checked_sub(base)
+                    .and_then(|v| u32::try_from(v).ok())
+                else {
+                    continue;
+                };
+                let Some(idx) = pe.section_of(rva) else {
+                    continue;
+                };
+                let sec = &pe.sections[idx];
+                let off = (rva - sec.virtual_address) as usize;
+                let Some(rest) = sec.data.get(off..) else {
+                    continue;
+                };
+                let rest = rest.to_vec();
+                let start = b.start;
+                let block =
+                    wlam_sleigh::with_big_stack(move || wlam_sleigh::lift_block(&rest, start));
+                let mut hit = false;
+                for insn in &block.instructions {
+                    for op in &insn.ops {
+                        for w in widths_of(op) {
+                            if w == 10 {
+                                wide_ops += 1;
+                                hit = true;
+                            }
+                        }
+                    }
+                    if hit && examples.len() < 8 {
+                        examples.push((insn.address, insn.disassembly.clone()));
+                    }
+                }
+                if hit {
+                    distinct.insert(b.start);
+                    for insn in &block.instructions {
+                        let w = insn
+                            .disassembly
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or("?")
+                            .to_string();
+                        *mnemonics.entry(w).or_insert(0) += 1;
+                        let n = insn.disassembly.split_whitespace().next().unwrap_or("");
+                        if n.starts_with('F') && insn.disassembly.contains('F') {
+                            x87_addr_list.push((insn.address, insn.disassembly.clone()));
                         }
                     }
                 }
-                if hit && examples.len() < 8 {
-                    examples.push((insn.address, insn.disassembly.clone()));
-                }
             }
-            if hit {
-                wide_blocks += 1;
-                distinct.insert(b.start);
-                for insn in &block.instructions {
-                    let w = insn.disassembly.split_whitespace().next().unwrap_or("?").to_string();
-                    *mnemonics.entry(w).or_insert(0) += 1;
-                    let n = insn.disassembly.split_whitespace().next().unwrap_or("");
-                    if n.starts_with('F') && insn.disassembly.contains('F') {
-                        x87_addr_list.push((insn.address, insn.disassembly.clone()));
+            // Reachability from the entry point, over the discovered edges.
+            let mut reach: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+            let entries: Vec<u64> = prog
+                .blocks()
+                .filter(|b| b.reason == "entry point")
+                .map(|b| b.start)
+                .collect();
+            // Functions are entry points in their own right: `Edge::Call` records
+            // only the *resume* address, so following edges alone under-approximates
+            // reachability badly (78 of 4203 blocks). Seed every discovered function.
+            let mut stack: Vec<u64> = entries.clone();
+            stack.extend(prog.functions());
+            while let Some(a) = stack.pop() {
+                if !reach.insert(a) {
+                    continue;
+                }
+                let Some(b) = prog.blocks().find(|b| b.start == a) else {
+                    continue;
+                };
+                use wlam_sleigh::discover::Edge;
+                let succs: Vec<u64> = match &b.edge {
+                    Edge::FallsTo(n) => vec![*n],
+                    Edge::Jump(t) => vec![*t],
+                    Edge::Conditional { taken, not_taken } => {
+                        let mut v = vec![*not_taken];
+                        if let Some(t) = taken {
+                            v.push(*t);
+                        }
+                        v
                     }
+                    Edge::Call { resume } | Edge::CallInd { resume } => vec![*resume],
+                    _ => vec![],
+                };
+                for s2 in succs {
+                    stack.push(s2);
                 }
             }
-        }
-        // Reachability from the entry point, over the discovered edges.
-        let mut reach: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
-        let entries: Vec<u64> = prog
-            .blocks()
-            .filter(|b| b.reason == "entry point")
-            .map(|b| b.start)
-            .collect();
-        // Functions are entry points in their own right: `Edge::Call` records
-        // only the *resume* address, so following edges alone under-approximates
-        // reachability badly (78 of 4203 blocks). Seed every discovered function.
-        let mut stack: Vec<u64> = entries.clone();
-        stack.extend(prog.functions());
-        while let Some(a) = stack.pop() {
-            if !reach.insert(a) {
-                continue;
-            }
-            let Some(b) = prog.blocks().find(|b| b.start == a) else { continue };
-            use wlam_sleigh::discover::Edge;
-            let succs: Vec<u64> = match &b.edge {
-                Edge::FallsTo(n) => vec![*n],
-                Edge::Jump(t) => vec![*t],
-                Edge::Conditional { taken, not_taken } => {
-                    let mut v = vec![*not_taken];
-                    if let Some(t) = taken { v.push(*t); }
-                    v
-                }
-                Edge::Call { resume } | Edge::CallInd { resume } => vec![*resume],
-                _ => vec![],
-            };
-            for s2 in succs { stack.push(s2); }
+            (
+                prog.block_count(),
+                distinct.len(),
+                wide_ops,
+                examples,
+                mnemonics,
+                x87_addr_list,
+                reach,
+            )
+        });
 
-        }
-        (prog.block_count(), distinct.len(), wide_ops, examples, mnemonics, x87_addr_list, reach)
-    });
-
-    let pct = if total == 0 { 0.0 } else { wide_blocks as f64 * 100.0 / total as f64 };
+    let pct = if total == 0 {
+        0.0
+    } else {
+        wide_blocks as f64 * 100.0 / total as f64
+    };
     println!("{path}");
     println!("  image base      {base:#x}");
     println!("  blocks          {total}");

@@ -349,6 +349,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wlam-ne"
+version = "0.1.0"
+dependencies = [
+ "pcode-ir",
+ "rsleigh-api",
+ "thiserror",
+ "wasmi",
+ "wlam-host",
+]
+
+[[package]]
 name = "wlam-pcode"
 version = "0.1.0"
 

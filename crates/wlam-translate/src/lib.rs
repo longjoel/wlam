@@ -174,6 +174,125 @@ impl Analysis {
         }
     }
 
+    /// Mark imports satisfied by a user-supplied DLL as `linked`.
+    ///
+    /// The compiler is the authority that actually patches IAT slots and emits
+    /// the DLL's code. This method keeps the analysis honest too: an import
+    /// whose name or ordinal is present in a supplied export table is no
+    /// longer reported as an unknown blocker. System-library copies are not
+    /// linked, matching the compiler.
+    pub fn link_dlls(&mut self, dlls: &[(String, Vec<u8>)]) -> Result<(), String> {
+        use std::collections::{BTreeMap, BTreeSet};
+        struct Exports {
+            names: BTreeSet<String>,
+            ordinals: BTreeSet<u32>,
+        }
+        fn stem(name: &str) -> String {
+            let base = name
+                .rsplit(|c| c == '\\' || c == '/')
+                .next()
+                .unwrap_or(name);
+            let lower = base.to_ascii_lowercase();
+            lower.strip_suffix(".dll").unwrap_or(&lower).to_string()
+        }
+        fn system(stem: &str) -> bool {
+            matches!(
+                stem,
+                "kernel32"
+                    | "kernelbase"
+                    | "user32"
+                    | "gdi32"
+                    | "advapi32"
+                    | "shell32"
+                    | "comctl32"
+                    | "comdlg32"
+                    | "winmm"
+                    | "shlwapi"
+                    | "ole32"
+                    | "oleaut32"
+                    | "version"
+                    | "ws2_32"
+                    | "winspool"
+                    | "setupapi"
+                    | "rpcrt4"
+                    | "uxtheme"
+                    | "msimg32"
+                    | "imm32"
+                    | "dbghelp"
+                    | "psapi"
+                    | "crypt32"
+                    | "secur32"
+                    | "iphlpapi"
+                    | "mpr"
+                    | "netapi32"
+                    | "wininet"
+                    | "urlmon"
+                    | "opengl32"
+                    | "glu32"
+                    | "msvcrt"
+                    | "ucrtbase"
+            ) || stem.starts_with("msvcr")
+                || stem.starts_with("vcruntime")
+                || stem.starts_with("api-ms-win-")
+        }
+        let mut supplied: BTreeMap<String, Exports> = BTreeMap::new();
+        for (name, raw) in dlls {
+            let key = stem(name);
+            if system(&key) {
+                continue;
+            }
+            let pe = Pe::parse(raw).map_err(|e| format!("{name}: {e}"))?;
+            let mut exports = Exports {
+                names: BTreeSet::new(),
+                ordinals: BTreeSet::new(),
+            };
+            for export in &pe.exports {
+                exports.ordinals.insert(export.ordinal);
+                if let Some(name) = &export.name {
+                    exports.names.insert(name.clone());
+                }
+            }
+            supplied.insert(key, exports);
+        }
+        let mut linked = Vec::new();
+        for (index, import) in self.image.imports.iter().enumerate() {
+            let Some(exports) = supplied.get(&stem(&import.library)) else {
+                continue;
+            };
+            let found = match (&import.name, import.ordinal) {
+                (Some(name), _) => exports.names.contains(name),
+                (None, Some(ordinal)) => exports.ordinals.contains(&(ordinal as u32)),
+                _ => false,
+            };
+            if found {
+                let resolved = &self.imports[index];
+                linked.push((
+                    index,
+                    import.library.clone(),
+                    import.symbol(),
+                    resolved.implementation,
+                    resolved.area.clone(),
+                ));
+            }
+        }
+        for (index, library, symbol, old_implementation, old_area) in linked {
+            self.matrix.entries.remove(&(
+                library.clone(),
+                symbol.clone(),
+                old_implementation,
+                intern_area(&old_area),
+            ));
+            let area = intern_area("linked supplied DLL");
+            self.matrix
+                .entries
+                .insert((library, symbol, Implementation::Linked, area));
+            let resolved = &mut self.imports[index];
+            resolved.implementation = Implementation::Linked;
+            resolved.area = "linked supplied DLL".into();
+        }
+        Ok(())
+    }
+
     /// Provenance notes for the matrix: how ordinals were resolved, and why
     /// unsupported APIs are unsupported. Keyed by `(library, symbol)`.
     pub fn matrix_notes(&self) -> std::collections::BTreeMap<(String, String), String> {
@@ -182,7 +301,9 @@ impl Analysis {
             if let ImportOrigin::RecoveredFromReferenceDll { ordinal, name } = &imp.origin {
                 // The matrix is keyed by `Imp!symbol`; match that exactly.
                 let key = (imp.library.clone(), imp.symbol.clone());
-                let note = format!("ordinal {ordinal} = `{name}` (resolved via reference DLL)");
+                let note = format!(
+                    "ordinal {ordinal} = `{name}` (resolved via reference DLL/import library)"
+                );
                 if matches!(
                     imp.implementation,
                     Implementation::Unsupported | Implementation::Unknown

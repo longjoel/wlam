@@ -102,13 +102,15 @@ entering f32 state. Exact comparison results and the depth evidence are in the
 [runtime audit](tolympic-runtime-api-audit.md).
 Double-precision incoming depth with 32-bit normalized internal storage, plus
 8-bit subpixel coordinate snapping, removed the large silhouette discrepancies.
-This is not a comparison with the original Windows executable. See the
+This Mesa replay is not a comparison with the original executable. A separate
+Proton/Wine run of the original executable is now captured below. See the
 [runtime audit](tolympic-runtime-api-audit.md),
 [normal replay](tolympic-mesa-replay.png),
 [blended doughnut replay](tolympic-mesa-doughnuts-blend.png), and
 [opaque doughnut replay](tolympic-mesa-doughnuts-opaque.png).
-Native-reference fidelity remains open. The observed settling count depends on
-this run's virtual timer advancement; 65 swaps is not a fixed timing guarantee.
+The Wine/Mesa comparison is near pixel-identical; native Windows driver
+fidelity remains unverified. The observed settling count depends on this run's
+virtual timer advancement; 65 swaps is not a fixed timing guarantee.
 
 The initial 16-bit feasibility proposal has passed its public decoder API gate:
 `rsleigh-api` exposes decoder-only `X86_16Protected`, and its example covers
@@ -142,15 +144,25 @@ baseline, then close these gates in order:
 2. **Compare against native output.** Run the original on a compatible native
    Windows/OpenGL system (or a documented equivalent), matching window size,
    animation state and controls. Compare settled ring shape, overlap, lighting,
-   blend mode and resized output. Until this reference exists, label visual
-   fidelity provisional; a self-consistent capture is not proof of correctness.
+   blend mode and resized output. A documented Proton/Wine equivalent is now
+   available; retain a separate caveat for native Windows driver differences.
    The CPU path now models default-enabled `GL_DITHER` with an ordered pattern
    on fragment writes and a uniform nearest-candidate choice for clears.
    Forced-llvmpipe replay differs at 2,730/120,000 pixels for settled rings,
    5,759/270,000 after resize, and 37,630–37,954/270,000 for doughnuts. No
    pixel differs by more than 20 RGB levels. The ordered fragment pattern is a
    valid implementation choice but differs from llvmpipe's. Native comparison
-   is still needed to judge the target Windows renderer.
+   remains useful for judging Windows-specific renderer behavior.
+   The original TOLYMPIC was captured on 2026-11-05 under Proton's Wine 11.0
+   on a temporary Xwayland display using Mesa llvmpipe (LLVM 22.1.8). The
+   400×300 crop is saved as
+   [`tolympic-wine-settled.png`](tolympic-wine-settled.png). Against the
+   browser CPU capture, 8 of 120,000 RGB pixels differ, mean absolute channel
+   error is 0.00304 on an 8-bit scale, and 3 pixels have any channel differing
+   by more than 20 levels. This is a close Wine/Mesa comparison, not evidence
+   from native Windows; Windows-specific driver and pixel-format differences
+   remain unverified. The configured `:0` display itself is unavailable, but
+   the temporary Xwayland display allowed the reference run.
 3. **Turn observed edge cases into deterministic coverage.** Keep the original
    external executable as an end-to-end smoke target. Add/extend a small
    redistributable fixture for invalid pixel formats and handles, display-list
@@ -183,9 +195,9 @@ baseline, then close these gates in order:
    and confirm the browser remains responsive while the guest polls messages.
 5. **Document the support boundary and freeze the milestone.** List the
    reached API/state subset, valid RGBA no-ops, unsupported behavior and known
-   visual differences. Call TOLYMPIC complete only after the native comparison
-   and runtime audit are resolved; otherwise report the exact open evidence
-   needed.
+   visual differences. Call TOLYMPIC complete after the runtime audit and a
+   matched native or documented-equivalent comparison are resolved; state any
+   remaining native Windows-specific gaps.
 
 ### Parallel follow-on work
 
@@ -207,8 +219,8 @@ baseline, then close these gates in order:
 
 ### Next concrete actions
 
-1. Arrange or locate a native reference capture; otherwise keep the milestone
-   marked “browser behavior demonstrated; native visual fidelity unverified.”
+1. Review the saved Proton/Wine reference as the documented equivalent. A
+   native Windows capture would further resolve driver-specific differences.
 2. Make only fixes backed by reference comparisons, then refresh
    the captures and support inventory.
 
@@ -249,12 +261,16 @@ separate native Windows fidelity gate.
 
 The GPU-only path now submits ordered clear/draw packets with clip-space
 vertices, prelit front/back colors, viewport and per-draw depth/cull/blend/fog
-state. The browser-host ABI serializes these into an owned packet; the page
-renders them with a WebGL shader and acknowledges each frame on
+state. It supports triangles and points; line modes remain outside the
+GPU-only subset because their rasterization has not been matched. The
+browser-host ABI serializes these into an owned packet; the page renders them
+with a WebGL shader and acknowledges each frame on
 `requestAnimationFrame`. In GPU-only mode the host skips CPU fragment
 rasterization and the page avoids full-surface pixel copies. The fixture and
 TOLYMPIC browser acceptance cover drawing, resize, input, Stop/Restart and
-Escape. A frame-90 capture at 600×450 matched 261,883/270,000 CPU-reference
+Escape. The OpenGL PE fixture also checks ordered triangle-plus-point packets,
+CPU pixels, and the point and triangle colors from the actual WebGL canvas. A
+frame-90 capture at 600×450 matched 261,883/270,000 CPU-reference
 pixels exactly and 264,111/270,000 Mesa replay pixels exactly. Against Mesa,
 mean absolute RGB error is 0.03668 and 65 pixels differ by more than 20 levels.
 The browser reports a 24-bit depth buffer, matching the guest's requested pixel
@@ -382,8 +398,9 @@ evidence covers Space, `b`, `d`, Escape, resize, teardown, Stop and Restart.
 - Use a redistributable fixture for deterministic pixel tests. Use tolerances
   for lit edges and interpolation; avoid GPU-specific whole-frame hashes.
 - For external TOLYMPIC acceptance, collect screenshots, frame count, startup
-  refusals, frame timing and input results. Obtain a native reference capture
-  when available; without one, identify visual checks that remain provisional.
+  refusals, frame timing and input results. The Proton/Wine Mesa capture is a
+  documented equivalent reference; obtain a native Windows capture when
+  available to quantify driver-specific differences.
 - Document the supported API/state subset and any remaining fidelity gaps.
   Publish no frame-rate target until measurements establish a useful baseline.
 

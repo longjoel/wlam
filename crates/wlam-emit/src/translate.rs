@@ -101,8 +101,14 @@ pub fn is_x87_register(name: &str) -> bool {
 pub struct LocalMap {
     /// Register name (e.g. "EAX", "ZF") -> local index.
     regs: BTreeMap<String, u32>,
-    /// Temp offset -> local index and width.
-    temps: BTreeMap<u64, (u32, u32)>,
+    /// (Temp offset, stored width) -> local index and width.
+    ///
+    /// Sleigh reuses one unique-space offset at several widths inside a single
+    /// instruction (an address scratch that later holds the 64-bit product of
+    /// `IMUL`, for example). Those are independent values, so the width is part
+    /// of the key: one shared i32 local made the later i64 operand push an i32
+    /// and produced invalid Wasm.
+    temps: BTreeMap<(u64, u32), (u32, u32)>,
     /// Local index -> declared width in bytes (4 -> i32, 8 -> i64/f64).
     ///
     /// wasm locals are typed at declaration, so the width has to be carried
@@ -135,22 +141,26 @@ impl LocalMap {
         m
     }
 
-    /// Allocate (or reuse) a local for a temp.
+    /// The width a temp is actually held at. A 10-byte temp is an x87
+    /// EXTENDED intermediate, held as an f64.
+    fn stored_width(width: u32) -> u32 {
+        if width == 10 { 8 } else { width }
+    }
+
+    /// Allocate (or reuse) a local for a temp at one width.
     fn temp(&mut self, offset: u64, width: u32) -> u32 {
-        if let Some((idx, _)) = self.temps.get(&offset) {
+        let is_x87 = width == 10;
+        let stored = Self::stored_width(width);
+        if let Some((idx, _)) = self.temps.get(&(offset, stored)) {
             return *idx;
         }
-        // A 10-byte temp is an x87 EXTENDED intermediate, held as an f64. It
-        // joins the x87 set so every consumer types it consistently.
-        let is_x87 = width == 10;
-        let stored = if is_x87 { 8 } else { width };
         let idx = self.next;
         self.next += 1;
         self.widths.insert(idx, stored);
         if is_x87 {
             self.x87.insert(idx);
         }
-        self.temps.insert(offset, (idx, stored));
+        self.temps.insert((offset, stored), (idx, stored));
         idx
     }
 
@@ -194,9 +204,11 @@ impl LocalMap {
         runs
     }
 
-    /// Index of a temp local, if one was allocated for that offset.
-    pub fn temp_index(&self, offset: u64) -> Option<u32> {
-        self.temps.get(&offset).map(|(idx, _)| *idx)
+    /// Index of a temp local, if one was allocated for that offset and width.
+    pub fn temp_index(&self, offset: u64, width: u32) -> Option<u32> {
+        self.temps
+            .get(&(offset, Self::stored_width(width)))
+            .map(|(idx, _)| *idx)
     }
 
     /// Reserve a scratch local for the epilogue (outside the temp keyspace).
@@ -264,7 +276,6 @@ mod op {
     pub const I32_CONST: u8 = 0x41;
     pub const LOCAL_GET: u8 = 0x20;
     pub const LOCAL_SET: u8 = 0x21;
-    pub const LOCAL_TEE: u8 = 0x22;
     pub const CALL: u8 = 0x10;
     pub const I32_WRAP_I64: u8 = 0xa7;
     pub const I32_LOAD: u8 = 0x28;
@@ -277,7 +288,6 @@ mod op {
     pub const I32_NE: u8 = 0x47;
     pub const I32_LT_S: u8 = 0x48;
     pub const I32_LT_U: u8 = 0x49;
-    pub const I32_GT_U: u8 = 0x4b;
     pub const I32_LE_S: u8 = 0x4c;
     pub const I32_LE_U: u8 = 0x4d;
     pub const I32_ADD: u8 = 0x6a;
@@ -321,7 +331,6 @@ mod op {
     pub const I64_LT_U: u8 = 0x54;
     pub const I64_LE_S: u8 = 0x57;
     pub const I64_LE_U: u8 = 0x58;
-    pub const I64_GT_U: u8 = 0x56;
     pub const I64_WRAP_I32: u8 = 0xa7;
     pub const I64_CONST: u8 = 0x42;
 
@@ -343,8 +352,6 @@ mod op {
     pub const F64_NE: u8 = 0x62;
     pub const F64_LT: u8 = 0x63;
     pub const F64_LE: u8 = 0x65;
-    pub const F64_GT: u8 = 0x64;
-    pub const F64_GE: u8 = 0x66;
     /// `f64.convert_i32_s` / `f64.convert_i64_s`: integer source to double.
     pub const F64_CONVERT_I32_S: u8 = 0xb7;
     pub const F64_CONVERT_I64_S: u8 = 0xb9;
@@ -364,7 +371,7 @@ struct BlockEmitter {
     /// Host-import name -> function index, for calls the emitter makes itself
     /// (the x87 `sin`/`cos` helpers).
     import_index: std::collections::BTreeMap<crate::chain::HostImport, u32>,
-    write_watches: Vec<(u32,u32)>,
+    write_watches: Vec<(u32, u32)>,
 }
 
 impl BlockEmitter {
@@ -421,7 +428,8 @@ impl BlockEmitter {
                 // i32.const is SIGNED leb128; a negative constant written
                 // unsigned is the right bits at the wrong length and desyncs
                 // the whole instruction stream.
-                self.body.extend_from_slice(&crate::encode::leb_s32(*value as u32 as i32));
+                self.body
+                    .extend_from_slice(&crate::encode::leb_s32(*value as u32 as i32));
                 Ok(width)
             }
             Operand::Reg { name, .. } => {
@@ -432,9 +440,10 @@ impl BlockEmitter {
                 if let Some(slot) = crate::regfile_slot(name) {
                     if slot.width < 4 {
                         let parent = slot.parent.name();
-                        let idx = self.locals.reg(parent).ok_or_else(|| {
-                            TranslateError::UnknownRegister(parent.to_string())
-                        })?;
+                        let idx = self
+                            .locals
+                            .reg(parent)
+                            .ok_or_else(|| TranslateError::UnknownRegister(parent.to_string()))?;
                         self.local(op::LOCAL_GET, idx);
                         if slot.shift() > 0 {
                             self.op(op::I32_CONST);
@@ -474,11 +483,12 @@ impl BlockEmitter {
                 // happens to mention. A temp first seen at 8 bytes is an i64
                 // local; a later 4-byte use still pushes an i64, and telling the
                 // caller otherwise made it emit `i32.and` on an i64 value.
-                        Ok(self.locals.width(idx))
+                Ok(self.locals.width(idx))
             }
             Operand::Ram { offset, .. } => {
                 self.op(op::I32_CONST);
-                self.body.extend_from_slice(&crate::encode::leb_s32(*offset as u32 as i32));
+                self.body
+                    .extend_from_slice(&crate::encode::leb_s32(*offset as u32 as i32));
                 Ok(4)
             }
         }
@@ -558,7 +568,7 @@ impl BlockEmitter {
                 // comparing nominal to declared then finds them equal and emits
                 // no conversion, leaving an i64 value in an i32 slot.
                 let _ = size;
-                        if declared == 8 && pushed != 8 {
+                if declared == 8 && pushed != 8 {
                     self.op(op::I64_EXTEND_I32_U);
                 } else if declared != 8 && pushed == 8 {
                     self.op(op::I32_WRAP_I64);
@@ -633,9 +643,7 @@ impl BlockEmitter {
             10 if self.operand_is_x87(op) => {}
             // A 10-byte temp is an x87 EXTENDED intermediate (f64).
             10 if matches!(op, Operand::Temp { .. }) => {}
-            w => {
-                return Err(TranslateError::UnsupportedWidth(w))
-            }
+            w => return Err(TranslateError::UnsupportedWidth(w)),
         }
         Ok(())
     }
@@ -649,52 +657,70 @@ impl BlockEmitter {
     /// Marking during the forward pass is therefore one step too late.
     fn pre_mark_x87_temps(&mut self, ops: &[IR]) {
         for ir in ops {
-            if let IR::MicroLoop { head, body, tail, .. } = ir {
+            if let IR::MicroLoop {
+                head, body, tail, ..
+            } = ir
+            {
                 self.pre_mark_x87_temps(head);
                 self.pre_mark_x87_temps(body);
                 self.pre_mark_x87_temps(tail);
                 continue;
             }
             let (dst, a, b): (&Operand, Option<&Operand>, Option<&Operand>) = match ir {
-                IR::FloatUnary {dst,src,..} => (dst,None,Some(src)),
+                IR::FloatUnary { dst, src, .. } => (dst, None, Some(src)),
                 // Only a FloatToFloat marks its source: that source is the
                 // value `FLD m64` read from memory. `IntToFloat` is `FILD`, whose
                 // source is a genuine integer, and marking it made integer
                 // temporaries f64.
-                IR::Convert { op: crate::ir::ConvertOp::FloatToFloat, dst, src } => {
-                    (dst, None, Some(src))
-                }
-                IR::Convert { op: crate::ir::ConvertOp::IntToFloat, dst, .. } => (dst, None, None),
-                IR::Convert { op: crate::ir::ConvertOp::FloatToInt, src, .. } => (src, None, None),
+                IR::Convert {
+                    op: crate::ir::ConvertOp::FloatToFloat,
+                    dst,
+                    src,
+                } => (dst, None, Some(src)),
+                IR::Convert {
+                    op: crate::ir::ConvertOp::IntToFloat,
+                    dst,
+                    ..
+                } => (dst, None, None),
+                IR::Convert {
+                    op: crate::ir::ConvertOp::FloatToInt,
+                    src,
+                    ..
+                } => (src, None, None),
                 // `FSINCOS` writes its two results into small temps that are
                 // then copied into ST0/ST1. Those temps hold doubles.
-                IR::Userop { id, dst: Some(d), .. }
-                    if matches!(*id, X87_USEROP_SIN | X87_USEROP_COS | X87_USEROP_TAN | X87_USEROP_ATAN2) =>
+                IR::Userop {
+                    id, dst: Some(d), ..
+                } if matches!(
+                    *id,
+                    X87_USEROP_SIN | X87_USEROP_COS | X87_USEROP_TAN | X87_USEROP_ATAN2
+                ) =>
                 {
                     (d, None, None)
                 }
                 // A copy whose source is a sin/cos result, or whose destination
                 // is an x87 register, is real-valued.
-                IR::Copy { dst, src }
-                    if dst.size() == 10
-                        || src.size() == 10 =>
-                {
+                IR::Copy { dst, src } if dst.size() == 10 || src.size() == 10 => {
                     (dst, None, Some(src))
                 }
-                IR::Float { op: crate::ir::FloatOp::Eq | crate::ir::FloatOp::NotEq | crate::ir::FloatOp::Less | crate::ir::FloatOp::LessEq, operands, .. } => {
-                    (&operands.0, None, Some(&operands.1))
-                }
-                IR::Float { dst, operands, .. } => {
-                    (dst, Some(&operands.0), Some(&operands.1))
-                }
+                IR::Float {
+                    op:
+                        crate::ir::FloatOp::Eq
+                        | crate::ir::FloatOp::NotEq
+                        | crate::ir::FloatOp::Less
+                        | crate::ir::FloatOp::LessEq,
+                    operands,
+                    ..
+                } => (&operands.0, None, Some(&operands.1)),
+                IR::Float { dst, operands, .. } => (dst, Some(&operands.0), Some(&operands.1)),
                 // A copy involving a 10-byte temp (`FLDZ` pushes through one)
                 // is real-valued. Restricted to size 10 on purpose: marking
                 // every Copy source made ordinary integer copies f64.
                 _ => continue,
             };
             for o in [Some(dst), a, b].into_iter().flatten() {
-                if let Operand::Temp { offset, .. } = o {
-                    let idx = self.locals.temp(*offset, 8);
+                if let Operand::Temp { offset, size } = o {
+                    let idx = self.locals.temp(*offset, *size);
                     self.locals.mark_x87(idx);
                 }
             }
@@ -703,13 +729,17 @@ impl BlockEmitter {
 
     fn emit_ir(&mut self, ir: &IR) -> Result<(), TranslateError> {
         self.emit_ir_inner(ir)?;
-        if let IR::Store {addr,..}=ir {
-            for (address,index) in self.write_watches.clone() {
+        if let IR::Store { addr, .. } = ir {
+            for (address, index) in self.write_watches.clone() {
                 self.push_value(addr)?;
-                self.op(op::I32_CONST);self.push_i32_const(address);self.op(op::I32_EQ);
-                self.body.extend([0x04,0x40,op::I32_CONST]);self.push_i32_const(address);
-                self.body.extend([op::I32_CONST,0,op::CALL]);self.body.extend(leb_u32(index));
-                self.body.extend([0x1a,op::END]);
+                self.op(op::I32_CONST);
+                self.push_i32_const(address);
+                self.op(op::I32_EQ);
+                self.body.extend([0x04, 0x40, op::I32_CONST]);
+                self.push_i32_const(address);
+                self.body.extend([op::I32_CONST, 0, op::CALL]);
+                self.body.extend(leb_u32(index));
+                self.body.extend([0x1a, op::END]);
             }
         }
         Ok(())
@@ -723,27 +753,44 @@ impl BlockEmitter {
         let mut staged = Vec::with_capacity(copies.len());
         for ir in copies {
             let IR::Copy { src, .. } = ir else {
-                return Err(TranslateError::Unsupported("non-copy in x87 parallel assignment"));
+                return Err(TranslateError::Unsupported(
+                    "non-copy in x87 parallel assignment",
+                ));
             };
             staged.push(self.push_float(src)?);
         }
         for (ir, width) in copies.iter().zip(staged).rev() {
-            let IR::Copy { dst, .. } = ir else { unreachable!() };
+            let IR::Copy { dst, .. } = ir else {
+                unreachable!()
+            };
             self.pop_into_width(dst, width)?;
         }
         Ok(())
     }
     fn emit_ir_inner(&mut self, ir: &IR) -> Result<(), TranslateError> {
         match ir {
-            IR::FloatUnary {op:kind,dst,src} => {
-                let width=self.push_float(src)?;
-                if width==4 {self.op(op::F64_PROMOTE_F32);}
+            IR::FloatUnary { op: kind, dst, src } => {
+                let width = self.push_float(src)?;
+                if width == 4 {
+                    self.op(op::F64_PROMOTE_F32);
+                }
                 use crate::ir::FloatUnaryOp::*;
-                self.op(match kind {Abs=>0x99,Neg=>0x9a,Ceil=>0x9b,Floor=>0x9c,Round=>0x9e,Sqrt=>0x9f});
+                self.op(match kind {
+                    Abs => 0x99,
+                    Neg => 0x9a,
+                    Ceil => 0x9b,
+                    Floor => 0x9c,
+                    Round => 0x9e,
+                    Sqrt => 0x9f,
+                });
                 self.pop_into(dst)
             }
             IR::Copy { dst, src } => {
-                let pushed = if self.operand_is_x87(dst) { self.push_float(src)? } else { self.push_value(src)? };
+                let pushed = if self.operand_is_x87(dst) {
+                    self.push_float(src)?
+                } else {
+                    self.push_value(src)?
+                };
                 self.normalize(src)?;
                 self.pop_into_width(dst, pushed)
             }
@@ -781,9 +828,7 @@ impl BlockEmitter {
                     // operands. This is not a float operation and must not be
                     // routed through f64.
                     (8, _) => self.body.push(op::I64_LOAD),
-                    (w, _) => {
-                        return Err(TranslateError::UnsupportedWidth(*w))
-                    }
+                    (w, _) => return Err(TranslateError::UnsupportedWidth(*w)),
                 }
                 self.body.push(0);
                 self.body.push(0);
@@ -825,9 +870,7 @@ impl BlockEmitter {
                     // Genuine 64-bit integer store (the write half of
                     // `CMPXCHG8B`). Floats took the f64 branch above.
                     8 => self.body.push(op::I64_STORE),
-                    w => {
-                        return Err(TranslateError::UnsupportedWidth(*w))
-                    }
+                    w => return Err(TranslateError::UnsupportedWidth(*w)),
                 }
                 self.body.push(0);
                 self.body.push(0);
@@ -838,9 +881,11 @@ impl BlockEmitter {
                 dst,
                 operands,
             } => self.emit_bin(*bin, dst, &operands.0, &operands.1),
-            IR::Float { op: fop, dst, operands } => {
-                self.emit_float(*fop, dst, &operands.0, &operands.1)
-            }
+            IR::Float {
+                op: fop,
+                dst,
+                operands,
+            } => self.emit_float(*fop, dst, &operands.0, &operands.1),
             IR::Convert { op: cop, dst, src } => {
                 // A conversion into the real domain makes its destination an
                 // f64. Marking only `FloatToFloat` left `IntToFloat` (FILD)
@@ -856,12 +901,18 @@ impl BlockEmitter {
             }
             // x87 transcendentals. wasm has no sin/cos, so these become host
             // calls carrying the double through guest memory.
-            IR::Userop { id, args, dst: Some(d) }
-                if matches!(*id, X87_USEROP_SIN | X87_USEROP_COS | X87_USEROP_TAN) =>
-            {
+            IR::Userop {
+                id,
+                args,
+                dst: Some(d),
+            } if matches!(*id, X87_USEROP_SIN | X87_USEROP_COS | X87_USEROP_TAN) => {
                 self.emit_x87_sin_cos(*id, args, d)
             }
-            IR::Userop { id: X87_USEROP_ATAN2, args, dst: Some(d) } => self.emit_x87_atan2(args, d),
+            IR::Userop {
+                id: X87_USEROP_ATAN2,
+                args,
+                dst: Some(d),
+            } => self.emit_x87_atan2(args, d),
             IR::Un { op: un, dst, src } => {
                 self.push_value(src)?;
                 match un {
@@ -904,7 +955,8 @@ impl BlockEmitter {
                                 (1u32 << bits) - 1
                             };
                             self.op(op::I32_CONST);
-                            self.body.extend_from_slice(&crate::encode::leb_s32(mask as i32));
+                            self.body
+                                .extend_from_slice(&crate::encode::leb_s32(mask as i32));
                             self.op(op::I32_AND);
                         }
                     }
@@ -924,18 +976,22 @@ impl BlockEmitter {
                 // (Ghidra P-Code Reference: SUBPIECE). Slicing a qword is how
                 // Sleigh splits EDX:EAX after a MUL, so the shift width has to
                 // match the SOURCE width, not the destination's.
-                self.push_value(src)?;
-                let src_is_wide = src.size() == 8;
+                // Use the width the operand actually pushed: a temp may be
+                // held at a narrower width than its nominal varnode size.
+                let pushed = self.push_value(src)?;
+                let src_is_wide = pushed == 8;
                 if *lsb > 0 {
                     if src_is_wide {
                         // i64 shift: the shift amount is an i64 for i64.shr_u,
                         // but the count itself fits in an i32 literal.
                         self.op(op::I64_CONST);
-                        self.body.extend_from_slice(&crate::encode::leb_s32((*lsb * 8) as i32));
+                        self.body
+                            .extend_from_slice(&crate::encode::leb_s32((*lsb * 8) as i32));
                         self.op(op::I64_SHR_U);
                     } else {
                         self.op(op::I32_CONST);
-                        self.body.extend_from_slice(&crate::encode::leb_s32((*lsb * 8) as i32));
+                        self.body
+                            .extend_from_slice(&crate::encode::leb_s32((*lsb * 8) as i32));
                         self.op(op::I32_SHR_U);
                     }
                 }
@@ -946,11 +1002,19 @@ impl BlockEmitter {
                 self.normalize(dst)?;
                 self.pop_into(dst)
             }
-            IR::Userop { id, .. } => self.emit_unsupported(TranslateError::UnimplementedUserop(*id)),
-            IR::MicroLoop { head, exit, body, repeat, tail } => {
-                self.emit_micro_loop(head, exit.as_ref(), body, repeat.as_ref(), tail)
+            IR::Userop { id, .. } => {
+                self.emit_unsupported(TranslateError::UnimplementedUserop(*id))
             }
-            IR::Unsupported(op) => self.emit_unsupported(TranslateError::UnsupportedPcode(op.clone())),
+            IR::MicroLoop {
+                head,
+                exit,
+                body,
+                repeat,
+                tail,
+            } => self.emit_micro_loop(head, exit.as_ref(), body, repeat.as_ref(), tail),
+            IR::Unsupported(op) => {
+                self.emit_unsupported(TranslateError::UnsupportedPcode(op.clone()))
+            }
             IR::Nop => Ok(()),
             IR::Branch { .. }
             | IR::IndirectJump { .. }
@@ -1055,7 +1119,9 @@ impl BlockEmitter {
         args: &[Operand],
         dst: &Operand,
     ) -> Result<(), TranslateError> {
-        let src = args.first().ok_or(TranslateError::Unsupported("x87 helper with no argument"))?;
+        let src = args
+            .first()
+            .ok_or(TranslateError::Unsupported("x87 helper with no argument"))?;
         // arg = *X87_HELPER_ARG
         self.op(op::I32_CONST);
         self.push_i32_const(X87_HELPER_ARG as u32);
@@ -1076,7 +1142,7 @@ impl BlockEmitter {
         self.op(op::CALL);
         self.body.extend_from_slice(&crate::encode::leb_u32(idx));
         self.op(0x1a); // helper result is in memory; discard its ABI i32 return
-        // value = *X87_HELPER_RET
+                       // value = *X87_HELPER_RET
         self.op(op::I32_CONST);
         self.push_i32_const(X87_HELPER_RET as u32);
         self.body.push(op::F64_LOAD);
@@ -1088,20 +1154,30 @@ impl BlockEmitter {
 
     /// Emit x87 `FPATAN`: `ST1 = atan2(ST1, ST0)`, then pop the x87 stack.
     fn emit_x87_atan2(&mut self, args: &[Operand], dst: &Operand) -> Result<(), TranslateError> {
-        if args.len() != 2 { return Err(TranslateError::Unsupported("FPATAN argument shape")); }
+        if args.len() != 2 {
+            return Err(TranslateError::Unsupported("FPATAN argument shape"));
+        }
         for (index, arg) in args.iter().enumerate() {
             self.op(op::I32_CONST);
             self.push_i32_const((X87_HELPER_ARG + index as u64 * 8) as u32);
             self.push_float(arg)?;
             self.body.extend([op::F64_STORE, 0, 0]);
         }
-        let idx = *self.import_index.get(&x87_helper_import(X87_USEROP_ATAN2))
-            .ok_or(TranslateError::Unsupported("x87 atan2 helper import missing"))?;
-        self.op(op::I32_CONST); self.push_i32_const(0);
-        self.op(op::I32_CONST); self.push_i32_const(0);
-        self.op(op::CALL); self.body.extend_from_slice(&crate::encode::leb_u32(idx));
+        let idx = *self
+            .import_index
+            .get(&x87_helper_import(X87_USEROP_ATAN2))
+            .ok_or(TranslateError::Unsupported(
+                "x87 atan2 helper import missing",
+            ))?;
+        self.op(op::I32_CONST);
+        self.push_i32_const(0);
+        self.op(op::I32_CONST);
+        self.push_i32_const(0);
+        self.op(op::CALL);
+        self.body.extend_from_slice(&crate::encode::leb_u32(idx));
         self.op(0x1a);
-        self.op(op::I32_CONST); self.push_i32_const(X87_HELPER_RET_ATAN2 as u32);
+        self.op(op::I32_CONST);
+        self.push_i32_const(X87_HELPER_RET_ATAN2 as u32);
         self.body.extend([op::F64_LOAD, 0, 0]);
         self.mark_dst_x87(dst);
         self.pop_into(dst)
@@ -1110,8 +1186,11 @@ impl BlockEmitter {
     /// Ensure `dst` is typed f64 before a value is stored into it.
     fn mark_dst_x87(&mut self, dst: &Operand) {
         match dst {
-            Operand::Temp { offset, .. } => {
-                let idx = self.locals.temp(*offset, 8);
+            Operand::Temp { offset, size } => {
+                // Key by the operand's own width: float destinations are not
+                // always 8 bytes wide, and a wider key would create a second
+                // local while the real operand stayed an i32.
+                let idx = self.locals.temp(*offset, *size);
                 self.locals.mark_x87(idx);
             }
             Operand::Reg { name, .. } => {
@@ -1129,9 +1208,9 @@ impl BlockEmitter {
     /// bytes, and that is the width the wasm opcode must match.
     fn operand_declared_width(&self, op: &Operand) -> u32 {
         match op {
-            Operand::Temp { offset, .. } => self
+            Operand::Temp { offset, size } => self
                 .locals
-                .temp_index(*offset)
+                .temp_index(*offset, *size)
                 .map_or(op.size(), |idx| self.locals.width(idx)),
             Operand::Reg { name, .. } => self
                 .locals
@@ -1147,8 +1226,8 @@ impl BlockEmitter {
     /// fixed before anything writes to it.
     fn mark_float_dest(&mut self, dst: &Operand) {
         match dst {
-            Operand::Temp { offset, .. } => {
-                let idx = self.locals.temp(*offset, 8);
+            Operand::Temp { offset, size } => {
+                let idx = self.locals.temp(*offset, *size);
                 self.locals.mark_x87(idx);
             }
             Operand::Reg { name, .. } => {
@@ -1169,9 +1248,9 @@ impl BlockEmitter {
                 .is_some_and(|idx| self.locals.is_x87(idx)),
             // A temp holding an x87 intermediate (produced by a Float2Float) is
             // an f64 too. `FSTP m64` stores through exactly such a temp.
-            Operand::Temp { offset, .. } => self
+            Operand::Temp { offset, size } => self
                 .locals
-                .temp_index(*offset)
+                .temp_index(*offset, *size)
                 .is_some_and(|idx| self.locals.is_x87(idx)),
             _ => false,
         }
@@ -1200,15 +1279,15 @@ impl BlockEmitter {
             FloatToFloat => {
                 // The destination holds a real value: mark it before allocating
                 // so the following `FSTP m64` store sees an f64, not an i64.
-                if let Operand::Temp { offset, .. } = dst {
-                    let idx = self.locals.temp(*offset, 8);
+                if let Operand::Temp { offset, size } = dst {
+                    let idx = self.locals.temp(*offset, *size);
                     self.locals.mark_x87(idx);
                 }
                 // `FLD m64` is `Load tmp; Convert ST0 = tmp`: the temp feeding
                 // the conversion is the memory value, and it is real too. Without
                 // this the load stayed an i64 and wrote it into an f64 slot.
-                if let Operand::Temp { offset, .. } = src {
-                    let idx = self.locals.temp(*offset, 8);
+                if let Operand::Temp { offset, size } = src {
+                    let idx = self.locals.temp(*offset, *size);
                     self.locals.mark_x87(idx);
                 }
                 let sw = self.push_float(src)?;
@@ -1301,7 +1380,10 @@ impl BlockEmitter {
         // `i64.extend_i32_u` on an f64 is a type error. Float mixing is handled
         // by IR::Float, which promotes to f64 instead.
         let rhs_float = self.operand_is_x87(rhs);
-        if !rhs_float && self.operand_declared_width(rhs) == 8 && lw != 8 && !self.operand_is_x87(lhs)
+        if !rhs_float
+            && self.operand_declared_width(rhs) == 8
+            && lw != 8
+            && !self.operand_is_x87(lhs)
         {
             self.op(op::I64_EXTEND_I32_U);
             lw = 8;
@@ -1334,26 +1416,26 @@ impl BlockEmitter {
             (BinOp::LessEqS, true) => op::I64_LE_S,
             (BinOp::Carry | BinOp::SCarry | BinOp::SBorrow | BinOp::MulFull, _) => unreachable!(),
             (_, false) => match bin {
-            BinOp::Add => op::I32_ADD,
-            BinOp::Sub => op::I32_SUB,
-            BinOp::Mul => op::I32_MUL,
-            BinOp::DivS => op::I32_DIV_S,
-            BinOp::DivU => op::I32_DIV_U,
-            BinOp::RemS => op::I32_REM_S,
-            BinOp::RemU => op::I32_REM_U,
-            BinOp::And => op::I32_AND,
-            BinOp::Or => op::I32_OR,
-            BinOp::Xor => op::I32_XOR,
-            BinOp::Lsh => op::I32_SHL,
-            BinOp::Rsh => op::I32_SHR_U,
-            BinOp::Asr => op::I32_SHR_S,
-            BinOp::Eq => op::I32_EQ,
-            BinOp::NotEq => op::I32_NE,
-            BinOp::LessU => op::I32_LT_U,
-            BinOp::LessEqU => op::I32_LE_U,
-            BinOp::LessS => op::I32_LT_S,
-            BinOp::LessEqS => op::I32_LE_S,
-            BinOp::Carry | BinOp::SCarry | BinOp::SBorrow | BinOp::MulFull => unreachable!(),
+                BinOp::Add => op::I32_ADD,
+                BinOp::Sub => op::I32_SUB,
+                BinOp::Mul => op::I32_MUL,
+                BinOp::DivS => op::I32_DIV_S,
+                BinOp::DivU => op::I32_DIV_U,
+                BinOp::RemS => op::I32_REM_S,
+                BinOp::RemU => op::I32_REM_U,
+                BinOp::And => op::I32_AND,
+                BinOp::Or => op::I32_OR,
+                BinOp::Xor => op::I32_XOR,
+                BinOp::Lsh => op::I32_SHL,
+                BinOp::Rsh => op::I32_SHR_U,
+                BinOp::Asr => op::I32_SHR_S,
+                BinOp::Eq => op::I32_EQ,
+                BinOp::NotEq => op::I32_NE,
+                BinOp::LessU => op::I32_LT_U,
+                BinOp::LessEqU => op::I32_LE_U,
+                BinOp::LessS => op::I32_LT_S,
+                BinOp::LessEqS => op::I32_LE_S,
+                BinOp::Carry | BinOp::SCarry | BinOp::SBorrow | BinOp::MulFull => unreachable!(),
             },
         };
         if matches!(bin, BinOp::DivS | BinOp::DivU | BinOp::RemS | BinOp::RemU)
@@ -1364,43 +1446,57 @@ impl BlockEmitter {
             // guest memory reads or change the arithmetic input. This is
             // especially useful for x86 IDIV, where a zero denominator traps
             // before the containing guest block can spill its registers.
-            let width=if wide {8} else {4};
-            let lhs_local=self.locals.temp(SCRATCH_KEY_BASE-900,width);
-            let rhs_local=self.locals.temp(SCRATCH_KEY_BASE-901,width);
-            self.local(op::LOCAL_SET,rhs_local);
-            self.local(op::LOCAL_SET,lhs_local);
-            for (address,index) in self.write_watches.clone() {
-                let source=match address {
-                    0x7fd0=>Some((lhs_local,width)),
-                    0x7fd4=>Some((rhs_local,width)),
-                    0x7fd8=>self.locals.reg("EAX").map(|i|(i,4)),
-                    0x7fdc=>self.locals.reg("EDX").map(|i|(i,4)),
-                    0x7fe0=>self.locals.reg("ECX").map(|i|(i,4)),
-                    0x7fe4=>self.locals.reg("ESI").map(|i|(i,4)),
-                    0x7fe8=>self.locals.reg("EBP").map(|i|(i,4)),
-                    0x7fec=>self.locals.reg("ESP").map(|i|(i,4)),
-                    0x7ff0=>self.locals.reg("EIP").map(|i|(i,4)),
-                    _=>None,
+            let width = if wide { 8 } else { 4 };
+            let lhs_local = self.locals.temp(SCRATCH_KEY_BASE - 900, width);
+            let rhs_local = self.locals.temp(SCRATCH_KEY_BASE - 901, width);
+            self.local(op::LOCAL_SET, rhs_local);
+            self.local(op::LOCAL_SET, lhs_local);
+            for (address, index) in self.write_watches.clone() {
+                let source = match address {
+                    0x7fd0 => Some((lhs_local, width)),
+                    0x7fd4 => Some((rhs_local, width)),
+                    0x7fd8 => self.locals.reg("EAX").map(|i| (i, 4)),
+                    0x7fdc => self.locals.reg("EDX").map(|i| (i, 4)),
+                    0x7fe0 => self.locals.reg("ECX").map(|i| (i, 4)),
+                    0x7fe4 => self.locals.reg("ESI").map(|i| (i, 4)),
+                    0x7fe8 => self.locals.reg("EBP").map(|i| (i, 4)),
+                    0x7fec => self.locals.reg("ESP").map(|i| (i, 4)),
+                    0x7ff0 => self.locals.reg("EIP").map(|i| (i, 4)),
+                    _ => None,
                 };
-                let frame_offset=match address {0x7fee=>Some(4),0x7fef=>Some(8),_=>None};
-                let ebp=frame_offset.and_then(|_|self.locals.reg("EBP"));
-                if source.is_none() && (frame_offset.is_none()||ebp.is_none()) {continue;}
-                self.op(op::I32_CONST);self.push_i32_const(address);
-                if let Some((local,source_width))=source {
-                    self.local(op::LOCAL_GET,local);
-                    if source_width==8 {self.op(op::I64_WRAP_I32);}
-                } else {
-                    self.local(op::LOCAL_GET,ebp.unwrap());
-                    self.op(op::I32_CONST);self.push_i32_const(frame_offset.unwrap());
-                    self.body.extend([op::I32_ADD,op::I32_LOAD,2,0]);
+                let frame_offset = match address {
+                    0x7fee => Some(4),
+                    0x7fef => Some(8),
+                    _ => None,
+                };
+                let ebp = frame_offset.and_then(|_| self.locals.reg("EBP"));
+                if source.is_none() && (frame_offset.is_none() || ebp.is_none()) {
+                    continue;
                 }
-                self.body.extend([op::I32_STORE,2,0]);
-                self.op(op::I32_CONST);self.push_i32_const(address);
-                self.op(op::I32_CONST);self.push_i32_const(0);
-                self.op(op::CALL);self.body.extend(leb_u32(index));self.op(0x1a);
+                self.op(op::I32_CONST);
+                self.push_i32_const(address);
+                if let Some((local, source_width)) = source {
+                    self.local(op::LOCAL_GET, local);
+                    if source_width == 8 {
+                        self.op(op::I64_WRAP_I32);
+                    }
+                } else {
+                    self.local(op::LOCAL_GET, ebp.unwrap());
+                    self.op(op::I32_CONST);
+                    self.push_i32_const(frame_offset.unwrap());
+                    self.body.extend([op::I32_ADD, op::I32_LOAD, 2, 0]);
+                }
+                self.body.extend([op::I32_STORE, 2, 0]);
+                self.op(op::I32_CONST);
+                self.push_i32_const(address);
+                self.op(op::I32_CONST);
+                self.push_i32_const(0);
+                self.op(op::CALL);
+                self.body.extend(leb_u32(index));
+                self.op(0x1a);
             }
-            self.local(op::LOCAL_GET,lhs_local);
-            self.local(op::LOCAL_GET,rhs_local);
+            self.local(op::LOCAL_GET, lhs_local);
+            self.local(op::LOCAL_GET, rhs_local);
         }
         self.op(byte);
         // Comparisons already produce exactly 0 or 1, which is the correct value
@@ -1429,22 +1525,38 @@ impl BlockEmitter {
         self.pop_into(dst)
     }
 
-    fn emit_carry(&mut self, lhs: &Operand, rhs: &Operand, dst: &Operand, signed: bool)
-        -> Result<(), TranslateError>
-    {
-        self.emit_flag(lhs, rhs, dst, if signed { BinOp::SCarry } else { BinOp::Carry })
+    fn emit_carry(
+        &mut self,
+        lhs: &Operand,
+        rhs: &Operand,
+        dst: &Operand,
+        signed: bool,
+    ) -> Result<(), TranslateError> {
+        self.emit_flag(
+            lhs,
+            rhs,
+            dst,
+            if signed { BinOp::SCarry } else { BinOp::Carry },
+        )
     }
 
-    fn emit_borrow(&mut self, lhs: &Operand, rhs: &Operand, dst: &Operand)
-        -> Result<(), TranslateError>
-    {
+    fn emit_borrow(
+        &mut self,
+        lhs: &Operand,
+        rhs: &Operand,
+        dst: &Operand,
+    ) -> Result<(), TranslateError> {
         self.emit_flag(lhs, rhs, dst, BinOp::SBorrow)
     }
 
     /// Compute flags at the operands' precision, not the flag destination's.
-    fn emit_flag(&mut self, lhs: &Operand, rhs: &Operand, dst: &Operand, kind: BinOp)
-        -> Result<(), TranslateError>
-    {
+    fn emit_flag(
+        &mut self,
+        lhs: &Operand,
+        rhs: &Operand,
+        dst: &Operand,
+        kind: BinOp,
+    ) -> Result<(), TranslateError> {
         let width = lhs.size().max(rhs.size());
         if !matches!(width, 1 | 2 | 4 | 8) {
             return Err(TranslateError::UnsupportedWidth(width));
@@ -1471,18 +1583,26 @@ impl BlockEmitter {
         }
         let wide = lw == 8 || rw == 8;
         let slot = if wide { u64::MAX - 203 } else { u64::MAX - 200 };
-        let (a, b, r) = (self.locals.temp(slot, if wide { 8 } else { 4 }),
+        let (a, b, r) = (
+            self.locals.temp(slot, if wide { 8 } else { 4 }),
             self.locals.temp(slot - 1, if wide { 8 } else { 4 }),
-            self.locals.temp(slot - 2, if wide { 8 } else { 4 }));
-        if wide && rw != 8 { self.op(op::I64_EXTEND_I32_U); }
+            self.locals.temp(slot - 2, if wide { 8 } else { 4 }),
+        );
+        if wide && rw != 8 {
+            self.op(op::I64_EXTEND_I32_U);
+        }
         self.local(op::LOCAL_SET, b);
-        if wide && lw != 8 { self.op(op::I64_EXTEND_I32_U); }
+        if wide && lw != 8 {
+            self.op(op::I64_EXTEND_I32_U);
+        }
         self.local(op::LOCAL_SET, a);
         self.local(op::LOCAL_GET, a);
         self.local(op::LOCAL_GET, b);
         self.op(if kind == BinOp::SBorrow {
             step(wide, op::I32_SUB, op::I64_SUB)
-        } else { step(wide, op::I32_ADD, op::I64_ADD) });
+        } else {
+            step(wide, op::I32_ADD, op::I64_ADD)
+        });
         if kind == BinOp::Carry {
             if width < 4 {
                 self.op(op::I32_CONST);
@@ -1501,22 +1621,28 @@ impl BlockEmitter {
             self.op(step(wide, op::I32_XOR, op::I64_XOR));
             self.op(step(wide, op::I32_AND, op::I64_AND));
             self.op(if wide { op::I64_CONST } else { op::I32_CONST });
-            self.body.extend_from_slice(&crate::encode::leb_s32((width * 8 - 1) as i32));
+            self.body
+                .extend_from_slice(&crate::encode::leb_s32((width * 8 - 1) as i32));
             self.op(step(wide, op::I32_SHR_U, op::I64_SHR_U));
             self.op(if wide { op::I64_CONST } else { op::I32_CONST });
             self.body.push(1);
             self.op(step(wide, op::I32_AND, op::I64_AND));
-            if wide { self.op(op::I32_WRAP_I64); }
+            if wide {
+                self.op(op::I32_WRAP_I64);
+            }
         }
         self.normalize(dst)?;
         self.pop_into(dst)
     }
-
 }
 
 /// Pick the i32 or i64 form of an opcode.
 fn step(wide: bool, i32_op: u8, i64_op: u8) -> u8 {
-    if wide { i64_op } else { i32_op }
+    if wide {
+        i64_op
+    } else {
+        i32_op
+    }
 }
 
 /// Translate a sequence of IR ops into one wasm function body.
@@ -1537,10 +1663,18 @@ pub fn translate_ops_with_imports(
     let base_count = locals.len();
     let mut e = BlockEmitter::new(locals);
     e.import_index = imports.clone();
-    e.write_watches=imports.iter().filter_map(|(import,index)| {
-        if import.library!="wlam.trace" {return None;}
-        Some((u32::from_str_radix(import.name.strip_prefix("write_")?,16).ok()?,*index))
-    }).collect();
+    e.write_watches = imports
+        .iter()
+        .filter_map(|(import, index)| {
+            if import.library != "wlam.trace" {
+                return None;
+            }
+            Some((
+                u32::from_str_radix(import.name.strip_prefix("write_")?, 16).ok()?,
+                *index,
+            ))
+        })
+        .collect();
     e.pre_mark_x87_temps(ops);
     let mut at = 0;
     while at < ops.len() {
@@ -1688,7 +1822,10 @@ pub const X87_USEROP_ATAN2: u64 = 102;
 
 /// A diagnostic import, deliberately unimplemented by the Win32 host.
 pub fn unsupported_import(error: &TranslateError) -> crate::chain::HostImport {
-    crate::chain::HostImport { library: "wlam.unsupported".into(), name: error.to_string() }
+    crate::chain::HostImport {
+        library: "wlam.unsupported".into(),
+        name: error.to_string(),
+    }
 }
 
 /// The synthetic host import backing an x87 transcendental.
@@ -1698,7 +1835,14 @@ pub fn unsupported_import(error: &TranslateError) -> crate::chain::HostImport {
 pub fn x87_helper_import(op: u64) -> crate::chain::HostImport {
     crate::chain::HostImport {
         library: "wlam.x87".to_string(),
-        name: match op { X87_USEROP_SIN => "sin", X87_USEROP_COS => "cos", X87_USEROP_TAN => "tan", X87_USEROP_ATAN2 => "atan2", _ => "unknown" }.to_string(),
+        name: match op {
+            X87_USEROP_SIN => "sin",
+            X87_USEROP_COS => "cos",
+            X87_USEROP_TAN => "tan",
+            X87_USEROP_ATAN2 => "atan2",
+            _ => "unknown",
+        }
+        .to_string(),
     }
 }
 /// Scratch double receiving an x87 helper's result.
@@ -1722,7 +1866,9 @@ pub fn module_with_snapshot(
     let mut body = block.body[..block.ops_offset].to_vec();
     let mut slot: Vec<(u32, u64)> = Vec::with_capacity(registers.len());
     for (i, name) in registers.iter().enumerate() {
-        let Some(idx) = locals.reg(name) else { continue };
+        let Some(idx) = locals.reg(name) else {
+            continue;
+        };
         slot.push((idx, snapshot_address(i)));
     }
     for &(idx, at) in &slot {

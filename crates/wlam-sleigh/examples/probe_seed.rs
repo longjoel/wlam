@@ -15,31 +15,68 @@ use wlam_sleigh::discover::discover;
 use wlam_sleigh::with_big_stack;
 
 fn main() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
     let bytes = std::fs::read(root.join("north-star/bin/Uxn32.exe")).unwrap();
-    let prog = { let b = bytes.clone(); with_big_stack(move || discover(&Pe::parse(&b).unwrap(), 64)) };
+    let prog = {
+        let b = bytes.clone();
+        with_big_stack(move || discover(&Pe::parse(&b).unwrap(), 64))
+    };
     let pe = Pe::parse(&bytes).unwrap();
     let base = pe.image_base as u64;
-    let by_slot: BTreeMap<u64, HostImport> = pe.imports.iter().filter(|i| i.iat_slot_verified)
-        .map(|i| (base + i.iat_rva as u64, HostImport {
-            library: i.library.clone(),
-            name: i.name.clone().unwrap_or_else(|| format!("#{}", i.ordinal.unwrap_or(0))),
-        })).collect();
+    let by_slot: BTreeMap<u64, HostImport> = pe
+        .imports
+        .iter()
+        .filter(|i| i.iat_slot_verified)
+        .map(|i| {
+            (
+                base + i.iat_rva as u64,
+                HostImport {
+                    library: i.library.clone(),
+                    name: i
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| format!("#{}", i.ordinal.unwrap_or(0))),
+                },
+            )
+        })
+        .collect();
     let mut blocks = BTreeMap::new();
     for b in prog.blocks() {
         let rva = (b.start - base) as u32;
-        let Some(idx) = pe.section_of(rva) else { continue };
+        let Some(idx) = pe.section_of(rva) else {
+            continue;
+        };
         let sec = &pe.sections[idx];
         let off = (rva - sec.virtual_address) as usize;
-        if off >= sec.data.len() { continue; }
+        if off >= sec.data.len() {
+            continue;
+        }
         let slice = sec.data[off..].to_vec();
         let start = b.start;
-        blocks.insert(b.start, shared::convert(&with_big_stack(move || wlam_sleigh::lift_block(&slice, start))));
+        blocks.insert(
+            b.start,
+            shared::convert(&with_big_stack(move || {
+                wlam_sleigh::lift_block(&slice, start)
+            })),
+        );
     }
     let mut regs: Vec<String> = wlam_emit::seeded_registers();
     let mut used = std::collections::BTreeSet::new();
-    for b in blocks.values() { for op in &b.ops { shared::collect_regs(op, &mut used); } }
-    for r in used { if !regs.contains(&r) { regs.push(r); } }
+    for b in blocks.values() {
+        for op in &b.ops {
+            shared::collect_regs(op, &mut used);
+        }
+    }
+    for r in used {
+        if !regs.contains(&r) {
+            regs.push(r);
+        }
+    }
     let pages = pages_for_image(base + pe.size_of_image as u64);
     let mut p = partition(&[base + pe.entry_point_rva as u64], &blocks, &regs);
     p.register_host_imports(&blocks, |slot| by_slot.get(&slot).cloned());
@@ -85,7 +122,9 @@ fn main() {
     // Guard against pointing this at a guest binary: an earlier version took the
     // same argument and overwrote `benchmarks/minesweeper/bin/minesweeper-x86.exe`
     // with a wasm module. Refuse to write anything that looks like a PE.
-    let out = std::env::args().nth(1).unwrap_or_else(|| "seeded.wasm".into());
+    let out = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "seeded.wasm".into());
     if out.ends_with(".exe") || out.ends_with(".dll") {
         eprintln!("refusing to write a wasm module over {out}: looks like a guest binary");
         std::process::exit(2);
@@ -95,7 +134,16 @@ fn main() {
     // be named.
     let import_count = p.import_index.len() as u32;
     for (i, func) in p.functions.iter().enumerate() {
-        eprintln!("func {} entry={:#x} blocks={}", import_count + i as u32, func.entry, func.blocks.len());
+        eprintln!(
+            "func {} entry={:#x} blocks={}",
+            import_count + i as u32,
+            func.entry,
+            func.blocks.len()
+        );
     }
-    eprintln!("wrote {} bytes to {out} with {} data segments", m.len(), segments.len());
+    eprintln!(
+        "wrote {} bytes to {out} with {} data segments",
+        m.len(),
+        segments.len()
+    );
 }

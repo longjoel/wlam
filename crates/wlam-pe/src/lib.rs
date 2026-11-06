@@ -481,8 +481,12 @@ impl<'a> ImageView<'a> {
                 // A descriptor whose module name is not a plausible DLL name
                 // ends the chain: it is not an import descriptor.
                 let Some(library) = self.plausible_module(name_rva) else {
+                    eprintln!("DBG import break at rva {rva:#x}: oft={oft:#x} name={name_rva:#x} ft={first_thunk:#x}");
                     break;
                 };
+                eprintln!(
+                    "DBG import {library} oft={oft:#x} name={name_rva:#x} ft={first_thunk:#x}"
+                );
                 let lookup = if oft != 0 { oft } else { first_thunk };
                 self.read_thunks(&library, lookup, first_thunk, false, 4096, &mut out)?;
                 rva += 20;
@@ -570,18 +574,19 @@ impl<'a> ImageView<'a> {
     /// section holds an arbitrary RVA. A slot is trusted when either its low
     /// half points inside the image, or — for a 64-bit image — it reads as a
     /// full pointer into the image.
-    fn slot_points_inside_image(&self, rva: u32) -> bool {
-        let inside = |v: u32| {
-            self.sections.iter().any(|s| {
-                v >= s.virtual_address
-                    && v < s
-                        .virtual_address
+    fn value_inside_image(&self, value: u32) -> bool {
+        self.sections.iter().any(|s| {
+            value >= s.virtual_address
+                && value
+                    < s.virtual_address
                         .saturating_add(s.virtual_size.max(s.data.len() as u32))
-            })
-        };
+        })
+    }
+
+    fn slot_points_inside_image(&self, rva: u32) -> bool {
         if self
             .bytes(rva, 4)
-            .map(|b| inside(u32::from_le_bytes([b[0], b[1], b[2], b[3]])))
+            .map(|b| self.value_inside_image(u32::from_le_bytes([b[0], b[1], b[2], b[3]])))
             .unwrap_or(false)
         {
             return true;
@@ -591,7 +596,7 @@ impl<'a> ImageView<'a> {
                 .bytes(rva, 8)
                 .map(|b| {
                     let lo = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-                    inside(lo)
+                    self.value_inside_image(lo)
                 })
                 .unwrap_or(false)
     }
@@ -629,10 +634,20 @@ impl<'a> ImageView<'a> {
         // Ordinal flags are not image addresses, but equality with the lookup
         // array independently proves that these slots are parallel.
         let mirrors = (0..names).all(|i| {
-            self.read_thunk(lookup_rva+i*width).ok() == self.read_thunk(iat_rva+i*width).ok()
-                && self.read_thunk(iat_rva+i*width).is_ok()
+            self.read_thunk(lookup_rva + i * width).ok()
+                == self.read_thunk(iat_rva + i * width).ok()
+                && self.read_thunk(iat_rva + i * width).is_ok()
         });
-        let aligned = mirrors || slots >= names;
+        // A bound image stores resolved addresses (usually into another DLL)
+        // in the IAT instead of name RVAs, so those slots are not inside this
+        // image and `slots` is zero. Every slot being a non-zero address
+        // outside this image is the bound-import signature.
+        let bound = (0..names).all(|i| {
+            self.read_thunk(iat_rva + i * width)
+                .map(|value| value != 0 && !self.value_inside_image(value))
+                .unwrap_or(false)
+        });
+        let aligned = mirrors || slots >= names || bound;
         for i in 0..names {
             let entry = self.read_thunk(lookup_rva + i * width)?;
             let iat_slot = if aligned {
@@ -683,7 +698,7 @@ impl<'a> ImageView<'a> {
         if !name.bytes().all(|c| c.is_ascii_graphic()) {
             return None;
         }
-        let lower=name.to_ascii_lowercase();
+        let lower = name.to_ascii_lowercase();
         if lower.ends_with(".dll") || lower.ends_with(".drv") {
             Some(name)
         } else {
@@ -714,6 +729,7 @@ impl<'a> ImageView<'a> {
 
     fn read_exports(&self, dir: Option<Directory>) -> Result<Vec<Export>, PeError> {
         let Some(d) = dir else { return Ok(Vec::new()) };
+        let ordinal_base = self.u32(d.rva + 16)?;
         let num_functions = self.u32(d.rva + 20)?;
         let num_names = self.u32(d.rva + 24)?;
         let functions_rva = self.u32(d.rva + 28)?;
@@ -739,7 +755,8 @@ impl<'a> ImageView<'a> {
                 .position(|s| rva >= s.virtual_address && rva < s.virtual_end());
             out.push(Export {
                 name: name_by_ordinal.get(&i).cloned(),
-                ordinal: i + 1,
+                // `Base` is not always 1: MFC30.DLL starts at 268.
+                ordinal: ordinal_base + i,
                 rva,
                 section,
             });
@@ -789,25 +806,149 @@ mod tests {
 
     #[test]
     fn drv_descriptors_do_not_hide_later_ordinal_imports() {
-        let mut data=vec![0;512];
-        let put=|data:&mut [u8],at:usize,words:&[u32]| {
-            for (i,value) in words.iter().enumerate() {data[at+i*4..at+i*4+4].copy_from_slice(&value.to_le_bytes());}
+        let mut data = vec![0; 512];
+        let put = |data: &mut [u8], at: usize, words: &[u32]| {
+            for (i, value) in words.iter().enumerate() {
+                data[at + i * 4..at + i * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
         };
-        put(&mut data,0,&[0x1080,0,0,0x1100,0x10a0]);
-        put(&mut data,20,&[0x1090,0,0,0x1120,0x10b0]);
-        put(&mut data,0x80,&[0x1140,0]);put(&mut data,0xa0,&[0x1140,0]);
-        put(&mut data,0x90,&[0x80000011,0]);put(&mut data,0xb0,&[0x80000011,0]);
+        put(&mut data, 0, &[0x1080, 0, 0, 0x1100, 0x10a0]);
+        put(&mut data, 20, &[0x1090, 0, 0, 0x1120, 0x10b0]);
+        put(&mut data, 0x80, &[0x1140, 0]);
+        put(&mut data, 0xa0, &[0x1140, 0]);
+        put(&mut data, 0x90, &[0x80000011, 0]);
+        put(&mut data, 0xb0, &[0x80000011, 0]);
         data[0x100..0x10d].copy_from_slice(b"WINSPOOL.DRV\0");
         data[0x120..0x12d].copy_from_slice(b"COMCTL32.dll\0");
         data[0x142..0x14f].copy_from_slice(b"OpenPrinterA\0");
-        let section=Section {name:".idata".into(),virtual_address:0x1000,virtual_size:512,file_offset:0,file_size:512,characteristics:0x40000040,data};
-        let sections=[section];
-        let image=ImageView {raw:&[],sections:&sections,image_base:0x400000,is64:false};
-        let imports=image.read_imports(Some(Directory {index:1,rva:0x1000,size:60}),None).unwrap();
-        assert_eq!(imports.len(),2);
-        assert_eq!(imports[1].ordinal,Some(17));
-        assert_eq!(imports[1].iat_rva,0x10b0);
-        assert!(imports.iter().all(|import|import.iat_slot_verified));
+        let section = Section {
+            name: ".idata".into(),
+            virtual_address: 0x1000,
+            virtual_size: 512,
+            file_offset: 0,
+            file_size: 512,
+            characteristics: 0x40000040,
+            data,
+        };
+        let sections = [section];
+        let image = ImageView {
+            raw: &[],
+            sections: &sections,
+            image_base: 0x400000,
+            is64: false,
+        };
+        let imports = image
+            .read_imports(
+                Some(Directory {
+                    index: 1,
+                    rva: 0x1000,
+                    size: 60,
+                }),
+                None,
+            )
+            .unwrap();
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[1].ordinal, Some(17));
+        assert_eq!(imports[1].iat_rva, 0x10b0);
+        assert!(imports.iter().all(|import| import.iat_slot_verified));
+    }
+
+    #[test]
+    fn bound_iat_slots_are_verified_even_when_addresses_are_outside_the_image() {
+        let mut data = vec![0; 0x200];
+        let put = |data: &mut [u8], at: usize, words: &[u32]| {
+            for (i, value) in words.iter().enumerate() {
+                data[at + i * 4..at + i * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        };
+        // Descriptor at RVA 0x1000: lookup 0x1140, name 0x1100, IAT 0x10a0.
+        put(&mut data, 0, &[0x1140, 0, 0, 0x1100, 0x10a0]);
+        // The IAT is already bound to addresses in another module.
+        put(&mut data, 0xa0, &[0x7fd81000, 0x7fd82000]);
+        data[0x100..0x10b].copy_from_slice(b"MSVCRT.dll\0");
+        put(&mut data, 0x140, &[0x1160, 0x1170]);
+        data[0x162..0x166].copy_from_slice(b"Foo\0");
+        data[0x172..0x176].copy_from_slice(b"Bar\0");
+        let section = Section {
+            name: ".idata".into(),
+            virtual_address: 0x1000,
+            virtual_size: 0x200,
+            file_offset: 0,
+            file_size: 0x200,
+            characteristics: 0x40000040,
+            data,
+        };
+        let sections = [section];
+        let image = ImageView {
+            raw: &[],
+            sections: &sections,
+            image_base: 0x400000,
+            is64: false,
+        };
+        let imports = image
+            .read_imports(
+                Some(Directory {
+                    index: 1,
+                    rva: 0x1000,
+                    size: 20,
+                }),
+                None,
+            )
+            .unwrap();
+        assert_eq!(imports.len(), 2);
+        assert!(imports.iter().all(|import| import.iat_slot_verified));
+        assert_eq!(imports[0].iat_rva, 0x10a0);
+        assert_eq!(imports[1].iat_rva, 0x10a4);
+        assert_eq!(imports[0].name.as_deref(), Some("Foo"));
+        assert_eq!(imports[1].name.as_deref(), Some("Bar"));
+    }
+
+    #[test]
+    fn export_ordinals_use_the_declared_base() {
+        let mut data = vec![0; 0x200];
+        let put = |data: &mut [u8], at: usize, words: &[u32]| {
+            for (i, value) in words.iter().enumerate() {
+                data[at + i * 4..at + i * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        };
+        put(&mut data, 16, &[268]); // Base
+        put(&mut data, 20, &[2]); // NumberOfFunctions
+        put(&mut data, 24, &[1]); // NumberOfNames
+        put(&mut data, 28, &[0x1040]); // AddressOfFunctions
+        put(&mut data, 32, &[0x1050]); // AddressOfNames
+        put(&mut data, 36, &[0x1054]); // AddressOfNameOrdinals
+        put(&mut data, 0x40, &[0x1100, 0x1110]);
+        put(&mut data, 0x50, &[0x1060]);
+        data[0x54..0x56].copy_from_slice(&1u16.to_le_bytes());
+        data[0x60..0x64].copy_from_slice(b"Foo\0");
+        let section = Section {
+            name: ".text".into(),
+            virtual_address: 0x1000,
+            virtual_size: 0x200,
+            file_offset: 0,
+            file_size: 0x200,
+            characteristics: 0x60000020,
+            data,
+        };
+        let sections = [section];
+        let image = ImageView {
+            raw: &[],
+            sections: &sections,
+            image_base: 0x400000,
+            is64: false,
+        };
+        let exports = image
+            .read_exports(Some(Directory {
+                index: 0,
+                rva: 0x1000,
+                size: 40,
+            }))
+            .unwrap();
+        assert_eq!(exports.len(), 2);
+        assert_eq!(exports[0].ordinal, 268);
+        assert_eq!(exports[0].name, None);
+        assert_eq!(exports[1].ordinal, 269);
+        assert_eq!(exports[1].name.as_deref(), Some("Foo"));
     }
 
     #[test]

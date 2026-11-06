@@ -48,6 +48,7 @@ void API glViewport(I, I, I, I);
 static char className[] = "WlamOpenGlFixture";
 static char title[] = "OpenGL fixture";
 static unsigned char blue[] = {0, 0, 255};
+static unsigned char green[] = {0, 255, 0};
 static volatile U fixture_window, fixture_context, fixture_swaps;
 int _fltused = 0;
 
@@ -101,6 +102,10 @@ void entry(void) {
     glEnd();
     if (glGetError() != 0x0502) ExitProcess(20);
     if (glGetError() != 0) ExitProcess(18);
+    glBegin(0x0000); /* GL_POINTS: also exercise the WebGL point packet. */
+    glColor3ubv(green);
+    glVertex3f(0.0f, 0.0f, 0.0f);
+    glEnd();
     if (!SwapBuffers(dc)) ExitProcess(15);
     fixture_swaps++;
 

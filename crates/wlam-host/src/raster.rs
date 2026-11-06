@@ -20,6 +20,10 @@ pub struct Dib {
     bit_count: u16,
     stride: u32,
     palette: Vec<[u8; 4]>,
+    section: bool,
+    compression: u32,
+    clr_used: u32,
+    planes: u16,
 }
 impl Dib {
     pub fn from_header(
@@ -32,9 +36,10 @@ impl Dib {
         let word = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         let bit_count = u16::from_le_bytes(bytes[14..16].try_into().unwrap());
         if word(0) != 40
-            || u16::from_le_bytes(bytes[12..14].try_into().unwrap()) != 1
-            || !matches!(bit_count, 8 | 32)
-            || word(16) != 0
+            || u16::from_le_bytes(bytes[12..14].try_into().unwrap()) == 0
+            || !matches!(bit_count, 1 | 2 | 4 | 8 | 16 | 24 | 32)
+            || !matches!(word(16), 0 | 3)
+            || (word(16) == 3 && !matches!(bit_count, 16 | 32))
         {
             return Err(RasterError::UnsupportedFormat);
         }
@@ -48,12 +53,12 @@ impl Dib {
         if u64::from(bits) + size > memory.byte_len() || u64::from(bits) + size > 1u64 << 32 {
             return Err(RasterError::InvalidDimensions);
         }
-        let palette = if bit_count == 8 {
+        let palette = if bit_count <= 8 {
             let mut colors = word(32) as usize;
             if colors == 0 {
-                colors = 256;
+                colors = 1usize << bit_count;
             }
-            if colors > 256 {
+            if colors > 256 || colors > (1usize << bit_count) {
                 return Err(RasterError::UnsupportedFormat);
             }
             let mut raw = vec![0; colors * 4];
@@ -77,7 +82,177 @@ impl Dib {
             bit_count,
             stride,
             palette,
+            section: true,
+            compression: word(16),
+            clr_used: if bit_count <= 8 {
+                if word(32) == 0 {
+                    1 << bit_count
+                } else {
+                    word(32)
+                }
+            } else {
+                0
+            },
+            planes: 1,
         })
+    }
+    /// Wrap already-allocated guest pixels as a top-down DIB.
+    ///
+    /// `CreateCompatibleBitmap` uses this for a device-independent bitmap it
+    /// owns; passing the guest memory keeps the range check in one place.
+    pub fn new(
+        memory: &dyn MemoryAccess,
+        width: u32,
+        height: u32,
+        bits: u32,
+        bit_count: u16,
+    ) -> Result<Self, RasterError> {
+        if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32
+            || !matches!(bit_count, 1 | 2 | 4 | 8 | 16 | 24 | 32)
+        {
+            return Err(RasterError::UnsupportedFormat);
+        }
+        let stride = (((width as u64 * bit_count as u64 + 31) / 32) * 4) as u32;
+        let size = stride as u64 * height as u64;
+        if u64::from(bits) + size > memory.byte_len() || u64::from(bits) + size > 1u64 << 32 {
+            return Err(RasterError::InvalidDimensions);
+        }
+        let palette = match bit_count {
+            1 => vec![[0, 0, 0, 255], [255, 255, 255, 255]],
+            2 => (0..4).map(|value| [value as u8 * 85, value as u8 * 85, value as u8 * 85, 255]).collect(),
+            4 => (0..16).map(|value| [value as u8 * 17, value as u8 * 17, value as u8 * 17, 255]).collect(),
+            8 => (0..256).map(|value| [value as u8, value as u8, value as u8, 255]).collect(),
+            _ => Vec::new(),
+        };
+        Ok(Self {
+            bits,
+            width,
+            height,
+            top_down: true,
+            bit_count,
+            stride,
+            palette,
+            section: false,
+            compression: 0,
+            clr_used: if bit_count <= 8 { 1 << bit_count } else { 0 },
+            planes: 1,
+        })
+    }
+    /// Build a DIB section object from already-parsed header fields.
+    pub fn section(
+        memory: &dyn MemoryAccess,
+        width: u32,
+        height: u32,
+        bits: u32,
+        bit_count: u16,
+        compression: u32,
+        top_down: bool,
+        palette: Vec<[u8; 4]>,
+    ) -> Result<Self, RasterError> {
+        if width == 0
+            || height == 0
+            || width > i32::MAX as u32
+            || height > i32::MAX as u32
+            || !matches!(bit_count, 1 | 2 | 4 | 8 | 16 | 24 | 32)
+        {
+            return Err(RasterError::UnsupportedFormat);
+        }
+        let stride = (((width as u64 * bit_count as u64 + 31) / 32) * 4) as u32;
+        let size = stride as u64 * height as u64;
+        if u64::from(bits) + size > memory.byte_len() || u64::from(bits) + size > 1u64 << 32 {
+            return Err(RasterError::InvalidDimensions);
+        }
+        let clr_used = if bit_count <= 8 {
+            if palette.is_empty() {
+                1 << bit_count
+            } else {
+                palette.len() as u32
+            }
+        } else {
+            0
+        };
+        Ok(Self {
+            bits,
+            width,
+            height,
+            top_down,
+            bit_count,
+            stride,
+            palette,
+            section: true,
+            compression,
+            clr_used,
+            planes: 1,
+        })
+    }
+    /// Override the storage orientation (used for bottom-up GetDIBits output).
+    pub fn with_top_down(mut self, top_down: bool) -> Self {
+        self.top_down = top_down;
+        self
+    }
+    pub fn is_section(&self) -> bool {
+        self.section
+    }
+    pub fn bit_count(&self) -> u16 {
+        self.bit_count
+    }
+    pub fn stride(&self) -> u32 {
+        self.stride
+    }
+    pub fn palette(&self) -> &[[u8; 4]] {
+        &self.palette
+    }
+    pub fn set_palette_entries(&mut self, start: usize, colors: &[[u8; 4]]) -> usize {
+        let mut written = 0;
+        for (index, color) in colors.iter().enumerate() {
+            if let Some(entry) = self.palette.get_mut(start + index) {
+                *entry = *color;
+                written += 1;
+            } else {
+                break;
+            }
+        }
+        written
+    }
+    pub fn compression(&self) -> u32 {
+        self.compression
+    }
+    pub fn clr_used(&self) -> u32 {
+        self.clr_used
+    }
+    pub fn planes(&self) -> u16 {
+        self.planes
+    }
+    /// Write one palette index into a 1/2/4/8-bpp DIB.
+    pub fn write_index(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        x: i32,
+        y: i32,
+        index: u8,
+    ) -> Result<(), RasterError> {
+        if x < 0 || y < 0 || x as u32 >= self.width || y as u32 >= self.height {
+            return Err(RasterError::InvalidDimensions);
+        }
+        if self.bit_count > 8 {
+            return Err(RasterError::UnsupportedFormat);
+        }
+        let row = if self.top_down {
+            y as u32
+        } else {
+            self.height - 1 - y as u32
+        };
+        let address = u32::try_from(self.bits as u64 + row as u64 * self.stride as u64)
+            .map_err(|_| RasterError::InvalidDimensions)?;
+        let bits = self.bit_count as u32;
+        let mut bytes = vec![0u8; self.stride as usize];
+        memory.read(address, &mut bytes)?;
+        let mask = ((1u16 << bits) - 1) as u8;
+        let shift = 8 - bits - (x as u32 * bits % 8);
+        let byte = &mut bytes[(x as u32 * bits / 8) as usize];
+        *byte = (*byte & !(mask << shift)) | ((index & mask) << shift);
+        memory.write(address, &bytes)?;
+        Ok(())
     }
     /// Store opaque RGBA pixels in a DIB, preserving row padding and orientation.
     pub fn write_rgba_row(
@@ -102,6 +277,76 @@ impl Dib {
             + row as u64 * self.stride as u64
             + x as u64 * (self.bit_count / 8) as u64;
         let address = u32::try_from(address).map_err(|_| RasterError::InvalidDimensions)?;
+        if self.bit_count == 1 {
+            let mut row = vec![0u8; self.stride as usize];
+            memory.read(address, &mut row)?;
+            for (i, pixel) in pixels.chunks_exact(4).enumerate() {
+                let bit_x = x as usize + i;
+                let mask = 0x80u8 >> (bit_x % 8);
+                let index = self
+                    .palette
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, color)| {
+                        (0..3)
+                            .map(|c| (color[c] as i32 - pixel[c] as i32).pow(2))
+                            .sum::<i32>()
+                    })
+                    .map(|(index, _)| index as u8)
+                    .unwrap_or(0);
+                if index != 0 {
+                    row[bit_x / 8] |= mask;
+                } else {
+                    row[bit_x / 8] &= !mask;
+                }
+            }
+            memory.write(address, &row)?;
+            return Ok(());
+        }
+        if self.bit_count == 24 {
+            let output: Vec<u8> = pixels
+                .chunks_exact(4)
+                .flat_map(|p| [p[2], p[1], p[0]])
+                .collect();
+            memory.write(address, &output)?;
+            return Ok(());
+        }
+        if self.bit_count == 16 {
+            let output: Vec<u8> = pixels
+                .chunks_exact(4)
+                .flat_map(|p| {
+                    let v = ((p[0] as u16 / 8) << 10) | ((p[1] as u16 / 8) << 5) | (p[2] as u16 / 8);
+                    v.to_le_bytes()
+                })
+                .collect();
+            memory.write(address, &output)?;
+            return Ok(());
+        }
+        if self.bit_count == 2 || self.bit_count == 4 {
+            let bits = self.bit_count as usize;
+            let mut row = vec![0u8; self.stride as usize];
+            memory.read(address, &mut row)?;
+            let mask = (1u8 << bits) - 1;
+            for (i, pixel) in pixels.chunks_exact(4).enumerate() {
+                let index = self
+                    .palette
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, color)| {
+                        (0..3)
+                            .map(|c| (color[c] as i32 - pixel[c] as i32).pow(2))
+                            .sum::<i32>()
+                    })
+                    .map(|(index, _)| index as u8)
+                    .unwrap_or(0);
+                let bit_x = x as usize + i;
+                let shift = 8 - bits - (bit_x * bits % 8);
+                let byte = &mut row[bit_x * bits / 8];
+                *byte = (*byte & !(mask << shift)) | ((index & mask) << shift);
+            }
+            memory.write(address, &row)?;
+            return Ok(());
+        }
         let output: Vec<u8> = if self.bit_count == 32 {
             pixels
                 .chunks_exact(4)
@@ -152,6 +397,37 @@ impl Dib {
             return Ok(());
         }
         let color = if white { 255u8 } else { 0u8 };
+        if self.bit_count == 1 {
+            let index = self
+                .palette
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, entry)| {
+                    let target = if white { 255i32 } else { 0 };
+                    (0..3)
+                        .map(|c| (entry[c] as i32 - target).pow(2))
+                        .sum::<i32>()
+                })
+                .map(|(index, _)| index as u8)
+                .unwrap_or(0);
+            for py in top..bottom {
+                let physical = if self.top_down { py as u32 } else { self.height - 1 - py as u32 };
+                let address = u32::try_from(self.bits as u64 + physical as u64 * self.stride as u64)
+                    .map_err(|_| RasterError::InvalidDimensions)?;
+                let mut row = vec![0u8; self.stride as usize];
+                memory.read(address, &mut row)?;
+                for px in left..right {
+                    let mask = 0x80u8 >> (px % 8);
+                    if index != 0 {
+                        row[(px / 8) as usize] |= mask;
+                    } else {
+                        row[(px / 8) as usize] &= !mask;
+                    }
+                }
+                memory.write(address, &row)?;
+            }
+            return Ok(());
+        }
         let bytes_per_pixel = (self.bit_count / 8) as usize;
         let mut row = vec![color; (right - left) as usize * bytes_per_pixel];
         if self.bit_count == 8 {
@@ -206,7 +482,48 @@ impl Dib {
         };
         let address = self.bits as u64 + row as u64 * self.stride as u64;
         let address = u32::try_from(address).map_err(|_| RasterError::InvalidDimensions)?;
-        if self.bit_count == 32 {
+        if self.bit_count == 1 || self.bit_count == 2 || self.bit_count == 4 {
+            let mut row_bytes = vec![0u8; self.stride as usize];
+            memory.read(address, &mut row_bytes)?;
+            let bits = self.bit_count as usize;
+            for (i, pixel) in output.chunks_exact_mut(4).enumerate() {
+                let bit_x = x as usize + i;
+                let byte = row_bytes[bit_x * bits / 8] as usize;
+                let shift = 8 - bits - (bit_x * bits % 8);
+                let index = (byte >> shift) & ((1 << bits) - 1);
+                pixel.copy_from_slice(
+                    self.palette
+                        .get(index)
+                        .ok_or(RasterError::InvalidDimensions)?,
+                );
+            }
+        } else if self.bit_count == 16 {
+            let address = address
+                .checked_add(x.checked_mul(2).ok_or(RasterError::InvalidDimensions)?)
+                .ok_or(RasterError::InvalidDimensions)?;
+            let mut words = vec![0u8; output.len() / 2];
+            memory.read(address, &mut words)?;
+            for (word, pixel) in words.chunks_exact(2).zip(output.chunks_exact_mut(4)) {
+                let value = u16::from_le_bytes([word[0], word[1]]);
+                let expand = |v: u16| ((v as u32 * 255 + 15) / 31) as u8;
+                pixel[0] = expand((value >> 10) & 0x1f);
+                pixel[1] = expand((value >> 5) & 0x1f);
+                pixel[2] = expand(value & 0x1f);
+                pixel[3] = 255;
+            }
+        } else if self.bit_count == 24 {
+            let address = address
+                .checked_add(x.checked_mul(3).ok_or(RasterError::InvalidDimensions)?)
+                .ok_or(RasterError::InvalidDimensions)?;
+            let mut bytes = vec![0u8; output.len() / 4 * 3];
+            memory.read(address, &mut bytes)?;
+            for (bgr, pixel) in bytes.chunks_exact(3).zip(output.chunks_exact_mut(4)) {
+                pixel[0] = bgr[2];
+                pixel[1] = bgr[1];
+                pixel[2] = bgr[0];
+                pixel[3] = 255;
+            }
+        } else if self.bit_count == 32 {
             let address = address
                 .checked_add(x.checked_mul(4).ok_or(RasterError::InvalidDimensions)?)
                 .ok_or(RasterError::InvalidDimensions)?;

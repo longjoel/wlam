@@ -15,20 +15,40 @@ U API SelectObject(U,U); I API BitBlt(U,I,I,I,I,U,I,I,U);
 I API DeleteDC(U); I API DeleteObject(U); void API ExitProcess(U);
 static char className[]="WlamFixture"; static char title[]="Interactive PE fixture";
 static U dc,bitmap,oldBitmap; static U *pixels; static U color=0x00123456;
+static U surfaceWidth=32,surfaceHeight=24;
 EXPORT volatile U fixture_paints,fixture_clicks,fixture_keys,fixture_closed;
 static BITMAPINFO info={40,32,-24,1,32,0,0,0,0,0,0};
-static void fill(void) { U i; for(i=0;i<32*24;i++) pixels[i]=color; }
+static void fill(void) { U i; for(i=0;i<surfaceWidth*surfaceHeight;i++) pixels[i]=color; }
+static I createSurface(void) {
+    dc=CreateCompatibleDC(0);
+    info.width=surfaceWidth; info.height=-(I)surfaceHeight;
+    bitmap=CreateDIBSection(dc,&info,0,&pixels,0,0);
+    if(!dc || !bitmap || !pixels) return -1;
+    oldBitmap=SelectObject(dc,bitmap); fill(); return 0;
+}
+static void destroySurface(void) {
+    if(dc) SelectObject(dc,oldBitmap);
+    if(bitmap) DeleteObject(bitmap);
+    if(dc) DeleteDC(dc);
+    dc=bitmap=oldBitmap=0; pixels=0;
+}
 EXPORT I __stdcall WindowProc(U window,U message,U wparam,U lparam) {
     if(message==0x81) return 1;
+    if(message==5) {
+        U w=lparam&0xffff,h=lparam>>16;
+        if(w&&h&&(w!=surfaceWidth||h!=surfaceHeight)) {
+            destroySurface(); surfaceWidth=w; surfaceHeight=h;
+            if(createSurface()) return -1;
+            InvalidateRect(window,0,0);
+        }
+        return 0;
+    }
     if(message==1) {
-        dc=CreateCompatibleDC(0);
-        bitmap=CreateDIBSection(dc,&info,0,&pixels,0,0);
-        if(!dc || !bitmap || !pixels) return -1;
-        oldBitmap=SelectObject(dc,bitmap); fill(); return 0;
+        return createSurface();
     }
     if(message==15) {
         U paint[16]; U target=BeginPaint(window,paint);
-        BitBlt(target,0,0,32,24,dc,0,0,0x00cc0020);
+        BitBlt(target,0,0,surfaceWidth,surfaceHeight,dc,0,0,0x00cc0020);
         EndPaint(window,paint); fixture_paints++; return 0;
     }
     if(message==0x201) {fixture_clicks++; color=0x00e04020; fill(); InvalidateRect(window,0,0); return 0;}
@@ -40,7 +60,7 @@ EXPORT I __stdcall WindowProc(U window,U message,U wparam,U lparam) {
     }
     if(message==0x10) {DestroyWindow(window); return 0;}
     if(message==2) {
-        SelectObject(dc,oldBitmap); DeleteObject(bitmap); DeleteDC(dc);
+        destroySurface();
         fixture_closed=1; PostQuitMessage(0); return 0;
     }
     return DefWindowProcA(window,message,wparam,lparam);

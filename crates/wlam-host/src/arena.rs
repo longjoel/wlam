@@ -16,6 +16,10 @@ impl Default for Arena {
     }
 }
 impl Arena {
+    /// A frontend may reserve a distinct flat range for host-owned structures.
+    pub fn starting_at(address: u32) -> Self {
+        Self { next: u64::from(address), live: BTreeMap::new(), free: BTreeMap::new() }
+    }
     pub fn allocated_bytes(&self) -> u64 {
         self.live.values().sum()
     }
@@ -42,6 +46,18 @@ impl Arena {
         self.next = end;
         self.live.insert(address, length);
         Ok(address)
+    }
+    /// The live allocation containing `address`, if any.
+    pub fn allocation_at(&self, address: u32) -> Option<(u32, u64)> {
+        self.live
+            .range(..=address)
+            .next_back()
+            .filter(|(start, size)| address as u64 >= **start as u64 && (address as u64) < **start as u64 + **size)
+            .map(|(start, size)| (*start, *size))
+    }
+    /// Size reserved for a live allocation, or `None` if it is not live.
+    pub fn size(&self, address: u32) -> Option<u64> {
+        self.live.get(&address).copied()
     }
     pub fn release(&mut self, address: u32) -> Result<(), String> {
         let mut length = self

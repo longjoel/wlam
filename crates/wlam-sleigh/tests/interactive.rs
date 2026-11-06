@@ -68,7 +68,7 @@ fn pe_draws_responds_to_input_and_exits() {
                         arguments.push(u32::from_le_bytes(raw));
                     }
                     eprintln!("IMPORT {library}!{name} {arguments:x?}");
-                let mut effect = {
+                    let mut effect = {
                         let mut state = shared.lock().unwrap();
                         let mut mem = GuestMemory::new(memory.data_mut(&mut caller));
                         state
@@ -79,7 +79,9 @@ fn pe_draws_responds_to_input_and_exits() {
                     loop {
                         match effect {
                             Effect::Return(value) => return Ok(value as i32),
-                            Effect::MessageBox {..} => return Err(wasmi::Error::new("unexpected fixture dialog")),
+                            Effect::MessageBox { .. } => {
+                                return Err(wasmi::Error::new("unexpected fixture dialog"))
+                            }
                             Effect::Exit(code) => {
                                 shared.lock().unwrap().exit = Some(code);
                                 return Err(wasmi::Error::new("process exited"));
@@ -91,7 +93,9 @@ fn pe_draws_responds_to_input_and_exits() {
                             } => {
                                 let argument_vector = {
                                     let mut state = shared.lock().unwrap();
-                                    if args.len()==4 {state.window = args[0];}
+                                    if args.len() == 4 {
+                                        state.window = args[0];
+                                    }
                                     state.depth += 1;
                                     0x20000 + state.depth * 256
                                 };
@@ -112,7 +116,7 @@ fn pe_draws_responds_to_input_and_exits() {
                                     .typed::<(i32, i32, i32), i32>(&caller)
                                     .unwrap();
                                 eprintln!("CALLBACK {procedure:x} {args:x?}");
-                            let value = callback.call(
+                                let value = callback.call(
                                     &mut caller,
                                     (procedure as i32, args.len() as i32, argument_vector as i32),
                                 )?;
@@ -121,6 +125,14 @@ fn pe_draws_responds_to_input_and_exits() {
                                 effect = state
                                     .runtime
                                     .resume(token, value as u32)
+                                    .map_err(wasmi::Error::new)?;
+                            }
+                            Effect::Retry => {
+                                let mut state = shared.lock().unwrap();
+                                let mut mem = GuestMemory::new(memory.data_mut(&mut caller));
+                                effect = state
+                                    .runtime
+                                    .call(&library, &name, &arguments, &mut mem)
                                     .map_err(wasmi::Error::new)?;
                             }
                             Effect::Wait => {

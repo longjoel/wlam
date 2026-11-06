@@ -1,16 +1,17 @@
 # 3Dlabs OpenGL demo candidates
 
 Assessed from `/home/longjoel/Downloads/glint_demos/` on 2026-11-01; status
-updated 2026-11-03. Original binaries/assets remain external. `imports.json`
+updated 2026-11-05. Original binaries/assets remain external. `imports.json`
 records static imports, not reachable API coverage. Runtime use and dynamic
 lookup need a separate trace for each demo.
 
 TOLYMPIC has since been run through the browser pipeline: its settled rings,
 Space animation, `b` blend toggle, `d` geometry toggle, resize, Escape,
 teardown, Stop and Restart have been exercised. Browser captures are recorded
-in this directory. This demonstrates the observed browser path, but native
-visual fidelity is still unverified because a matched native reference capture
-is not available. See [the current implementation plan](tolympic-plan.md).
+in this directory. A Proton/Wine 11.0 run under Mesa llvmpipe also produced a
+settled 400×300 reference that differs from the browser CPU capture at 8 of
+120,000 RGB pixels. Windows-native driver behavior remains unverified. See
+[the current implementation plan](tolympic-plan.md).
 The OpenGL host and PE32 integration fixtures are documented in
 [`fixtures/opengl`](../../fixtures/opengl/README.md); the PE smoke path covers
 window creation, WGL lifecycle, a captured triangle, swap and teardown.
@@ -26,7 +27,7 @@ the absence of hardware-sensitive capability checks or dynamic dependencies.
 
 | Target | OpenGL DLL imports, including WGL | GLU imports | Assessment |
 |---|---:|---:|---|
-| TOLYMPIC.exe | 39 | 2 | Browser path demonstrated: animated lit rings; immediate mode, display lists, matrices, lighting, fog, blending. Native visual fidelity remains open. |
+| TOLYMPIC.exe | 39 | 2 | Browser path and Proton/Wine Mesa reference closely match; native Windows driver fidelity remains open. |
 | TEXLIST.exe | 34 | 2 | Texture milestone: texture generation, pixel storage and GLU mipmap building |
 | x29.exe | 50 | 0 | Broader untextured rendering and menus; no GLU DLL dependency |
 | FF.exe | 38 | 2 | Animation, attribute stacks, display-list text and wireframe modes |
@@ -46,9 +47,10 @@ the exact RG/rc mapping has not been established by running them.
 TOLYMPIC is the first real application milestone, with context lifecycle,
 presentation, its observed fixed-function rendering path and controls
 implemented. A bounded per-call audit covers startup, both geometry modes,
-blending, resize and exit. Obtain a native comparison before claiming visual
-fidelity. Its GLU imports are only gluPerspective and gluLookAt, implemented
-as matrix helpers without a general GLU port.
+blending, resize and exit. The Proton/Wine reference closely matches the
+browser image; native Windows driver-specific fidelity remains unverified. Its
+GLU imports are only gluPerspective and gluLookAt, implemented as matrix
+helpers without a general GLU port.
 
 The static imports also include palette operations and both ANSI and Unicode
 window-class/creation APIs. Those imports do not prove that a demo calls those
@@ -60,8 +62,9 @@ alpha bits. Pixel format advertisement must match implemented surfaces.
 Browser-path acceptance evidence includes visible lit rings, resize handling,
 Space animation, blend and geometry toggles, Escape exit, teardown and
 Stop/Restart. The per-call trace and normal/doughnut captures are in this
-directory. Native visual comparison remains open; successful compilation or
-context creation alone is insufficient.
+directory. The Wine/Mesa comparison narrows the remaining visual uncertainty
+to Windows-specific graphics behavior; successful compilation or context
+creation alone is insufficient.
 
 The recorded GL command stream was replayed through Mesa llvmpipe in a
 surfaceless compatibility context. The CPU renderer now models default-enabled

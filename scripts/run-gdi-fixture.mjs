@@ -13,7 +13,8 @@ try{({exitCode}=runBundle({manifest,
   onApi:(api,memory)=>{if(api.name==='WriteFile'&&api.result===1)output+=new TextDecoder().decode(new Uint8Array(memory.buffer,api.args[1],api.args[2]));},
 }));}finally{writeFileSync('target/gdi/observed.jsonl',output);}
 const records=output.trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));
-assert.ok(records.length>=30,'Fixture must emit all observations');
+assert.equal(records.at(-1)?.case,'suite.completed','Fixture must reach the end of the suite');
+assert.equal(records.at(-1)?.value,1,'Suite completion marker');
 for(const record of records)assert.equal(record.value,record.expected,record.case);
 assert.equal(exitCode,0,'Guest fixture exit code');
 if(process.argv[3]){

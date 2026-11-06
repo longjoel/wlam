@@ -10,5 +10,7 @@ fn main() {
     let mut decoder = Decoder::new(Architecture::X86_32);
     let insn = decoder.decode_unoptimized(&image[off..], base).unwrap();
     println!("{}", insn.disassembly);
-    for op in insn.ops { println!("{op:?}"); }
+    for op in insn.ops {
+        println!("{op:?}");
+    }
 }

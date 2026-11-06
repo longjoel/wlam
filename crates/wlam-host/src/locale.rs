@@ -32,6 +32,42 @@ pub fn ansi_encode(value: u16) -> u8 {
     }
 }
 
+/// One-byte case conversion for the host's English Windows-1252 profile.
+/// Multi-character and unrepresentable Unicode mappings retain the original
+/// byte; CharUpper/Lower cannot grow an ANSI character or buffer.
+pub fn ansi_case(byte: u8, uppercase: bool) -> u8 {
+    let value = if (0x80..0xa0).contains(&byte) {
+        CP1252_HIGH[(byte - 0x80) as usize]
+    } else {
+        byte as u16
+    };
+    let character = char::from_u32(value as u32).unwrap();
+    let mapped = if uppercase {
+        let mut mapping = character.to_uppercase();
+        let first = mapping.next().unwrap();
+        if mapping.next().is_some() {
+            return byte;
+        }
+        first
+    } else {
+        let mut mapping = character.to_lowercase();
+        let first = mapping.next().unwrap();
+        if mapping.next().is_some() {
+            return byte;
+        }
+        first
+    };
+    if mapped as u32 > u16::MAX as u32 {
+        return byte;
+    }
+    let encoded = ansi_encode(mapped as u16);
+    if encoded == b'?' && mapped != '?' {
+        byte
+    } else {
+        encoded
+    }
+}
+
 /// ANSI conversion used by the guest CRT. Sizes include NUL only for -1 input.
 /// https://learn.microsoft.com/windows/win32/api/stringapiset/nf-stringapiset-multibytetowidechar
 pub fn multi_byte_to_wide(

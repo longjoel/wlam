@@ -42,6 +42,28 @@ impl VirtualFiles {
         let bytes = self.files.get(&normalize(path))?.clone();
         self.open.insert(OpenFile { bytes, position: 0 })
     }
+    /// Create or truncate a file and open it for writing.
+    pub fn create(&mut self, path: &[u8]) -> Option<u32> {
+        let key = normalize(path);
+        self.files.insert(key, Vec::new());
+        self.open.insert(OpenFile {
+            bytes: Vec::new(),
+            position: 0,
+        })
+    }
+    pub fn write(&mut self, handle: u32, bytes: &[u8]) -> Option<u32> {
+        let file = self.open.get_mut(handle)?;
+        let end = file.position.checked_add(bytes.len())?;
+        if end > file.bytes.len() {
+            file.bytes.resize(end, 0);
+        }
+        file.bytes[file.position..end].copy_from_slice(bytes);
+        file.position = end;
+        Some(bytes.len() as u32)
+    }
+    pub fn delete(&mut self, path: &[u8]) -> bool {
+        self.files.remove(&normalize(path)).is_some()
+    }
     pub fn contains_handle(&self, handle: u32) -> bool {
         self.open.get(handle).is_some()
     }

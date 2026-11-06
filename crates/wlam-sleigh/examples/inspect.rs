@@ -6,7 +6,9 @@ use wlam_sleigh::{lift_block, with_big_stack, IR};
 fn disasm(pe: &Pe, addr: u64, n: usize) -> String {
     let base = pe.image_base as u64;
     let rva = (addr - base) as u32;
-    let Some(idx) = pe.section_of(rva) else { return "<unmapped>\n".into() };
+    let Some(idx) = pe.section_of(rva) else {
+        return "<unmapped>\n".into();
+    };
     let sec = &pe.sections[idx];
     let off = (rva - sec.virtual_address) as usize;
     let bytes = sec.data[off..].to_vec();
@@ -15,7 +17,13 @@ fn disasm(pe: &Pe, addr: u64, n: usize) -> String {
     for (i, insn) in block.instructions.iter().take(n).enumerate() {
         if i == n.saturating_sub(1) {
             for op in &insn.ops {
-                if matches!(op, IR::Call { .. } | IR::CallInd { .. } | IR::Branch { .. } | IR::IndirectJump { .. }) {
+                if matches!(
+                    op,
+                    IR::Call { .. }
+                        | IR::CallInd { .. }
+                        | IR::Branch { .. }
+                        | IR::IndirectJump { .. }
+                ) {
                     s.push_str(&format!("    [{}] {:?}\n", insn.disassembly, op));
                 }
             }
@@ -40,7 +48,9 @@ fn main() {
     let targets: Vec<u64> = if args.is_empty() {
         prog.unresolved_indirect().into_iter().take(3).collect()
     } else {
-        args.iter().map(|a| u64::from_str_radix(a.trim_start_matches("0x"), 16).unwrap()).collect()
+        args.iter()
+            .map(|a| u64::from_str_radix(a.trim_start_matches("0x"), 16).unwrap())
+            .collect()
     };
     for t in targets {
         println!("== block at {t:#x}");

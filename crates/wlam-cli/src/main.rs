@@ -16,8 +16,8 @@ const USAGE: &str = "\
 wlam — Win32 PE -> WebAssembly recompiler
 
 USAGE:
-    wlam analyze <exe|dll> [--matrix [OUT.md]] [--json] [--oracle-dir DIR]
-    wlam recompile <exe> -o <bundle-directory>
+    wlam analyze <exe|dll> [--matrix [OUT.md]] [--json] [--oracle-dir DIR] [--dll <dll> ...]
+    wlam recompile <exe> -o <bundle-directory> [--dll <dll> ...] [--seed <address> ...]
     wlam run <out.wlam>                    (not implemented yet)
 
 COMMANDS:
@@ -28,10 +28,12 @@ OPTIONS:
     --matrix [OUT]   Write a markdown compatibility matrix to OUT
                      (default: docs/compat-matrix.md)
     --json           Emit the analysis as JSON on stdout
-    --oracle-dir DIR Resolve ordinal imports against reference DLLs in DIR
+    --oracle-dir DIR Resolve ordinal imports against reference DLLs or import libraries in DIR
                      (default: auto-detect a local Proton/Wine install).
                      Names are read from export tables; DLLs are never
                      recompiled or bundled.
+    --dll PATH       Recompile a supplied non-system DLL into the bundle and
+                     resolve matching imports by name or ordinal. Repeatable.
     -h, --help       Show this help
 
 EXIT CODES:
@@ -69,24 +71,52 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
 }
 
 fn recompile(args: &[String]) -> Result<ExitCode, String> {
-    if args.len() < 3 || args[1] != "-o" { return Err("usage: wlam recompile <exe> -o <bundle-directory> [--seed <virtual-address> ...]".into()); }
-    let mut seeds=Vec::new();
-    let mut i=3;
-    while i<args.len() {
-        if args[i]!="--seed" {return Err(format!("unexpected recompile argument '{}'",args[i]));}
-        let text=args.get(i+1).ok_or("--seed requires a virtual address")?;
-        let address=text.strip_prefix("0x").or_else(||text.strip_prefix("0X")).unwrap_or(text);
-        seeds.push(u64::from_str_radix(address,16).map_err(|_|format!("invalid seed address '{text}'"))?);
-        i+=2;
+    if args.len() < 3 || args[1] != "-o" {
+        return Err(
+            "usage: wlam recompile <exe> -o <bundle-directory> [--dll <dll> ...] [--seed <virtual-address> ...]"
+                .into(),
+        );
+    }
+    let mut seeds = Vec::new();
+    let mut dlls = Vec::new();
+    let mut i = 3;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--seed" => {
+                let text = args.get(i + 1).ok_or("--seed requires a virtual address")?;
+                let address = text
+                    .strip_prefix("0x")
+                    .or_else(|| text.strip_prefix("0X"))
+                    .unwrap_or(text);
+                seeds.push(
+                    u64::from_str_radix(address, 16)
+                        .map_err(|_| format!("invalid seed address '{text}'"))?,
+                );
+                i += 2;
+            }
+            "--dll" => {
+                let path = args.get(i + 1).ok_or("--dll requires a path")?;
+                let name = std::path::Path::new(path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.clone());
+                let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+                dlls.push((name, bytes));
+                i += 2;
+            }
+            other => return Err(format!("unexpected recompile argument '{other}'")),
+        }
     }
     let bytes = std::fs::read(&args[0]).map_err(|e| e.to_string())?;
-    let compilation = wlam_sleigh::with_big_stack(move || wlam_sleigh::compile::compile_with_seeds(&bytes,&seeds))?;
+    let compilation = wlam_sleigh::with_big_stack(move || {
+        wlam_sleigh::compile::compile_with_dlls(&bytes, &dlls, &seeds)
+    })?;
     let (manifest, image) = compilation.bundle_image();
     let output = std::path::Path::new(&args[2]);
     std::fs::create_dir(output).map_err(|e| format!("create bundle directory: {e}"))?;
-    std::fs::write(output.join("guest.wasm"), compilation.module).map_err(|e|e.to_string())?;
-    std::fs::write(output.join("image.bin"), image).map_err(|e|e.to_string())?;
-    std::fs::write(output.join("manifest.json"), manifest).map_err(|e|e.to_string())?;
+    std::fs::write(output.join("guest.wasm"), compilation.module).map_err(|e| e.to_string())?;
+    std::fs::write(output.join("image.bin"), image).map_err(|e| e.to_string())?;
+    std::fs::write(output.join("manifest.json"), manifest).map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -96,10 +126,21 @@ fn analyze(args: &[String]) -> Result<ExitCode, String> {
     let mut json = false;
     let mut oracle_dir: Option<PathBuf> = None;
     let mut no_oracle = false;
+    let mut dlls = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--json" => json = true,
+            "--dll" => {
+                let next = args.get(i + 1).ok_or("--dll requires a path")?;
+                let name = std::path::Path::new(next)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| next.clone());
+                let bytes = std::fs::read(next).map_err(|e| format!("{next}: {e}"))?;
+                dlls.push((name, bytes));
+                i += 1;
+            }
             "--matrix" => {
                 // Optional value: take the next arg unless it looks like a flag.
                 if let Some(next) = args.get(i + 1).filter(|a| !a.starts_with('-')) {
@@ -151,7 +192,8 @@ fn analyze(args: &[String]) -> Result<ExitCode, String> {
         }
         merged
     };
-    let analysis = Analysis::with_oracle(image, &oracle);
+    let mut analysis = Analysis::with_oracle(image, &oracle);
+    analysis.link_dlls(&dlls)?;
 
     if json {
         print_json(&analysis);

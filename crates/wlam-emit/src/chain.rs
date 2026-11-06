@@ -67,13 +67,10 @@ mod op {
     pub const END: u8 = 0x0b;
     pub const BR: u8 = 0x0c;
     pub const CALL: u8 = 0x10;
-    pub const CALL_INDIRECT: u8 = 0x11;
     // Opcode table, checked against the spec: a wrong value here is rejected by
     // the validator only when the type context happens to differ, so an error
     // that survives validation shows up as misbehaviour instead.
-    //   i32.lt_u 0x49   i32.eqz 0x45   br_table 0x0e   br 0x0c   return 0x0f
-    pub const I32_LT_U: u8 = 0x49;
-    pub const I32_EQZ: u8 = 0x45;
+    //   br_table 0x0e   br 0x0c   return 0x0f
     pub const BR_TABLE: u8 = 0x0e;
     pub const RETURN: u8 = 0x0f;
     pub const UNREACHABLE: u8 = 0x00;
@@ -88,11 +85,13 @@ mod op {
 }
 
 /// Local holding the dispatch block id (after every register/temp local).
+#[cfg(test)]
 fn id_local(locals: &LocalMap) -> u32 {
     locals.len()
 }
 
 /// Local used to stage a return value (after the id local).
+#[cfg(test)]
 fn ret_local(locals: &LocalMap) -> u32 {
     locals.len() + 1
 }
@@ -172,7 +171,13 @@ impl Program {
         let mut slots = BTreeSet::new();
         for block in blocks.values() {
             for op in &block.ops {
-                if let crate::ir::IR::Load {addr:crate::ir::Operand::Const {value,..},..}=op {slots.insert(*value);}
+                if let crate::ir::IR::Load {
+                    addr: crate::ir::Operand::Const { value, .. },
+                    ..
+                } = op
+                {
+                    slots.insert(*value);
+                }
             }
             if let Some(slot) = iat_slot_of(block) {
                 slots.insert(slot);
@@ -195,14 +200,26 @@ impl Program {
             for op in &block.ops {
                 let import = match op {
                     crate::ir::IR::Userop { id, .. }
-                        if matches!(*id, crate::translate::X87_USEROP_SIN | crate::translate::X87_USEROP_COS | crate::translate::X87_USEROP_TAN | crate::translate::X87_USEROP_ATAN2) =>
-                        Some(crate::translate::x87_helper_import(*id)),
+                        if matches!(
+                            *id,
+                            crate::translate::X87_USEROP_SIN
+                                | crate::translate::X87_USEROP_COS
+                                | crate::translate::X87_USEROP_TAN
+                                | crate::translate::X87_USEROP_ATAN2
+                        ) =>
+                    {
+                        Some(crate::translate::x87_helper_import(*id))
+                    }
                     crate::ir::IR::Userop { id, .. } => Some(crate::translate::unsupported_import(
-                        &TranslateError::UnimplementedUserop(*id))),
+                        &TranslateError::UnimplementedUserop(*id),
+                    )),
                     crate::ir::IR::Unsupported(op) => Some(crate::translate::unsupported_import(
-                        &TranslateError::UnsupportedPcode(op.clone()))),
-                    crate::ir::IR::Load { size: 10, .. } | crate::ir::IR::Store { size: 10, .. } =>
-                        Some(crate::translate::unsupported_import(&TranslateError::UnsupportedWidth(10))),
+                        &TranslateError::UnsupportedPcode(op.clone()),
+                    )),
+                    crate::ir::IR::Load { size: 10, .. }
+                    | crate::ir::IR::Store { size: 10, .. } => Some(
+                        crate::translate::unsupported_import(&TranslateError::UnsupportedWidth(10)),
+                    ),
                     _ => None,
                 };
                 if let Some(import) = import {
@@ -215,16 +232,34 @@ impl Program {
         // every import the module *declares*; an IAT slot that only an
         // indirect call can reach is already among them whenever it is called
         // directly somewhere, and that is what `iat_imports` tests.
-        if let Ok(watches)=std::env::var("WLAM_TRACE_WRITES") {
-            for address in watches.split(',').filter_map(|s|u32::from_str_radix(s.trim().trim_start_matches("0x"),16).ok()) {
-                self.host_imports.insert(helper_slot,HostImport {library:"wlam.trace".into(),name:format!("write_{address:08x}")});
-                helper_slot-=1;
+        if let Ok(watches) = std::env::var("WLAM_TRACE_WRITES") {
+            for address in watches
+                .split(',')
+                .filter_map(|s| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
+            {
+                self.host_imports.insert(
+                    helper_slot,
+                    HostImport {
+                        library: "wlam.trace".into(),
+                        name: format!("write_{address:08x}"),
+                    },
+                );
+                helper_slot -= 1;
             }
         }
-        if let Ok(watches)=std::env::var("WLAM_TRACE_BLOCKS") {
-            for address in watches.split(',').filter_map(|s|u32::from_str_radix(s.trim().trim_start_matches("0x"),16).ok()) {
-                self.host_imports.insert(helper_slot,HostImport {library:"wlam.trace".into(),name:format!("write_{address:08x}")});
-                helper_slot-=1;
+        if let Ok(watches) = std::env::var("WLAM_TRACE_BLOCKS") {
+            for address in watches
+                .split(',')
+                .filter_map(|s| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
+            {
+                self.host_imports.insert(
+                    helper_slot,
+                    HostImport {
+                        library: "wlam.trace".into(),
+                        name: format!("write_{address:08x}"),
+                    },
+                );
+                helper_slot -= 1;
             }
         }
         self.import_index = self
@@ -244,9 +279,14 @@ impl Program {
 /// A function owns every block reachable by jump and fall-through; a direct
 /// `call` starts a *new* function, which is what makes `ret` well defined.
 pub fn partition(entries: &[u64], blocks: &BTreeMap<u64, Block>, registers: &[String]) -> Program {
-    partition_with_indirect_targets(entries,blocks,registers,&BTreeMap::new())
+    partition_with_indirect_targets(entries, blocks, registers, &BTreeMap::new())
 }
-pub fn partition_with_indirect_targets(entries:&[u64],blocks:&BTreeMap<u64,Block>,registers:&[String],targets:&BTreeMap<u64,Vec<u64>>)->Program {
+pub fn partition_with_indirect_targets(
+    entries: &[u64],
+    blocks: &BTreeMap<u64, Block>,
+    registers: &[String],
+    targets: &BTreeMap<u64, Vec<u64>>,
+) -> Program {
     let locals = LocalMap::new(registers.iter().map(|r| (r.clone(), 4)));
     let mut functions: Vec<GuestFunction> = Vec::new();
     let mut work: Vec<u64> = entries.to_vec();
@@ -310,7 +350,9 @@ pub fn partition_with_indirect_targets(entries:&[u64],blocks:&BTreeMap<u64,Block
                 Terminator::CallInd { resume } => queue.push(*resume),
                 Terminator::Return | Terminator::Trap(_) => {}
                 Terminator::IndirectJump => {
-                    if let Some(destinations)=targets.get(&addr) {queue.extend(destinations.iter().copied());}
+                    if let Some(destinations) = targets.get(&addr) {
+                        queue.extend(destinations.iter().copied());
+                    }
                     // A constant `[slot]` may be an imported API (handled as a
                     // tail call at emission time); anything else is unresolved.
                     if iat_source(block).is_none() {
@@ -352,18 +394,6 @@ pub fn partition_with_indirect_targets(entries:&[u64],blocks:&BTreeMap<u64,Block
     }
 }
 
-/// Direct (constant) call targets of a block.
-fn direct_calls(block: &Block) -> Vec<u64> {
-    block
-        .ops
-        .iter()
-        .filter_map(|ir| match ir {
-            crate::ir::IR::Call { target } => const_of(target),
-            _ => None,
-        })
-        .collect()
-}
-
 fn const_of(o: &crate::ir::Operand) -> Option<u64> {
     match o {
         crate::ir::Operand::Const { value, .. } | crate::ir::Operand::Ram { offset: value, .. } => {
@@ -376,15 +406,15 @@ fn const_of(o: &crate::ir::Operand) -> Option<u64> {
 /// A condition operand, resolved to a local index at the last moment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CondRef {
-    Temp(u64),
+    Temp(u64, u32),
     Reg(Box<str>),
 }
 
 impl CondRef {
     fn local(&self, map: &LocalMap) -> Result<u32, TranslateError> {
         match self {
-            CondRef::Temp(offset) => map
-                .temp_index(*offset)
+            CondRef::Temp(offset, size) => map
+                .temp_index(*offset, *size)
                 .ok_or(TranslateError::Unsupported("condition temp has no local")),
             CondRef::Reg(name) => map.reg(name.as_ref()).ok_or(TranslateError::Unsupported(
                 "condition register has no local",
@@ -416,7 +446,10 @@ enum Exit {
     ///
     /// `slot` is the guest *IAT* address (the `[slot]` in `call [slot]`), used
     /// to pick the wasm import; `resume` is the return address.
-    HostCall { slot: u64, resume: u64 },
+    HostCall {
+        slot: u64,
+        resume: u64,
+    },
     /// Tail-jump to an imported Win32 API through its IAT slot.
     ///
     /// A `jmp [slot]` has no return address of its own: the address already on
@@ -425,7 +458,9 @@ enum Exit {
     /// (`return_pop`) pops the caller's address and arguments. Returning from
     /// the wasm function then hands the updated machine state -- including the
     /// host's EAX -- to the caller, which dispatches at its own resume point.
-    HostTailCall { slot: u64 },
+    HostTailCall {
+        slot: u64,
+    },
     /// Call another guest function, then resume.
     ///
     /// `target` is the callee's guest entry address and `resume` the address to
@@ -433,12 +468,18 @@ enum Exit {
     /// before the `call`, so the callee's `ret` pops it into `EIP`; the caller
     /// dispatches on `EIP` afterwards rather than assuming `resume`, which keeps
     /// guest-modified return addresses (and `EIP` manipulation generally) honest.
-    Call { target: u64, resume: u64 },
+    Call {
+        target: u64,
+        resume: u64,
+    },
     /// Call a guest function whose target is computed at run time.
     ///
     /// The value in `target` is a guest virtual address. Only discovered
     /// function entries are callable; a wild or null address traps.
-    CallInd { target: CondRef, resume: u64 },
+    CallInd {
+        target: CondRef,
+        resume: u64,
+    },
     /// Trap: unreachable or unsupported.
     Trap,
 }
@@ -450,27 +491,49 @@ enum Exit {
 /// is a constant (`.idata`) address. Matching on that shape is what
 /// distinguishes it from a genuine `call [reg]`/`jmp [reg]` through a computed
 /// function pointer, which cannot be resolved statically.
-fn iat_slot_of(block: &Block) -> Option<u64> { iat_source(block).map(|(slot, _)|slot) }
+fn iat_slot_of(block: &Block) -> Option<u64> {
+    iat_source(block).map(|(slot, _)| slot)
+}
 /// Follow the actual transfer operand, never whichever load happened to be last.
 fn iat_source(block: &Block) -> Option<(u64, crate::ir::Operand)> {
-    use crate::ir::{IR,Operand};
+    use crate::ir::{Operand, IR};
     let mut values: Vec<(Operand, Option<(u64, Operand)>)> = Vec::new();
     for op in &block.ops {
         let target = match op {
             IR::CallInd { target } | IR::IndirectJump { target } => target.clone(),
             _ => {
                 let (dst, source) = match op {
-                    IR::Load {dst,addr:Operand::Const {value,..},..} => (dst,Some((*value,dst.clone()))),
+                    IR::Load {
+                        dst,
+                        addr: Operand::Const { value, .. },
+                        ..
+                    } => (dst, Some((*value, dst.clone()))),
                     // `jmp [slot]` lifts as a copy of the slot address into a
                     // temporary, not as a load through it. Treating that copy
                     // as a slot source is what makes the tail call statically
                     // resolvable.
-                    IR::Copy {dst,src:Operand::Const {value,..}} => (dst,Some((*value,dst.clone()))),
-                    IR::Copy {dst,src} => (dst,values.iter().rev().find(|(d,_)|d==src).and_then(|(_,s)|s.clone())),
-                    IR::FloatUnary {dst,..}|IR::Load {dst,..}|IR::Bin {dst,..}|IR::Un {dst,..}|IR::Float {dst,..}|IR::Convert {dst,..}|IR::Subpiece {dst,..} => (dst,None),
-                    _=>continue,
+                    IR::Copy {
+                        dst,
+                        src: Operand::Const { value, .. },
+                    } => (dst, Some((*value, dst.clone()))),
+                    IR::Copy { dst, src } => (
+                        dst,
+                        values
+                            .iter()
+                            .rev()
+                            .find(|(d, _)| d == src)
+                            .and_then(|(_, s)| s.clone()),
+                    ),
+                    IR::FloatUnary { dst, .. }
+                    | IR::Load { dst, .. }
+                    | IR::Bin { dst, .. }
+                    | IR::Un { dst, .. }
+                    | IR::Float { dst, .. }
+                    | IR::Convert { dst, .. }
+                    | IR::Subpiece { dst, .. } => (dst, None),
+                    _ => continue,
                 };
-                values.push((dst.clone(),source));
+                values.push((dst.clone(), source));
                 continue;
             }
         };
@@ -499,7 +562,7 @@ fn iat_source(block: &Block) -> Option<(u64, crate::ir::Operand)> {
 /// instruction stream resumes there. The ESP bookkeeping and the return-address
 /// store are ordinary data ops and MUST be kept: the callee's `ret` pops them.
 /// Only the `Call` op itself is pulled out into the exit.
-const JUMP_TARGET:u64=u64::MAX-5001;
+const JUMP_TARGET: u64 = u64::MAX - 5001;
 fn split_ops(block: &Block, drop_slot_load: bool) -> Result<Vec<crate::ir::IR>, TranslateError> {
     // Preserve loads: emit_case converts verified IAT loads to address tokens.
     // Control flow is the dispatcher's job, except that the *destination* of an
@@ -513,19 +576,48 @@ fn split_ops(block: &Block, drop_slot_load: bool) -> Result<Vec<crate::ir::IR>, 
             | crate::ir::IR::CBranch { .. }
             | crate::ir::IR::Ret { .. }
             | crate::ir::IR::Call { .. } => {}
-            crate::ir::IR::IndirectJump {target} if !drop_slot_load => {
-                use crate::ir::{IR,Operand};
-                let dst=Operand::Temp {offset:JUMP_TARGET,size:4};
-                if let Operand::Ram {offset,size}=target {
-                    let pointer=block.ops.iter().any(|op|match op {
-                        IR::Copy {dst:Operand::Temp {offset:at,..},..}|IR::Bin {dst:Operand::Temp {offset:at,..},..}|IR::Un {dst:Operand::Temp {offset:at,..},..}=>at==offset,
-                        _=>false,
+            crate::ir::IR::IndirectJump { target } if !drop_slot_load => {
+                use crate::ir::{Operand, IR};
+                let dst = Operand::Temp {
+                    offset: JUMP_TARGET,
+                    size: 4,
+                };
+                if let Operand::Ram { offset, size } = target {
+                    let pointer = block.ops.iter().any(|op| match op {
+                        IR::Copy {
+                            dst: Operand::Temp { offset: at, .. },
+                            ..
+                        }
+                        | IR::Bin {
+                            dst: Operand::Temp { offset: at, .. },
+                            ..
+                        }
+                        | IR::Un {
+                            dst: Operand::Temp { offset: at, .. },
+                            ..
+                        } => at == offset,
+                        _ => false,
                     });
-                    let addr=if pointer {Operand::Temp {offset:*offset,size:*size}} else {Operand::Const {value:*offset,size:4}};
-                    ops.push(IR::Load {dst,addr,size:4});
-                } else {ops.push(IR::Copy {dst,src:target.clone()});}
+                    let addr = if pointer {
+                        Operand::Temp {
+                            offset: *offset,
+                            size: *size,
+                        }
+                    } else {
+                        Operand::Const {
+                            value: *offset,
+                            size: 4,
+                        }
+                    };
+                    ops.push(IR::Load { dst, addr, size: 4 });
+                } else {
+                    ops.push(IR::Copy {
+                        dst,
+                        src: target.clone(),
+                    });
+                }
             }
-            crate::ir::IR::IndirectJump {..}=>{},
+            crate::ir::IR::IndirectJump { .. } => {}
             // An IAT call is `Load T <- [slot]; CallInd T` with a constant
             // slot, i.e. a Win32 import: statically known, so it needs no
             // guest function table. Anything else really is an indirect call
@@ -536,7 +628,10 @@ fn split_ops(block: &Block, drop_slot_load: bool) -> Result<Vec<crate::ir::IR>, 
                 // `call esi` leaves the callee in ESI, and later code may call
                 // through it again. The exit drops the original ops, so
                 // re-materialise the target into its own operand first.
-                ops.push(crate::ir::IR::Copy { dst: target.clone(), src: target.clone() });
+                ops.push(crate::ir::IR::Copy {
+                    dst: target.clone(),
+                    src: target.clone(),
+                });
             }
             other => ops.push(other.clone()),
         }
@@ -608,7 +703,6 @@ fn reload_registers_except(out: &mut Vec<u8>, prog: &Program, skip: &[&str]) {
     }
 }
 
-
 /// The callee address of a direct `call` in this block.
 ///
 /// The lifted ops contain the `Call`; the terminator carries only the resume
@@ -647,9 +741,8 @@ fn block_exit(
             not_taken: id_of(func, *not_taken)?,
         },
         Terminator::Call { resume } => Exit::Call {
-            target: direct_call_target(block).ok_or(TranslateError::Unsupported(
-                "call with non-constant target",
-            ))?,
+            target: direct_call_target(block)
+                .ok_or(TranslateError::Unsupported("call with non-constant target"))?,
             resume: *resume,
         },
         // An import call if the target came from a constant slot, otherwise a
@@ -706,9 +799,11 @@ fn indirect_target_ref(block: &Block) -> Result<CondRef, TranslateError> {
             "indirect call without a CallInd op",
         ))?;
     match target {
-        crate::ir::Operand::Temp { offset, .. } => Ok(CondRef::Temp(offset)),
+        crate::ir::Operand::Temp { offset, size } => Ok(CondRef::Temp(offset, size)),
         crate::ir::Operand::Reg { name, .. } => Ok(CondRef::Reg(name)),
-        _ => Err(TranslateError::Unsupported("indirect call on a non-value target")),
+        _ => Err(TranslateError::Unsupported(
+            "indirect call on a non-value target",
+        )),
     }
 }
 
@@ -725,7 +820,7 @@ fn condition_ref(block: &Block) -> Result<CondRef, TranslateError> {
             "conditional block without a CBranch",
         ))?;
     match cond {
-        crate::ir::Operand::Temp { offset, .. } => Ok(CondRef::Temp(offset)),
+        crate::ir::Operand::Temp { offset, size } => Ok(CondRef::Temp(offset, size)),
         crate::ir::Operand::Reg { name, .. } => Ok(CondRef::Reg(name)),
         _ => Err(TranslateError::Unsupported("constant condition")),
     }
@@ -823,9 +918,13 @@ pub fn build_module_with_memory(
         bodies.push(emit_function_body(func, prog, blocks, import_count)?);
     }
     let callback = crate::callback::body(prog);
-    if let Some(body) = &callback { bodies.push(body.clone()); }
+    if let Some(body) = &callback {
+        bodies.push(body.clone());
+    }
     let indirect = indirect_dispatch_body(prog, import_count)?;
-    if let Some(body) = &indirect { bodies.push(body.clone()); }
+    if let Some(body) = &indirect {
+        bodies.push(body.clone());
+    }
     let mut e = Encoder::new();
     module_header(&mut e);
     // type 0: () -> ()            guest entry
@@ -841,7 +940,11 @@ pub fn build_module_with_memory(
         b.push(0x7f);
         b.u32(1);
         b.push(0x7f);
-        b.push(0x60); b.u32(3); b.raw(&[0x7f, 0x7f, 0x7f]); b.u32(1); b.push(0x7f);
+        b.push(0x60);
+        b.u32(3);
+        b.raw(&[0x7f, 0x7f, 0x7f]);
+        b.u32(1);
+        b.push(0x7f);
     });
     if import_count > 0 {
         e.section(section_id::IMPORT, |b| {
@@ -858,9 +961,15 @@ pub fn build_module_with_memory(
     }
     e.section(section_id::FUNCTION, |b| {
         b.u32(bodies.len() as u32);
-        for _ in &prog.functions { b.u32(0); }
-        if callback.is_some() { b.u32(2); }
-        if indirect.is_some() { b.u32(0); }
+        for _ in &prog.functions {
+            b.u32(0);
+        }
+        if callback.is_some() {
+            b.u32(2);
+        }
+        if indirect.is_some() {
+            b.u32(0);
+        }
     });
     e.section(section_id::TABLE, |b| {
         b.u32(1);
@@ -887,7 +996,10 @@ pub fn build_module_with_memory(
         b.push(0x02);
         b.u32(0);
         if callback.is_some() {
-            b.u32(12); b.raw(b"invoke_guest"); b.push(0); b.u32(import_count + prog.functions.len() as u32);
+            b.u32(12);
+            b.raw(b"invoke_guest");
+            b.push(0);
+            b.u32(import_count + prog.functions.len() as u32);
         }
         for (i, func) in prog.functions.iter().enumerate() {
             let name = format!("g_{:08x}", func.entry as u32);
@@ -993,7 +1105,17 @@ fn emit_function_body(
     for i in (0..n).rev() {
         body.push(op::END);
         let addr = func.blocks[i as usize];
-        emit_case(&mut body, func, prog, blocks, addr, i, import_count, &mut shared, id)?;
+        emit_case(
+            &mut body,
+            func,
+            prog,
+            blocks,
+            addr,
+            i,
+            import_count,
+            &mut shared,
+            id,
+        )?;
     }
     body.push(op::END); // end loop
     body.push(op::UNREACHABLE); // out-of-range dispatch
@@ -1090,33 +1212,54 @@ fn emit_case(
         }
         if let Some(index) = prog.registers.iter().position(|name| name == "EIP") {
             out.push(op::I32_CONST);
-            out.extend_from_slice(&crate::encode::leb_u32(crate::snapshot_address(index) as u32));
+            out.extend_from_slice(&crate::encode::leb_u32(
+                crate::snapshot_address(index) as u32
+            ));
             out.push(op::I32_CONST);
             out.extend_from_slice(&crate::encode::leb_s32(addr as i32));
             out.push(op::I32_STORE);
             out.extend_from_slice(&[2, 0]);
         }
     }
-    if let Ok(watches)=std::env::var("WLAM_TRACE_BLOCKS") {
-        if watches.split(',').filter_map(|s|u32::from_str_radix(s.trim().trim_start_matches("0x"),16).ok()).any(|address|address as u64==block.start) {
-            emit_debug_trace(out,prog,block.start as u32);
+    if let Ok(watches) = std::env::var("WLAM_TRACE_BLOCKS") {
+        if watches
+            .split(',')
+            .filter_map(|s| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
+            .any(|address| address as u64 == block.start)
+        {
+            emit_debug_trace(out, prog, block.start as u32);
         }
     }
     // Decide up front whether this is an import call: only then is the slot
     // load dead code.
-    let is_import_call = matches!(&block.terminator, Terminator::CallInd { .. }|Terminator::IndirectJump)
-        && iat_slot_of(block).map(|s| prog.host_imports.contains_key(&s)).unwrap_or(false);
-    let ops = split_ops(block, is_import_call)?.into_iter().map(|op| {
-        match op {
-            crate::ir::IR::Load {dst,addr:crate::ir::Operand::Const {value,..},size:4}
-                if prog.host_imports.contains_key(&value)=>crate::ir::IR::Copy {dst,src:crate::ir::Operand::Const {value,size:4}},
-            other=>other,
-        }
-    }).collect::<Vec<_>>();
+    let is_import_call = matches!(
+        &block.terminator,
+        Terminator::CallInd { .. } | Terminator::IndirectJump
+    ) && iat_slot_of(block)
+        .map(|s| prog.host_imports.contains_key(&s))
+        .unwrap_or(false);
+    let ops = split_ops(block, is_import_call)?
+        .into_iter()
+        .map(|op| match op {
+            crate::ir::IR::Load {
+                dst,
+                addr: crate::ir::Operand::Const { value, .. },
+                size: 4,
+            } if prog.host_imports.contains_key(&value) => crate::ir::IR::Copy {
+                dst,
+                src: crate::ir::Operand::Const { value, size: 4 },
+            },
+            other => other,
+        })
+        .collect::<Vec<_>>();
     // Each block's temps must get their own locals inside the shared function
     // layout: translating with a fresh map would hand out indices the function
     // never declared ("unknown local 10: local index out of bounds").
-    let translated = match crate::translate::translate_ops_with_imports(&ops, shared.clone(), &prog.import_index) {
+    let translated = match crate::translate::translate_ops_with_imports(
+        &ops,
+        shared.clone(),
+        &prog.import_index,
+    ) {
         Ok(t) => t,
         Err(e) => {
             if matches!(e, TranslateError::UnsupportedWidth(10)) {
@@ -1125,7 +1268,8 @@ fn emit_case(
                     if let Some(eip) = prog.locals.reg("EIP") {
                         out.push(op::I32_CONST);
                         out.extend(crate::encode::leb_s32(block.start as i32));
-                        out.push(op::LOCAL_SET); out.extend(leb_u32(eip));
+                        out.push(op::LOCAL_SET);
+                        out.extend(leb_u32(eip));
                     }
                     spill_registers(out, prog);
                     out.extend([op::I32_CONST, 0, op::I32_CONST, 0, op::CALL]);
@@ -1152,7 +1296,9 @@ fn emit_case(
         }
         if let Some(index) = prog.registers.iter().position(|name| name == "EIP") {
             out.push(op::I32_CONST);
-            out.extend_from_slice(&crate::encode::leb_u32(crate::snapshot_address(index) as u32));
+            out.extend_from_slice(&crate::encode::leb_u32(
+                crate::snapshot_address(index) as u32
+            ));
             out.push(op::I32_CONST);
             out.extend_from_slice(&crate::encode::leb_s32(block.end as i32));
             out.push(op::I32_STORE);
@@ -1162,49 +1308,76 @@ fn emit_case(
     let exit = block_exit(block, func, &translated, &prog.host_imports)?;
     match exit {
         Exit::JumpInd => {
-            let target=shared.temp_index(JUMP_TARGET).ok_or(TranslateError::Unsupported("indirect jump target missing"))?;
-            if let Some(eip)=prog.locals.reg("EIP") {
-                out.push(op::LOCAL_GET);out.extend(leb_u32(target));out.push(op::LOCAL_SET);out.extend(leb_u32(eip));
+            let target = shared
+                .temp_index(JUMP_TARGET, 4)
+                .ok_or(TranslateError::Unsupported("indirect jump target missing"))?;
+            if let Some(eip) = prog.locals.reg("EIP") {
+                out.push(op::LOCAL_GET);
+                out.extend(leb_u32(target));
+                out.push(op::LOCAL_SET);
+                out.extend(leb_u32(eip));
             }
             if std::env::var_os("WLAM_DEBUG_EIP").is_some() {
                 for (address, value) in [(0x7ff0, Some(target)), (0x7ff4, None), (0x7ff8, None)] {
-                    out.push(op::I32_CONST);out.extend(leb_u32(address));
-                    if let Some(local)=value {
-                        out.push(op::LOCAL_GET);out.extend(leb_u32(local));
+                    out.push(op::I32_CONST);
+                    out.extend(leb_u32(address));
+                    if let Some(local) = value {
+                        out.push(op::LOCAL_GET);
+                        out.extend(leb_u32(local));
                     } else {
                         out.push(op::I32_CONST);
-                        out.extend(crate::encode::leb_s32(if address==0x7ff4 {block.start as i32} else {func.entry as i32}));
+                        out.extend(crate::encode::leb_s32(if address == 0x7ff4 {
+                            block.start as i32
+                        } else {
+                            func.entry as i32
+                        }));
                     }
-                    out.push(op::I32_STORE);out.extend([2,0]);
-                    emit_debug_trace(out,prog,address);
+                    out.push(op::I32_STORE);
+                    out.extend([2, 0]);
+                    emit_debug_trace(out, prog, address);
                 }
             }
-            for (address,destination) in &func.ids {
-                out.push(op::LOCAL_GET);out.extend(leb_u32(target));
-                out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(*address as i32));
+            for (address, destination) in &func.ids {
+                out.push(op::LOCAL_GET);
+                out.extend(leb_u32(target));
+                out.push(op::I32_CONST);
+                out.extend(crate::encode::leb_s32(*address as i32));
                 out.push(0x46);
-                if prog.image_base!=0 {
-                    out.push(op::LOCAL_GET);out.extend(leb_u32(target));
-                    out.push(op::I32_CONST);out.extend(leb_u32(prog.image_base));
+                if prog.image_base != 0 {
+                    out.push(op::LOCAL_GET);
+                    out.extend(leb_u32(target));
+                    out.push(op::I32_CONST);
+                    out.extend(leb_u32(prog.image_base));
                     out.push(op::I32_ADD);
-                    out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(*address as i32));
-                    out.extend([0x46,0x72]); // exact VA or image-base-relative RVA
+                    out.push(op::I32_CONST);
+                    out.extend(crate::encode::leb_s32(*address as i32));
+                    out.extend([0x46, 0x72]); // exact VA or image-base-relative RVA
                 }
-                out.extend([op::IF,0x40,op::I32_CONST]);out.extend(crate::encode::leb_s32(*destination as i32));
-                out.push(op::LOCAL_SET);out.extend(leb_u32(id));
-                out.push(op::BR);out.extend(leb_u32(depth_to_loop+1));out.push(op::END);
+                out.extend([op::IF, 0x40, op::I32_CONST]);
+                out.extend(crate::encode::leb_s32(*destination as i32));
+                out.push(op::LOCAL_SET);
+                out.extend(leb_u32(id));
+                out.push(op::BR);
+                out.extend(leb_u32(depth_to_loop + 1));
+                out.push(op::END);
             }
             if prog.locals.reg("EIP").is_some() {
-                spill_registers(out,prog);
+                spill_registers(out, prog);
                 if std::env::var_os("WLAM_TRACE_INDIRECT").is_some() {
-                    if let Some(index)=prog.registers.iter().position(|name|name=="EIP") {
-                        emit_debug_trace(out,prog,crate::snapshot_address(index) as u32);
+                    if let Some(index) = prog.registers.iter().position(|name| name == "EIP") {
+                        emit_debug_trace(out, prog, crate::snapshot_address(index) as u32);
                     }
                 }
-                let callback=prog.registers.iter().any(|r|r=="ESP")&&prog.registers.iter().any(|r|r=="EAX");
-                out.push(op::CALL);out.extend(leb_u32(import_count+prog.functions.len() as u32+u32::from(callback)));
+                let callback = prog.registers.iter().any(|r| r == "ESP")
+                    && prog.registers.iter().any(|r| r == "EAX");
+                out.push(op::CALL);
+                out.extend(leb_u32(
+                    import_count + prog.functions.len() as u32 + u32::from(callback),
+                ));
                 out.push(op::RETURN);
-            } else {out.push(op::UNREACHABLE);}
+            } else {
+                out.push(op::UNREACHABLE);
+            }
         }
         Exit::Goto(target) => {
             out.push(op::I32_CONST);
@@ -1243,15 +1416,23 @@ fn emit_case(
         Exit::Ret => {
             // Hand the caller our final machine state before leaving.
             spill_registers(out, prog);
-            if std::env::var("WLAM_TRACE_FUNCTION_RET").ok().and_then(|s| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok()) == Some(func.entry as u32) {
+            if std::env::var("WLAM_TRACE_FUNCTION_RET")
+                .ok()
+                .and_then(|s| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
+                == Some(func.entry as u32)
+            {
                 emit_debug_trace(out, prog, 0x45e011);
             }
             out.push(op::RETURN);
         }
         Exit::Call { target, resume } => {
-            let callee = prog.function_index.get(&target).copied().ok_or(
-                TranslateError::Unsupported("call target is not a discovered function"),
-            )?;
+            let callee =
+                prog.function_index
+                    .get(&target)
+                    .copied()
+                    .ok_or(TranslateError::Unsupported(
+                        "call target is not a discovered function",
+                    ))?;
             // Hand the callee our machine state: ESP must be the *post-push*
             // value so the callee's `ret` pops the address we just pushed.
             spill_registers(out, prog);
@@ -1262,9 +1443,13 @@ fn emit_case(
             // on the resume block here; if the guest rewrote the return address
             // the id lookup simply fails and we trap rather than silently
             // resuming at the wrong place.
-            let resume_id = func.ids.get(&resume).copied().ok_or(
-                TranslateError::Unsupported("call resume block is outside its function"),
-            )?;
+            let resume_id = func
+                .ids
+                .get(&resume)
+                .copied()
+                .ok_or(TranslateError::Unsupported(
+                    "call resume block is outside its function",
+                ))?;
             out.push(op::I32_CONST);
             out.extend_from_slice(&crate::encode::leb_s32(resume_id as i32));
             out.push(op::LOCAL_SET);
@@ -1277,30 +1462,48 @@ fn emit_case(
             // machine state (ESP already includes the pushed return address).
             let target_local = target.local(shared)?;
             if std::env::var_os("WLAM_TRACE_INDIRECT").is_some() {
-                for (address,local) in [(0x7fe0,target_local),(0x7fe8,prog.locals.reg("ECX").unwrap_or(target_local))] {
-                    out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(address));
-                    out.push(op::LOCAL_GET);out.extend(leb_u32(local));
-                    out.push(op::I32_STORE);out.extend([2,0]);
-                    emit_debug_trace(out,prog,address);
+                for (address, local) in [
+                    (0x7fe0, target_local),
+                    (0x7fe8, prog.locals.reg("ECX").unwrap_or(target_local)),
+                ] {
+                    out.push(op::I32_CONST);
+                    out.extend(crate::encode::leb_u32(address));
+                    out.push(op::LOCAL_GET);
+                    out.extend(leb_u32(local));
+                    out.push(op::I32_STORE);
+                    out.extend([2, 0]);
+                    emit_debug_trace(out, prog, address);
                 }
-                out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(0x7fe4));
-                out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(block.start as i32));
-                out.push(op::I32_STORE);out.extend([2,0]);
-                emit_debug_trace(out,prog,0x7fe4);
+                out.push(op::I32_CONST);
+                out.extend(crate::encode::leb_u32(0x7fe4));
+                out.push(op::I32_CONST);
+                out.extend(crate::encode::leb_s32(block.start as i32));
+                out.push(op::I32_STORE);
+                out.extend([2, 0]);
+                emit_debug_trace(out, prog, 0x7fe4);
             }
             if std::env::var_os("WLAM_DEBUG_EIP").is_some() {
-                out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(0x7ff0));
-                out.push(op::LOCAL_GET);out.extend(leb_u32(target_local));
-                out.push(op::I32_STORE);out.extend([2,0]);
-                emit_debug_trace(out,prog,0x7ff0);
-                out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(0x7ff4));
-                out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(block.start as i32));
-                out.push(op::I32_STORE);out.extend([2,0]);
-                emit_debug_trace(out,prog,0x7ff4);
-                out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(0x7ff8));
-                out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(func.entry as i32));
-                out.push(op::I32_STORE);out.extend([2,0]);
-                emit_debug_trace(out,prog,0x7ff8);
+                out.push(op::I32_CONST);
+                out.extend(crate::encode::leb_u32(0x7ff0));
+                out.push(op::LOCAL_GET);
+                out.extend(leb_u32(target_local));
+                out.push(op::I32_STORE);
+                out.extend([2, 0]);
+                emit_debug_trace(out, prog, 0x7ff0);
+                out.push(op::I32_CONST);
+                out.extend(crate::encode::leb_u32(0x7ff4));
+                out.push(op::I32_CONST);
+                out.extend(crate::encode::leb_s32(block.start as i32));
+                out.push(op::I32_STORE);
+                out.extend([2, 0]);
+                emit_debug_trace(out, prog, 0x7ff4);
+                out.push(op::I32_CONST);
+                out.extend(crate::encode::leb_u32(0x7ff8));
+                out.push(op::I32_CONST);
+                out.extend(crate::encode::leb_s32(func.entry as i32));
+                out.push(op::I32_STORE);
+                out.extend([2, 0]);
+                emit_debug_trace(out, prog, 0x7ff8);
             }
             // Leave the destination in the guest's `EIP`, as a real CPU does
             // after `call edx`. The register snapshot then names the callee if
@@ -1318,32 +1521,37 @@ fn emit_case(
                 let callback = prog.registers.iter().any(|r| r == "ESP")
                     && prog.registers.iter().any(|r| r == "EAX");
                 out.push(op::CALL);
-                out.extend(leb_u32(import_count + prog.functions.len() as u32 + u32::from(callback)));
+                out.extend(leb_u32(
+                    import_count + prog.functions.len() as u32 + u32::from(callback),
+                ));
                 adopt_callee_state(out, prog);
             } else {
                 out.extend([op::BLOCK, 0x40]);
-            // Guest function pointers are virtual addresses. Resolve only
-            // registered entries; a small integer or NULL is never a table ID.
-            for (address, index) in &prog.function_index {
-                out.push(op::LOCAL_GET);
-                out.extend(leb_u32(target_local));
-                out.push(op::I32_CONST);
-                out.extend(crate::encode::leb_s32(*address as i32));
-                out.extend([0x46, op::IF, 0x40]);
-                out.push(op::CALL);
-                out.extend(leb_u32(index + import_count));
-                adopt_callee_state(out, prog);
-                out.extend([op::BR, 1, op::END]);
+                // Guest function pointers are virtual addresses. Resolve only
+                // registered entries; a small integer or NULL is never a table ID.
+                for (address, index) in &prog.function_index {
+                    out.push(op::LOCAL_GET);
+                    out.extend(leb_u32(target_local));
+                    out.push(op::I32_CONST);
+                    out.extend(crate::encode::leb_s32(*address as i32));
+                    out.extend([0x46, op::IF, 0x40]);
+                    out.push(op::CALL);
+                    out.extend(leb_u32(index + import_count));
+                    adopt_callee_state(out, prog);
+                    out.extend([op::BR, 1, op::END]);
+                }
+                // No matching guest entry is callable.
+                out.push(op::UNREACHABLE);
+                out.push(op::END); // cached import/guest call join
             }
-            // No matching guest entry is callable.
-            out.push(op::UNREACHABLE);
-            out.push(op::END); // cached import/guest call join
 
-            }
-
-            let resume_id = func.ids.get(&resume).copied().ok_or(
-                TranslateError::Unsupported("call resume block is outside its function"),
-            )?;
+            let resume_id = func
+                .ids
+                .get(&resume)
+                .copied()
+                .ok_or(TranslateError::Unsupported(
+                    "call resume block is outside its function",
+                ))?;
             out.push(op::I32_CONST);
             out.extend_from_slice(&crate::encode::leb_s32(resume_id as i32));
             out.push(op::LOCAL_SET);
@@ -1365,9 +1573,10 @@ fn emit_case(
             // Slot is passed as the second argument so one host entry can serve
             // several imports if needed.
             spill_registers(out, prog);
-            let esp = prog.locals.reg("ESP").ok_or(TranslateError::Unsupported(
-                "host call needs an ESP local",
-            ))?;
+            let esp = prog
+                .locals
+                .reg("ESP")
+                .ok_or(TranslateError::Unsupported("host call needs an ESP local"))?;
             out.push(op::LOCAL_GET);
             out.extend_from_slice(&leb_u32(esp));
             out.push(op::I32_CONST);
@@ -1390,12 +1599,14 @@ fn emit_case(
             // same register is often reused for the next call, and a guest that
             // reads it back would otherwise see the stale pre-call value.
             if let Some(eip) = prog.locals.reg("EIP") {
-        out.push(op::I32_CONST);
-        out.extend_from_slice(&crate::encode::leb_s32((slot & 0xffff_ffff) as i32));
-        out.push(op::LOCAL_SET);
-        out.extend_from_slice(&leb_u32(eip));
-    }
-    if let Some(loaded) = loaded_target_register(block).filter(|name| name.as_ref() != "EAX") {
+                out.push(op::I32_CONST);
+                out.extend_from_slice(&crate::encode::leb_s32((slot & 0xffff_ffff) as i32));
+                out.push(op::LOCAL_SET);
+                out.extend_from_slice(&leb_u32(eip));
+            }
+            if let Some(loaded) =
+                loaded_target_register(block).filter(|name| name.as_ref() != "EAX")
+            {
                 if let Some(local) = shared.reg(loaded.as_ref()) {
                     out.push(op::I32_CONST);
                     out.extend_from_slice(&crate::encode::leb_s32((slot & 0xffff_ffff) as i32));
@@ -1410,9 +1621,13 @@ fn emit_case(
             } else {
                 out.push(op::UNREACHABLE);
             }
-            let resume_id = func.ids.get(&resume).copied().ok_or(
-                TranslateError::Unsupported("call resume block is outside its function"),
-            )?;
+            let resume_id = func
+                .ids
+                .get(&resume)
+                .copied()
+                .ok_or(TranslateError::Unsupported(
+                    "call resume block is outside its function",
+                ))?;
             out.push(op::I32_CONST);
             out.extend_from_slice(&crate::encode::leb_s32(resume_id as i32));
             out.push(op::LOCAL_SET);
@@ -1434,9 +1649,10 @@ fn emit_case(
             // The stack layout is the caller's: `[ESP]` is the return address
             // the caller pushed, and the import's arguments follow it. There is
             // no return address for this jump to push.
-            let esp = prog.locals.reg("ESP").ok_or(TranslateError::Unsupported(
-                "tail call needs an ESP local",
-            ))?;
+            let esp = prog
+                .locals
+                .reg("ESP")
+                .ok_or(TranslateError::Unsupported("tail call needs an ESP local"))?;
             out.push(op::LOCAL_GET);
             out.extend_from_slice(&leb_u32(esp));
             out.push(op::I32_CONST);
@@ -1472,130 +1688,219 @@ fn emit_case(
     Ok(())
 }
 
-fn emit_import_value(out:&mut Vec<u8>,prog:&Program,slot:u64,import:&HostImport)->Result<(),TranslateError>{
-    spill_registers(out,prog);
-    let esp=prog.locals.reg("ESP").ok_or(TranslateError::Unsupported("host call needs ESP"))?;
-    let index=*prog.import_index.get(import).ok_or(TranslateError::Unsupported("host import index missing"))?;
-    out.push(op::LOCAL_GET);out.extend(leb_u32(esp));out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(4));out.push(op::I32_ADD);
-    out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(slot as i32));out.push(op::CALL);out.extend(leb_u32(index));
-    if let Some(eax)=prog.locals.reg("EAX"){out.push(op::LOCAL_SET);out.extend(leb_u32(eax));}else {out.push(0x1a);}
-    if let Some(signature)=wlam_pcode::abi::signature(&import.library,&import.name){
-        pop_import_frame(out,esp,signature);
+fn emit_import_value(
+    out: &mut Vec<u8>,
+    prog: &Program,
+    slot: u64,
+    import: &HostImport,
+) -> Result<(), TranslateError> {
+    spill_registers(out, prog);
+    let esp = prog
+        .locals
+        .reg("ESP")
+        .ok_or(TranslateError::Unsupported("host call needs ESP"))?;
+    let index = *prog
+        .import_index
+        .get(import)
+        .ok_or(TranslateError::Unsupported("host import index missing"))?;
+    out.push(op::LOCAL_GET);
+    out.extend(leb_u32(esp));
+    out.push(op::I32_CONST);
+    out.extend(crate::encode::leb_s32(4));
+    out.push(op::I32_ADD);
+    out.push(op::I32_CONST);
+    out.extend(crate::encode::leb_s32(slot as i32));
+    out.push(op::CALL);
+    out.extend(leb_u32(index));
+    if let Some(eax) = prog.locals.reg("EAX") {
+        out.push(op::LOCAL_SET);
+        out.extend(leb_u32(eax));
+    } else {
+        out.push(0x1a);
+    }
+    if let Some(signature) = wlam_pcode::abi::signature(&import.library, &import.name) {
+        pop_import_frame(out, esp, signature);
     } else {
         out.push(op::UNREACHABLE);
     }
     // Cleanup and the return value are already in locals. Publish them rather
     // than reloading the pre-call snapshot and undoing the host return.
-    spill_registers(out,prog);
+    spill_registers(out, prog);
     Ok(())
 }
 
-fn emit_debug_trace(out:&mut Vec<u8>,prog:&Program,address:u32) {
-    let import=HostImport {library:"wlam.trace".into(),name:format!("write_{address:08x}")};
-    if let Some(index)=prog.import_index.get(&import) {
+fn emit_debug_trace(out: &mut Vec<u8>, prog: &Program, address: u32) {
+    let import = HostImport {
+        library: "wlam.trace".into(),
+        name: format!("write_{address:08x}"),
+    };
+    if let Some(index) = prog.import_index.get(&import) {
         // The trace host reads the canonical guest register snapshot. Block
         // locals may have changed since the last import, so publish them first
         // or traces show stale caller state and mislead control-flow debugging.
-        spill_registers(out,prog);
-        out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(address));
-        out.push(op::I32_CONST);out.push(0);
-        out.push(op::CALL);out.extend(leb_u32(*index));out.push(0x1a);
+        spill_registers(out, prog);
+        out.push(op::I32_CONST);
+        out.extend(crate::encode::leb_u32(address));
+        out.push(op::I32_CONST);
+        out.push(0);
+        out.push(op::CALL);
+        out.extend(leb_u32(*index));
+        out.push(0x1a);
     }
 }
 
 /// Optional diagnostic trap on the first block that stores into a watched
 /// guest address range. Set `WLAM_WATCH_RANGE=start:end` in hex when building.
-fn emit_store_watchpoint(out:&mut Vec<u8>,prog:&Program,block:u32,ops:&[crate::ir::IR],map:&LocalMap) {
-    let Some(range)=std::env::var("WLAM_WATCH_RANGE").ok() else {return;};
-    let Some((start,end))=range.split_once(':').and_then(|(a,b)| {
-        let parse=|s:&str|u32::from_str_radix(s.trim().trim_start_matches("0x"),16).ok();
-        Some((parse(a)?,parse(b)?))
-    }) else {return;};
-    if start>=end {return;}
+fn emit_store_watchpoint(
+    out: &mut Vec<u8>,
+    prog: &Program,
+    block: u32,
+    ops: &[crate::ir::IR],
+    map: &LocalMap,
+) {
+    let Some(range) = std::env::var("WLAM_WATCH_RANGE").ok() else {
+        return;
+    };
+    let Some((start, end)) = range.split_once(':').and_then(|(a, b)| {
+        let parse = |s: &str| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok();
+        Some((parse(a)?, parse(b)?))
+    }) else {
+        return;
+    };
+    if start >= end {
+        return;
+    }
     for ir in ops {
-        let crate::ir::IR::Store {addr,size,..}=ir else {continue;};
-        let address=const_of(addr).map(|value|value as u32);
-        if let Some(address)=address {
-            if address.saturating_add((*size).max(1))<=start.saturating_sub(32) || address>=end {continue;}
-            emit_watch_trap(out,prog,block,None);
+        let crate::ir::IR::Store { addr, size, .. } = ir else {
+            continue;
+        };
+        let address = const_of(addr).map(|value| value as u32);
+        if let Some(address) = address {
+            if address.saturating_add((*size).max(1)) <= start.saturating_sub(32) || address >= end
+            {
+                continue;
+            }
+            emit_watch_trap(out, prog, block, None);
             continue;
         }
-        let local=match addr {
-            crate::ir::Operand::Reg {name,..}=>map.reg(name.as_ref()),
-            crate::ir::Operand::Temp {offset,..}=>map.temp_index(*offset),
-            _=>None,
+        let local = match addr {
+            crate::ir::Operand::Reg { name, .. } => map.reg(name.as_ref()),
+            crate::ir::Operand::Temp { offset, size } => map.temp_index(*offset, *size),
+            _ => None,
         };
-        let Some(local)=local else {continue;};
-        out.push(op::LOCAL_GET);out.extend(leb_u32(local));
-        out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(start.saturating_sub(32)));
+        let Some(local) = local else {
+            continue;
+        };
+        out.push(op::LOCAL_GET);
+        out.extend(leb_u32(local));
+        out.push(op::I32_CONST);
+        out.extend(crate::encode::leb_u32(start.saturating_sub(32)));
         out.push(0x4f); // i32.ge_u
-        out.push(op::LOCAL_GET);out.extend(leb_u32(local));
-        out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(end));
-        out.extend([0x49,0x71,op::IF,0x40]); // i32.lt_u; and; if
-        emit_watch_trap(out,prog,block,Some(local));
+        out.push(op::LOCAL_GET);
+        out.extend(leb_u32(local));
+        out.push(op::I32_CONST);
+        out.extend(crate::encode::leb_u32(end));
+        out.extend([0x49, 0x71, op::IF, 0x40]); // i32.lt_u; and; if
+        emit_watch_trap(out, prog, block, Some(local));
         out.push(op::END);
     }
 }
 
-fn emit_watch_trap(out:&mut Vec<u8>,prog:&Program,block:u32,address:Option<u32>) {
-    spill_registers(out,prog);
-    out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(0x7fb0));
-    if let Some(local)=address {out.push(op::LOCAL_GET);out.extend(leb_u32(local));}
-    else {out.push(op::I32_CONST);out.push(0);}
-    out.extend([op::I32_STORE,2,0]);
-    out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(0x7fb4));
-    out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(block as i32));
-    out.extend([op::I32_STORE,2,0,op::UNREACHABLE]);
+fn emit_watch_trap(out: &mut Vec<u8>, prog: &Program, block: u32, address: Option<u32>) {
+    spill_registers(out, prog);
+    out.push(op::I32_CONST);
+    out.extend(crate::encode::leb_u32(0x7fb0));
+    if let Some(local) = address {
+        out.push(op::LOCAL_GET);
+        out.extend(leb_u32(local));
+    } else {
+        out.push(op::I32_CONST);
+        out.push(0);
+    }
+    out.extend([op::I32_STORE, 2, 0]);
+    out.push(op::I32_CONST);
+    out.extend(crate::encode::leb_u32(0x7fb4));
+    out.push(op::I32_CONST);
+    out.extend(crate::encode::leb_s32(block as i32));
+    out.extend([op::I32_STORE, 2, 0, op::UNREACHABLE]);
 }
 
 /// Resolve raw x86 code pointers once per module, using the spilled EIP.
-fn indirect_dispatch_body(prog: &Program, import_count: u32) -> Result<Option<Vec<u8>>, TranslateError> {
-    let Some(target) = prog.locals.reg("EIP") else { return Ok(None); };
+fn indirect_dispatch_body(
+    prog: &Program,
+    import_count: u32,
+) -> Result<Option<Vec<u8>>, TranslateError> {
+    let Some(target) = prog.locals.reg("EIP") else {
+        return Ok(None);
+    };
     let mut out = Vec::new();
     let runs = prog.locals.declaration_runs();
     out.extend(leb_u32(runs.len() as u32));
-    for (ty, count) in runs { out.extend(leb_u32(count)); out.push(ty); }
+    for (ty, count) in runs {
+        out.extend(leb_u32(count));
+        out.push(ty);
+    }
     reload_registers(&mut out, prog);
     if std::env::var_os("WLAM_TRACE_INDIRECT").is_some() {
-        out.push(op::I32_CONST); out.extend(crate::encode::leb_u32(0x7fc0));
-        out.push(op::LOCAL_GET); out.extend(leb_u32(target));
-        out.push(op::I32_STORE); out.extend([2, 0]);
+        out.push(op::I32_CONST);
+        out.extend(crate::encode::leb_u32(0x7fc0));
+        out.push(op::LOCAL_GET);
+        out.extend(leb_u32(target));
+        out.push(op::I32_STORE);
+        out.extend([2, 0]);
         emit_debug_trace(&mut out, prog, 0x7ff1);
-        if prog.image_base!=0 {
-            out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(0x7fc4));
-            out.push(op::LOCAL_GET);out.extend(leb_u32(target));
-            out.push(op::I32_CONST);out.extend(crate::encode::leb_u32(prog.image_base));
-            out.push(op::I32_ADD);out.push(op::I32_STORE);out.extend([2,0]);
-            emit_debug_trace(&mut out,prog,0x7ff3);
+        if prog.image_base != 0 {
+            out.push(op::I32_CONST);
+            out.extend(crate::encode::leb_u32(0x7fc4));
+            out.push(op::LOCAL_GET);
+            out.extend(leb_u32(target));
+            out.push(op::I32_CONST);
+            out.extend(crate::encode::leb_u32(prog.image_base));
+            out.push(op::I32_ADD);
+            out.push(op::I32_STORE);
+            out.extend([2, 0]);
+            emit_debug_trace(&mut out, prog, 0x7ff3);
         }
     }
     for (slot, import) in &prog.iat_imports {
-        if *slot > u32::MAX as u64 || !prog.import_index.contains_key(import) { continue; }
-        out.push(op::LOCAL_GET); out.extend(leb_u32(target));
-        out.push(op::I32_CONST); out.extend(crate::encode::leb_s32(*slot as i32));
+        if *slot > u32::MAX as u64 || !prog.import_index.contains_key(import) {
+            continue;
+        }
+        out.push(op::LOCAL_GET);
+        out.extend(leb_u32(target));
+        out.push(op::I32_CONST);
+        out.extend(crate::encode::leb_s32(*slot as i32));
         out.extend([0x46, op::IF, 0x40]);
         emit_import_value(&mut out, prog, *slot, import)?;
         out.extend([op::RETURN, op::END]);
     }
     for (address, index) in &prog.function_index {
-        out.push(op::LOCAL_GET); out.extend(leb_u32(target));
-        out.push(op::I32_CONST); out.extend(crate::encode::leb_s32(*address as i32));
+        out.push(op::LOCAL_GET);
+        out.extend(leb_u32(target));
+        out.push(op::I32_CONST);
+        out.extend(crate::encode::leb_s32(*address as i32));
         out.push(0x46);
-        if prog.image_base!=0 {
-            out.push(op::LOCAL_GET);out.extend(leb_u32(target));
-            out.push(op::I32_CONST);out.extend(leb_u32(prog.image_base));
+        if prog.image_base != 0 {
+            out.push(op::LOCAL_GET);
+            out.extend(leb_u32(target));
+            out.push(op::I32_CONST);
+            out.extend(leb_u32(prog.image_base));
             out.push(op::I32_ADD);
-            out.push(op::I32_CONST);out.extend(crate::encode::leb_s32(*address as i32));
-            out.extend([0x46,0x72]);
+            out.push(op::I32_CONST);
+            out.extend(crate::encode::leb_s32(*address as i32));
+            out.extend([0x46, 0x72]);
         }
         out.extend([op::IF, 0x40, op::CALL]);
         out.extend(leb_u32(index + import_count));
         out.extend([op::RETURN, op::END]);
     }
     if std::env::var_os("WLAM_TRACE_INDIRECT").is_some() {
-        out.push(op::I32_CONST); out.extend(crate::encode::leb_u32(0x7fc8));
-        out.push(op::I32_CONST); out.push(1);
-        out.push(op::I32_STORE); out.extend([2, 0]);
+        out.push(op::I32_CONST);
+        out.extend(crate::encode::leb_u32(0x7fc8));
+        out.push(op::I32_CONST);
+        out.push(1);
+        out.push(op::I32_STORE);
+        out.extend([2, 0]);
         emit_debug_trace(&mut out, prog, 0x7ff2);
     }
     out.extend([op::UNREACHABLE, op::END]);
@@ -1616,7 +1921,12 @@ fn loaded_target_register(block: &Block) -> Option<Box<str>> {
         crate::ir::IR::Load {
             dst: crate::ir::Operand::Reg { name, .. },
             ..
-        } if target == &crate::ir::Operand::Reg { name: name.clone(), size: 4 } => {
+        } if target
+            == &crate::ir::Operand::Reg {
+                name: name.clone(),
+                size: 4,
+            } =>
+        {
             Some(name.clone())
         }
         _ => None,
@@ -1660,11 +1970,20 @@ mod tests {
             end: 0x441213,
             ops: vec![
                 crate::ir::IR::Copy {
-                    dst: crate::ir::Operand::Temp { offset: temp, size: 4 },
-                    src: crate::ir::Operand::Const { value: 0x4ca7b0, size: 4 },
+                    dst: crate::ir::Operand::Temp {
+                        offset: temp,
+                        size: 4,
+                    },
+                    src: crate::ir::Operand::Const {
+                        value: 0x4ca7b0,
+                        size: 4,
+                    },
                 },
                 crate::ir::IR::IndirectJump {
-                    target: crate::ir::Operand::Ram { offset: temp, size: 4 },
+                    target: crate::ir::Operand::Ram {
+                        offset: temp,
+                        size: 4,
+                    },
                 },
             ],
             terminator: Terminator::IndirectJump,
@@ -1685,23 +2004,57 @@ mod tests {
     /// move ESP past the frame on every copy.
     #[test]
     fn a_cdecl_import_pops_only_the_return_address() {
-        use wlam_pcode::abi::{signature, Signature};
-        assert!(signature("MSVCRT.dll", "memcpy").is_none(), "memcpy has no stdcall cleanup");
+        use wlam_pcode::abi::{signature, Convention, Signature};
+        assert_eq!(
+            signature("MSVCRT.dll", "memcpy").map(|signature| signature.convention),
+            Some(Convention::Cdecl),
+            "memcpy is cdecl and has no stdcall cleanup"
+        );
         let esp = 0;
         let mut out = Vec::new();
-        pop_import_frame(&mut out, esp, Signature {
-            convention: wlam_pcode::abi::Convention::Cdecl,
-            argument_bytes: 12,
-        });
+        pop_import_frame(
+            &mut out,
+            esp,
+            Signature {
+                convention: wlam_pcode::abi::Convention::Cdecl,
+                argument_bytes: 12,
+            },
+        );
         // local.get 0; i32.const 4; i32.add; local.set 0
-        assert_eq!(out, vec![op::LOCAL_GET, 0, op::I32_CONST, 4, op::I32_ADD, op::LOCAL_SET, 0]);
+        assert_eq!(
+            out,
+            vec![
+                op::LOCAL_GET,
+                0,
+                op::I32_CONST,
+                4,
+                op::I32_ADD,
+                op::LOCAL_SET,
+                0
+            ]
+        );
         let mut stdcall = Vec::new();
-        pop_import_frame(&mut stdcall, esp, Signature {
-            convention: wlam_pcode::abi::Convention::Stdcall,
-            argument_bytes: 12,
-        });
+        pop_import_frame(
+            &mut stdcall,
+            esp,
+            Signature {
+                convention: wlam_pcode::abi::Convention::Stdcall,
+                argument_bytes: 12,
+            },
+        );
         // stdcall: 4 (return address) + 12 (arguments)
-        assert_eq!(stdcall, vec![op::LOCAL_GET, 0, op::I32_CONST, 16, op::I32_ADD, op::LOCAL_SET, 0]);
+        assert_eq!(
+            stdcall,
+            vec![
+                op::LOCAL_GET,
+                0,
+                op::I32_CONST,
+                16,
+                op::I32_ADD,
+                op::LOCAL_SET,
+                0
+            ]
+        );
     }
 
     #[test]
@@ -1744,27 +2097,42 @@ mod dispatcher_tests {
                 end: 0x1008,
                 ops: vec![
                     crate::ir::IR::Store {
-                        addr: crate::ir::Operand::Const { value: 0x100, size: 4 },
+                        addr: crate::ir::Operand::Const {
+                            value: 0x100,
+                            size: 4,
+                        },
                         value: crate::ir::Operand::Const { value: 0, size: 4 },
                         size: 4,
                     },
                     crate::ir::IR::Copy {
                         dst: crate::ir::Operand::Temp { offset: 1, size: 4 },
-                        src: crate::ir::Operand::Const { value: cond, size: 4 },
+                        src: crate::ir::Operand::Const {
+                            value: cond,
+                            size: 4,
+                        },
                     },
                     crate::ir::IR::CBranch {
                         cond: crate::ir::Operand::Temp { offset: 1, size: 4 },
-                        target: crate::ir::Operand::Ram { offset: 0x1010, size: 4 },
+                        target: crate::ir::Operand::Ram {
+                            offset: 0x1010,
+                            size: 4,
+                        },
                     },
                 ],
-                terminator: Terminator::Conditional { taken: Some(0x1010), not_taken: 0x1014 },
+                terminator: Terminator::Conditional {
+                    taken: Some(0x1010),
+                    not_taken: 0x1014,
+                },
             },
         );
         let leaf = |addr: u64, value: u64| Block {
             start: addr,
             end: addr + 8,
             ops: vec![crate::ir::IR::Store {
-                addr: crate::ir::Operand::Const { value: 0x104, size: 4 },
+                addr: crate::ir::Operand::Const {
+                    value: 0x104,
+                    size: 4,
+                },
                 value: crate::ir::Operand::Const { value, size: 4 },
                 size: 4,
             }],
@@ -1818,7 +2186,10 @@ mod dispatcher_tests {
         let m = build_module(&prog, &blocks).expect("module");
         let (at100, at104, log) = run_module(&m);
         assert_eq!(at100, 0, "block 0 must run: {log}");
-        assert_eq!(at104, 0xB, "condition 0 must take the 'not_taken' leaf: {log}");
+        assert_eq!(
+            at104, 0xB,
+            "condition 0 must take the 'not_taken' leaf: {log}"
+        );
     }
 }
 
@@ -1830,24 +2201,47 @@ mod dump_tmp {
         // Rebuild the same constructed program and write it for inspection.
         let regs = vec!["EAX".to_string()];
         let mut blocks = BTreeMap::new();
-        blocks.insert(0x1000u64, Block {
-            start: 0x1000, end: 0x1008,
-            ops: vec![
-                crate::ir::IR::Copy { dst: crate::ir::Operand::Temp { offset: 1, size: 4 }, src: crate::ir::Operand::Const { value: 0, size: 4 } },
-                crate::ir::IR::CBranch { cond: crate::ir::Operand::Temp { offset: 1, size: 4 }, target: crate::ir::Operand::Ram { offset: 0x1010, size: 4 } },
-            ],
-            terminator: Terminator::Conditional { taken: Some(0x1010), not_taken: 0x1014 },
-        });
+        blocks.insert(
+            0x1000u64,
+            Block {
+                start: 0x1000,
+                end: 0x1008,
+                ops: vec![
+                    crate::ir::IR::Copy {
+                        dst: crate::ir::Operand::Temp { offset: 1, size: 4 },
+                        src: crate::ir::Operand::Const { value: 0, size: 4 },
+                    },
+                    crate::ir::IR::CBranch {
+                        cond: crate::ir::Operand::Temp { offset: 1, size: 4 },
+                        target: crate::ir::Operand::Ram {
+                            offset: 0x1010,
+                            size: 4,
+                        },
+                    },
+                ],
+                terminator: Terminator::Conditional {
+                    taken: Some(0x1010),
+                    not_taken: 0x1014,
+                },
+            },
+        );
         for (a, v) in [(0x1010u64, 0xAu64), (0x1014, 0xB)] {
-            blocks.insert(a, Block {
-                start: a, end: a + 8,
-                ops: vec![crate::ir::IR::Store {
-                    addr: crate::ir::Operand::Const { value: 0x104, size: 4 },
-                    value: crate::ir::Operand::Const { value: v, size: 4 },
-                    size: 4,
-                }],
-                terminator: Terminator::Return,
-            });
+            blocks.insert(
+                a,
+                Block {
+                    start: a,
+                    end: a + 8,
+                    ops: vec![crate::ir::IR::Store {
+                        addr: crate::ir::Operand::Const {
+                            value: 0x104,
+                            size: 4,
+                        },
+                        value: crate::ir::Operand::Const { value: v, size: 4 },
+                        size: 4,
+                    }],
+                    terminator: Terminator::Return,
+                },
+            );
         }
         let prog = partition(&[0x1000], &blocks, &regs);
         let m = build_module(&prog, &blocks).unwrap();

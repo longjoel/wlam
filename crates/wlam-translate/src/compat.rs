@@ -19,6 +19,8 @@ pub enum Implementation {
     /// Provided by the guest runtime itself rather than the OS (CRT startup,
     /// compiler intrinsics, `__security_check_cookie`, ...).
     Replaced,
+    /// Satisfied by a user-supplied DLL recompiled into the same guest module.
+    Linked,
     /// Deliberately not provided; calls will raise a diagnostic.
     Unsupported,
     /// Not yet decided. This is the state that must shrink to zero.
@@ -31,6 +33,7 @@ impl Implementation {
             Implementation::Native => "native",
             Implementation::Emulated => "emulated",
             Implementation::Replaced => "replaced",
+            Implementation::Linked => "linked",
             Implementation::Unsupported => "UNSUPPORTED",
             Implementation::Unknown => "unknown",
         }
@@ -86,6 +89,9 @@ fn rules() -> Vec<Rule> {
             "VirtualFree",
             "VirtualProtect",
             "VirtualQuery",
+            "GetTempFileNameA",
+            "DeleteFileA",
+            "DeleteFileW",
             "HeapCreate",
             "HeapDestroy",
             "HeapAlloc",
@@ -105,6 +111,7 @@ fn rules() -> Vec<Rule> {
             "GlobalSize",
             "GetProcessHeap",
             "GetProcessHeaps",
+            "GlobalFlags",
         ]
     ));
     r.extend(rule!(
@@ -160,8 +167,13 @@ fn rules() -> Vec<Rule> {
             "UnmapViewOfFile",
             "GetFileTime",
             "SetFileTime",
+            "FileTimeToDosDateTime",
+            "FileTimeToLocalFileTime",
             "GetTempFileNameA",
+            "DeleteFileA",
+            "DeleteFileW",
             "GetFileType",
+            "GetWindowsDirectoryA",
         ]
     ));
     r.extend(rule!(
@@ -220,6 +232,7 @@ fn rules() -> Vec<Rule> {
             "RaiseException",
             "UnhandledExceptionFilter",
             "IsDebuggerPresent",
+            "IsWow64Process",
             "CheckRemoteDebuggerPresent",
             "OutputDebugStringA",
             "OutputDebugStringW",
@@ -254,6 +267,9 @@ fn rules() -> Vec<Rule> {
             "lstrcmpiA",
             "lstrcmpiW",
             "lstrcpyA",
+            "lstrcpyW",
+            "lstrcatW",
+            "lstrlenW",
             "lstrcpyW",
             "lstrcpynA",
             "lstrcpynW",
@@ -380,6 +396,12 @@ fn rules() -> Vec<Rule> {
         "window",
         Implementation::Native,
         [
+            "EnumDisplayDevicesA",
+            "EnumDisplayDevicesW",
+            "EnumDisplaySettingsA",
+            "EnumDisplayMonitors",
+            "UnregisterClassA",
+            "UnregisterClassW",
             "RegisterClassA",
             "RegisterClassW",
             "RegisterClassExA",
@@ -597,6 +619,7 @@ fn rules() -> Vec<Rule> {
             "DeleteObject",
             "DeleteDC",
             "GetStockObject",
+            "GetCurrentObject",
             "SetBkMode",
             "GetBkMode",
             "SetTextColor",
@@ -610,6 +633,67 @@ fn rules() -> Vec<Rule> {
             "GetTextMetricsW",
             "SetTextAlign",
             "GetTextAlign",
+            "GetBkColor",
+            "ExtTextOutA",
+            "GetTextExtentPointA",
+            "GetTextFaceA",
+            "GetCharWidthA",
+            "SetTextCharacterExtra",
+            "GetTextCharacterExtra",
+            "SetMapperFlags",
+            "GetMapperFlags",
+        ]
+    ));
+    r.extend(rule!(
+        G,
+        "dc",
+        Implementation::Native,
+        ["SaveDC", "RestoreDC", "GetDeviceCaps", "GetClipBox", "IntersectClipRect"]
+    ));
+    r.extend(rule!(
+        G,
+        "geometry",
+        Implementation::Native,
+        [
+            "GetPixel",
+            "SetPixel",
+            "SetPixelV",
+            "GetROP2",
+            "SetROP2",
+            "MoveToEx",
+            "GetCurrentPositionEx",
+            "LineTo",
+            "Rectangle",
+            "ExtCreatePen",
+            "GetPolyFillMode",
+            "SetPolyFillMode",
+        ]
+    ));
+    r.extend(rule!(
+        G,
+        "palette",
+        Implementation::Native,
+        [
+            "CreatePalette",
+            "SelectPalette",
+            "RealizePalette",
+            "GetPaletteEntries",
+            "SetPaletteEntries",
+            "GetNearestPaletteIndex",
+            "GetSystemPaletteEntries",
+            "UnrealizeObject",
+        ]
+    ));
+    r.extend(rule!(
+        G,
+        "pixel_format",
+        Implementation::Native,
+        [
+            "ChoosePixelFormat",
+            "DescribePixelFormat",
+            "SetPixelFormat",
+            "GetPixelFormat",
+            "SwapBuffers",
         ]
     ));
     r.extend(rule!(
@@ -618,10 +702,27 @@ fn rules() -> Vec<Rule> {
         Implementation::Native,
         [
             "CreateCompatibleDC",
+            "CreateDCA",
+            "CreateDCW",
             "CreateCompatibleBitmap",
+            "CreateDiscardableBitmap",
+            "CreateBitmapIndirect",
+            "CreateBitmap",
+            "CreateDIBitmap",
             "CreateDIBSection",
             "GetDIBits",
             "SetDIBits",
+            "GetDIBColorTable",
+            "SetDIBColorTable",
+            "SetDIBitsToDevice",
+            "VirtualQuery",
+            "GetTempFileNameA",
+            "DeleteFileA",
+            "DeleteFileW",
+            "SetDIBits",
+            "GetDIBColorTable",
+            "SetDIBColorTable",
+            "SetDIBitsToDevice",
             "SetDIBitsToDevice",
             "StretchDIBits",
             "BitBlt",
@@ -630,13 +731,73 @@ fn rules() -> Vec<Rule> {
             "FillRect",
             "FrameRect",
             "CreateSolidBrush",
+            "CreateHatchBrush",
+            "CreatePatternBrush",
+            "CreateBrushIndirect",
+            "CreateDIBPatternBrushPt",
             "CreatePen",
+            "CreatePenIndirect",
             "SetStretchBltMode",
+            "GetStretchBltMode",
+            "GetMapMode",
+            "SetMapMode",
+            "GetViewportExtEx",
+            "GetViewportOrgEx",
+            "GetWindowExtEx",
+            "GetWindowOrgEx",
+            "SetViewportExtEx",
+            "SetViewportOrgEx",
+            "SetWindowExtEx",
+            "SetWindowOrgEx",
+            "OffsetViewportOrgEx",
+            "OffsetWindowOrgEx",
+            "SetLayout",
+            "GetLayout",
+            "GetMiterLimit",
+            "SetMiterLimit",
+            "CreateRectRgn",
+            "CreateRectRgnIndirect",
+            "SetRectRgn",
+            "GetRgnBox",
+            "GetRegionData",
+            "GetClipRgn",
+            "GetBoundsRect",
+            "GetDeviceGammaRamp",
+            "ResetDCA",
+            "CreateEnhMetaFileA",
+            "CreateEnhMetaFileW",
+            "CreateMetaFileA",
+            "CreateMetaFileW",
+            "CloseEnhMetaFile",
+            "CloseMetaFile",
+            "DeleteEnhMetaFile",
+            "DeleteMetaFile",
+            "ResetDCW",
+            "SetDeviceGammaRamp",
+            "SetBoundsRect",
+            "SelectClipRgn",
+            "SetBrushOrgEx",
+            "FixBrushOrgEx",
+            "GetBrushOrgEx",
             "GdiFlush",
             "GetObjectA",
             "GetObjectW",
+            "GetObjectType",
+            "GetBitmapBits",
+            "SetBitmapBits",
+            "GetDIBits",
+            "SetDIBits",
             "GetDIBColorTable",
             "SetDIBColorTable",
+            "SetDIBitsToDevice",
+            "VirtualQuery",
+            "GetTempFileNameA",
+            "DeleteFileA",
+            "DeleteFileW",
+            "GetNearestColor",
+            "GetDIBColorTable",
+            "SetDIBColorTable",
+            "SetDIBitsToDevice",
         ]
     ));
     r.extend(rule!(
@@ -740,12 +901,19 @@ fn rules() -> Vec<Rule> {
     r.extend(rule!(
         CC,
         "controls",
+        Implementation::Native,
+        ["InitCommonControls"]
+    ));
+    r.extend(rule!(
+        CC,
+        "controls",
         Implementation::Unsupported,
         [
-            "InitCommonControls",
             "InitCommonControlsEx",
             "CreateStatusWindowA",
             "CreateStatusWindowW",
+            "DrawStatusTextA",
+            "DrawStatusTextW",
             "CreateToolbarEx",
             "CreateUpDownControl",
             "ImageList_Create",
@@ -805,7 +973,10 @@ fn rules() -> Vec<Rule> {
             "realloc",
             "memcpy",
             "memmove",
+            "memcmp",
             "memset",
+            "atoi",
+            "abs",
             "strlen",
             "strcpy",
             "strcat",
@@ -828,6 +999,17 @@ fn rules() -> Vec<Rule> {
             "exit",
             "_exit",
             "_initterm",
+            "_onexit",
+            "_onexitbegin",
+            "_onexitend",
+            "__dllonexit",
+            "__getmainargs",
+            "__p__acmdln",
+            "__p__commode",
+            "__p__fmode",
+            "_adjust_fdiv",
+            "_XcptFilter",
+            "_except_handler3",
             "__security_check_cookie",
             "__security_init_cookie",
             "_local_unwind2",
@@ -836,6 +1018,10 @@ fn rules() -> Vec<Rule> {
             "atexit",
             "_controlfp",
             "_control87",
+            "??2@YAPAXI@Z",
+            "??3@YAXPAX@Z",
+            "?set_terminate@@YAP6AXXZP6AXXZ@Z",
+            "?terminate@@YAXXZ",
             "_ftol2",
             "_ftol2_sse",
             "_chkstk",
@@ -846,7 +1032,6 @@ fn rules() -> Vec<Rule> {
             "_allrem",
             "_aulldiv",
             "_aullrem",
-            "__getmainargs",
             "__set_app_type",
             "pow",
             "sqrt",
@@ -906,19 +1091,13 @@ impl Matrix {
     fn library_key(library: &str) -> Option<(&'static str, &'static str)> {
         let base = library.to_ascii_lowercase();
         let stem = base.strip_suffix(".dll").unwrap_or(&base).to_string();
-        // CRT DLLs come in several names; treat them as one family.
-        if [
-            "msvcrt",
-            "ucrtbase",
-            "msvcr80",
-            "msvcr90",
-            "msvcr100",
-            "msvcr110",
-            "msvcr120",
-            "vcruntime140",
-            "api-ms-win-crt-runtime-l1-1-0",
-        ]
-        .contains(&stem.as_str())
+        // CRT DLLs come in many versioned names (MSVCRT20, MSVCR80,
+        // UCRTBASE, VCRUNTIME140, ...); treat the whole family as one.
+        if stem == "msvcrt"
+            || stem == "ucrtbase"
+            || stem == "api-ms-win-crt-runtime-l1-1-0"
+            || stem.starts_with("msvcr")
+            || stem.starts_with("vcruntime")
         {
             return Some((CRT, "crt"));
         }
@@ -1038,11 +1217,12 @@ impl Matrix {
 }
 
 impl Implementation {
-    pub fn all() -> [Implementation; 5] {
+    pub fn all() -> [Implementation; 6] {
         [
             Implementation::Native,
             Implementation::Emulated,
             Implementation::Replaced,
+            Implementation::Linked,
             Implementation::Unsupported,
             Implementation::Unknown,
         ]
@@ -1075,6 +1255,32 @@ mod tests {
             Implementation::Replaced,
             Matrix::classify("api-ms-win-crt-runtime-l1-1-0.dll", Some("exit")).0
         );
+        for symbol in [
+            "FileTimeToDosDateTime",
+            "FileTimeToLocalFileTime",
+            "GetWindowsDirectoryA",
+        ] {
+            assert_eq!(
+                Implementation::Native,
+                Matrix::classify("KERNEL32.dll", Some(symbol)).0,
+                "{symbol}"
+            );
+        }
+        // Versioned CRT DLL names (MSVCRT20, MSVCR80, UCRTBASE, ...) and their
+        // C entry points are the same host-provided family.
+        for symbol in [
+            "exit",
+            "_initterm",
+            "__getmainargs",
+            "__p__acmdln",
+            "??2@YAPAXI@Z",
+        ] {
+            assert_eq!(
+                Implementation::Replaced,
+                Matrix::classify("MSVCRT20.dll", Some(symbol)).0,
+                "{symbol}"
+            );
+        }
     }
 
     #[test]

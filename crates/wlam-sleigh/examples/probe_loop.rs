@@ -45,7 +45,10 @@ fn main() {
     let image = std::env::args()
         .nth(1)
         .unwrap_or_else(|| root.join("north-star/bin/Uxn32.exe").display().to_string());
-    let max_steps: usize = std::env::var("STEPS").ok().and_then(|s| s.parse().ok()).unwrap_or(4000);
+    let max_steps: usize = std::env::var("STEPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4000);
     let bytes = std::fs::read(&image).expect("read image");
 
     let pe = Pe::parse(&bytes).expect("parse");
@@ -65,7 +68,9 @@ fn main() {
                 format!(
                     "{}!{}",
                     i.library,
-                    i.name.clone().unwrap_or_else(|| format!("#{}", i.ordinal.unwrap_or(0)))
+                    i.name
+                        .clone()
+                        .unwrap_or_else(|| format!("#{}", i.ordinal.unwrap_or(0)))
                 ),
             )
         })
@@ -75,7 +80,9 @@ fn main() {
     let mut blocks: BTreeMap<u64, eir::Block> = BTreeMap::new();
     for b in prog.blocks() {
         let rva = (b.start - base) as u32;
-        let Some(idx) = pe.section_of(rva) else { continue };
+        let Some(idx) = pe.section_of(rva) else {
+            continue;
+        };
         let sec = &pe.sections[idx];
         let off = (rva - sec.virtual_address) as usize;
         if off >= sec.data.len() {
@@ -190,7 +197,10 @@ fn main() {
     println!("entry {entry:#x}");
     for step in 0..max_steps {
         if step == 0 {
-            let mut why: Vec<_> = failed.iter().filter(|(_, w)| w.as_str().starts_with("module:")).collect();
+            let mut why: Vec<_> = failed
+                .iter()
+                .filter(|(_, w)| w.as_str().starts_with("module:"))
+                .collect();
             for (a, w) in why.iter().take(6) {
                 println!("  module build failed {a:#x}: {w}");
             }
@@ -255,10 +265,16 @@ fn main() {
                 Ok(f) => f.to_string(),
                 Err(e) => format!("{e}"),
             };
-            println!("step {step}: {cur:#x} trapped: {e:?}; block {:#x}..{:#x}; fuel left {fuel}", blk.start, blk.end);
+            println!(
+                "step {step}: {cur:#x} trapped: {e:?}; block {:#x}..{:#x}; fuel left {fuel}",
+                blk.start, blk.end
+            );
             if std::env::var("PROBE_WASM").is_ok() {
                 std::fs::write("../../.scratch/probe_block.wasm", &compiled[&cur]).unwrap();
-                println!("    wrote .scratch/probe_block.wasm ({} bytes)", compiled[&cur].len());
+                println!(
+                    "    wrote .scratch/probe_block.wasm ({} bytes)",
+                    compiled[&cur].len()
+                );
             }
             if let Some(w) = env_steps() {
                 let _ = w;
@@ -279,8 +295,14 @@ fn main() {
                     .ops
                     .iter()
                     .filter_map(|op| match op {
-                        sir::IR::Store { addr: sir::Operand::Const { value, .. }, .. }
-                        | sir::IR::Load { addr: sir::Operand::Const { value, .. }, .. } => Some(*value),
+                        sir::IR::Store {
+                            addr: sir::Operand::Const { value, .. },
+                            ..
+                        }
+                        | sir::IR::Load {
+                            addr: sir::Operand::Const { value, .. },
+                            ..
+                        } => Some(*value),
                         _ => None,
                     })
                     .collect();
@@ -289,7 +311,11 @@ fn main() {
                         "      {:#x} {:<40} fixed addr {}",
                         ins.address,
                         ins.disassembly,
-                        mem_addrs.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>().join(", ")
+                        mem_addrs
+                            .iter()
+                            .map(|a| format!("{a:#x}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     );
                 }
             }
@@ -382,7 +408,9 @@ fn print_window(
             visits.get(a).copied().unwrap_or(0)
         );
     }
-    for name in ["EAX", "EBX", "ECX", "EDX", "ESI", "EDI", "EBP", "ESP", "EIP"] {
+    for name in [
+        "EAX", "EBX", "ECX", "EDX", "ESI", "EDI", "EBP", "ESP", "EIP",
+    ] {
         if let Some(&slot) = slot_of.get(name) {
             let s = slot as usize - REG_SNAPSHOT_BASE as usize;
             let v = u32::from_le_bytes(snap[s..s + 4].try_into().unwrap());
@@ -421,17 +449,27 @@ fn indirect_target(block: &SBlock, iat: &BTreeMap<u64, String>) -> Option<Indire
                         // `call [slot]`: the slot the load came from decides.
                         sir::Operand::Ram { offset, .. } => match iat.get(offset) {
                             Some(name) => IndirectCall::Host(name.clone()),
-                            None => IndirectCall::Unknown(format!("ram {offset:#x} (not an import slot)")),
+                            None => IndirectCall::Unknown(format!(
+                                "ram {offset:#x} (not an import slot)"
+                            )),
                         },
                         sir::Operand::Temp { .. } => match loaded_from {
                             Some(slot) => match iat.get(&slot) {
                                 Some(name) => IndirectCall::Host(name.clone()),
-                                None => IndirectCall::Unknown(format!("load [{slot:#x}], not an import slot")),
+                                None => IndirectCall::Unknown(format!(
+                                    "load [{slot:#x}], not an import slot"
+                                )),
                             },
-                            None => IndirectCall::Unknown("temp (value computed, not loaded from a slot)".into()),
+                            None => IndirectCall::Unknown(
+                                "temp (value computed, not loaded from a slot)".into(),
+                            ),
                         },
-                        sir::Operand::Reg { name, .. } => IndirectCall::Unknown(format!("register {name}")),
-                        sir::Operand::Const { value, .. } => IndirectCall::Unknown(format!("const {value:#x}")),
+                        sir::Operand::Reg { name, .. } => {
+                            IndirectCall::Unknown(format!("register {name}"))
+                        }
+                        sir::Operand::Const { value, .. } => {
+                            IndirectCall::Unknown(format!("const {value:#x}"))
+                        }
                     });
                 }
                 _ => {}
@@ -456,7 +494,12 @@ fn next_between(block: &SBlock, zf: u32) -> Option<u64> {
             Some(t) if zf == 0 => *t,
             _ => *not_taken,
         }),
-        T::IndirectJump | T::Return | T::Trap(_) | T::Call { .. } | T::CallInd { .. } | T::Undecodable(_) => None,
+        T::IndirectJump
+        | T::Return
+        | T::Trap(_)
+        | T::Call { .. }
+        | T::CallInd { .. }
+        | T::Undecodable(_) => None,
     }
 }
 

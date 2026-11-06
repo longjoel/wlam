@@ -9,8 +9,8 @@ mod shared;
 
 use std::collections::BTreeMap;
 
-use wlam_emit::ir as eir;
 use wlam_emit::chain::{build_module, partition};
+use wlam_emit::ir as eir;
 use wlam_sleigh::{lift_block, with_big_stack};
 
 /// Lift `code` starting at each address in `starts` and adapt to the emitter's
@@ -36,56 +36,6 @@ fn registers(blocks: &BTreeMap<u64, eir::Block>) -> Vec<String> {
         }
     }
     set.into_iter().collect()
-}
-
-/// Run the module in Node, returning the value of EAX (read from the register
-/// snapshot) and whether execution completed.
-fn run(module: &[u8], regs: &[String], eax: u32, ecx: u32, mem: &[(u32, u32)]) -> (Option<u32>, String) {
-    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("wlam-chain-{}-{n}.wasm", std::process::id()));
-    std::fs::write(&path, module).unwrap();
-    let eax_idx = regs.iter().position(|r| r == "EAX").unwrap_or(usize::MAX);
-    let ecx_idx = regs.iter().position(|r| r == "ECX").unwrap_or(usize::MAX);
-    // Only seed registers the program actually uses: an absent register has no
-    // snapshot slot, and indexing with `usize::MAX` silently produced a garbage
-    // address (and a timeout) instead of a clear failure.
-    let mut seeds = vec![format!("d.setUint32({base}+{eax_idx}*8,{eax},true);", base = wlam_emit::REG_SNAPSHOT_BASE)];
-    if ecx_idx != usize::MAX {
-        seeds.push(format!("d.setUint32({base}+{ecx_idx}*8,{ecx},true);", base = wlam_emit::REG_SNAPSHOT_BASE));
-    }
-    let mem_js: Vec<String> = mem.iter().map(|(a, v)| format!("d.setUint32({a},{v},true);")).collect();
-    let seeds_js = seeds.join("");
-    let script = format!(
-        "const fs=require('fs');\
-         const m=new WebAssembly.Module(fs.readFileSync({path:?}));\
-         const i=new WebAssembly.Instance(m,{{}});\
-         const d=new DataView(i.exports.memory.buffer);\
-         {seeds}\
-         {} \
-         try{{ i.exports.entry(); }}catch(e){{ console.log(JSON.stringify({{err:String(e.message)}})); process.exit(0); }}\
-         console.log(JSON.stringify({{eax:d.getUint32({base}+{eax_idx}*8,true)}}));",
-        mem_js.join(""),
-        seeds = seeds_js,
-        base = wlam_emit::REG_SNAPSHOT_BASE,
-    );
-    let out = std::process::Command::new("timeout")
-        .arg("10")
-        .arg("node")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .unwrap();
-    let _ = std::fs::remove_file(&path);
-    let text = String::from_utf8_lossy(&out.stdout);
-    if text.trim().is_empty() {
-        return (None, format!("no output (timeout or crash): {}", String::from_utf8_lossy(&out.stderr)));
-    }
-    if let Some(rest) = text.split("\"eax\":").nth(1) {
-        let v = rest.trim().trim_end_matches('}').trim();
-        return (v.parse().ok(), String::new());
-    }
-    (None, text.trim().to_string())
 }
 
 /// The simplest possible branch: one conditional block and two leaf blocks.
@@ -160,11 +110,18 @@ fn conditional_branch_takes_the_correct_path() {
         0xC7, 0x05, 0x04, 0x00, 0x01, 0x00, 0x02, 0, 0, 0,  // mov [0x10004],2
         0xC3,                                        // ret
     ];
-    assert_eq!(code.len() as u64, not_taken + 0x0a - base + 1, "fixture length");
+    assert_eq!(
+        code.len() as u64,
+        not_taken + 0x0a - base + 1,
+        "fixture length"
+    );
     let blocks = blocks_from(&code, base, &[base, jmp_at, taken, not_taken]);
     assert_eq!(
         blocks[&base].terminator,
-        eir::Terminator::Conditional { taken: Some(taken), not_taken: jmp_at }
+        eir::Terminator::Conditional {
+            taken: Some(taken),
+            not_taken: jmp_at
+        }
     );
     let regs = registers(&blocks);
     let prog = partition(&[base], &blocks, &regs);
@@ -207,9 +164,17 @@ fn conditional_branch_takes_the_correct_path() {
     // being unset; the test asserts the taken store happened and the other did
     // not.
     let (a, b, log) = read(3);
-    assert_eq!((a, b), (Some(1), Some(0)), "eax=3 < 5 must take jl (log {log})");
+    assert_eq!(
+        (a, b),
+        (Some(1), Some(0)),
+        "eax=3 < 5 must take jl (log {log})"
+    );
     let (a, b, log) = read(7);
-    assert_eq!((a, b), (Some(0), Some(2)), "eax=7 >= 5 must not take jl (log {log})");
+    assert_eq!(
+        (a, b),
+        (Some(0), Some(2)),
+        "eax=7 >= 5 must not take jl (log {log})"
+    );
 }
 
 /// Chaining across an explicit jump, observed through guest memory.
@@ -235,7 +200,11 @@ fn jump_chains_into_the_next_block_and_stores() {
     let prog = partition(&[base], &blocks, &regs);
     assert_eq!(prog.functions.len(), 1);
     let func = &prog.functions[0];
-    assert_eq!(func.blocks, vec![base, base + 6], "both blocks in one function");
+    assert_eq!(
+        func.blocks,
+        vec![base, base + 6],
+        "both blocks in one function"
+    );
     assert!(func.problems.is_empty(), "problems: {:?}", func.problems);
     let module = build_module(&prog, &blocks).expect("module");
 

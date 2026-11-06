@@ -9,7 +9,12 @@ fn main() {
     let hex = |s: String| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap();
     let from = hex(std::env::args().nth(1).unwrap_or_else(|| "0x40ccde".into()));
     let to = hex(std::env::args().nth(2).unwrap_or_else(|| "0x40cd40".into()));
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
     let b = std::fs::read(root.join("north-star/bin/Uxn32.exe")).unwrap();
     let base = 0x400000u64;
     let start = (from - base) as usize;

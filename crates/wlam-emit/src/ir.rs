@@ -89,7 +89,14 @@ pub enum FloatOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FloatUnaryOp { Neg, Abs, Sqrt, Ceil, Floor, Round }
+pub enum FloatUnaryOp {
+    Neg,
+    Abs,
+    Sqrt,
+    Ceil,
+    Floor,
+    Round,
+}
 
 /// Typed integer <-> real conversions. Mirrors `wlam_sleigh::ir::ConvertOp`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,7 +112,11 @@ pub enum ConvertOp {
 /// One IR operation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IR {
-    FloatUnary { op: FloatUnaryOp, dst: Operand, src: Operand },
+    FloatUnary {
+        op: FloatUnaryOp,
+        dst: Operand,
+        src: Operand,
+    },
     Copy {
         dst: Operand,
         src: Operand,

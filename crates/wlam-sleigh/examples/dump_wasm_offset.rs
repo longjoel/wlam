@@ -5,8 +5,16 @@ use wasmparser::{Parser, Payload};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
-    let path = args.next().ok_or("usage: dump_wasm_offset <module.wasm> <offset>")?;
-    let target = usize::from_str_radix(args.next().as_deref().unwrap_or("" ).trim_start_matches("0x"), 16)?;
+    let path = args
+        .next()
+        .ok_or("usage: dump_wasm_offset <module.wasm> <offset>")?;
+    let target = usize::from_str_radix(
+        args.next()
+            .as_deref()
+            .unwrap_or("")
+            .trim_start_matches("0x"),
+        16,
+    )?;
     let bytes = fs::read(path)?;
     let mut imported_functions = 0u32;
     let mut code_index = 0u32;
@@ -30,8 +38,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     rows.push((offset, operator));
                 }
                 if rows.iter().any(|(offset, _)| offset.abs_diff(target) < 128) {
-                    println!("function {function}, body {:#x}..{:#x}", body.range().start, body.range().end);
-                    for (offset, operator) in rows.iter().filter(|(offset, _)| offset.abs_diff(target) < 128) {
+                    println!(
+                        "function {function}, body {:#x}..{:#x}",
+                        body.range().start,
+                        body.range().end
+                    );
+                    for (offset, operator) in rows
+                        .iter()
+                        .filter(|(offset, _)| offset.abs_diff(target) < 128)
+                    {
                         println!("{offset:#x}: {operator:?}");
                     }
                     return Ok(());

@@ -123,7 +123,10 @@ fn mnemonic_of(disassembly: &str) -> String {
 ///
 /// Returns the number of instructions compared at this address.
 fn compare_at(bytes: &[u8], section_va: u64, addr: u64, out: &mut Vec<Disagreement>) -> usize {
-    let Some(off) = addr.checked_sub(section_va).and_then(|o| usize::try_from(o).ok()) else {
+    let Some(off) = addr
+        .checked_sub(section_va)
+        .and_then(|o| usize::try_from(o).ok())
+    else {
         return 0;
     };
     if off >= bytes.len() {
@@ -210,7 +213,10 @@ fn crosscheck_image(path: &str) -> Option<(Vec<Disagreement>, usize, usize)> {
     let bytes = std::fs::read(path).ok()?;
     let pe = Pe::parse(&bytes).ok()?;
     let base = pe.image_base as u64;
-    let text = pe.sections.iter().find(|s| s.is_executable() && !s.data.is_empty())?;
+    let text = pe
+        .sections
+        .iter()
+        .find(|s| s.is_executable() && !s.data.is_empty())?;
     let section_va = base + text.virtual_address as u64;
     let data = text.data.clone();
 
@@ -283,7 +289,10 @@ fn decoders_agree_on_instruction_boundaries() {
         let mut seen = std::collections::BTreeSet::new();
         diffs.retain(|d| seen.insert((d.address, d.kind.label())));
         eprintln!("cross-check {path}: {starts} block starts, {compared} instructions compared, {} disagreement(s)", diffs.len());
-        let mnemonic_only = diffs.iter().filter(|d| d.kind == Kind::MnemonicMismatch).count();
+        let mnemonic_only = diffs
+            .iter()
+            .filter(|d| d.kind == Kind::MnemonicMismatch)
+            .count();
         if mnemonic_only > 0 {
             eprintln!(
                 "note: {path}: {mnemonic_only} mnemonic spelling difference(s) \
@@ -324,7 +333,11 @@ fn bsr_is_not_control_flow_in_either_decoder() {
     let mut iced = IcedDecoder::with_ip(32, &bytes, 0x401000, DecoderOptions::NONE);
     let mut insn = IcedInstruction::default();
     iced.decode_out(&mut insn);
-    assert_eq!(insn.flow_control(), FlowControl::Next, "iced: BSR is not a branch");
+    assert_eq!(
+        insn.flow_control(),
+        FlowControl::Next,
+        "iced: BSR is not a branch"
+    );
     assert_eq!(insn.len(), 3, "iced: BSR EAX,EDX is 3 bytes");
 
     // Sleigh's verdict must match: no terminator at the BSR.
@@ -387,7 +400,10 @@ fn x87_fwait_prefix_is_a_known_boundary_difference() {
         SleighDecoder::new(Architecture::X86_32).decode(&bytes, 0x401000)
     })
     .expect("sleigh decodes the pair");
-    assert_eq!(sleigh.len, 3, "sleigh folds the prefix into one instruction");
+    assert_eq!(
+        sleigh.len, 3,
+        "sleigh folds the prefix into one instruction"
+    );
     assert!(
         sleigh.disassembly.to_ascii_uppercase().contains("FSTSW")
             || sleigh.disassembly.to_ascii_uppercase().contains("FNSTSW"),

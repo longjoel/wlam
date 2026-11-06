@@ -42,9 +42,9 @@ pub use registers::X86_32_REGISTERS;
 
 use std::collections::BTreeMap;
 
-pub use pcode_ir::{AddressSpaceId, PcodeOp, Varnode};
-pub use ir::{BinOp, IR, Operand, UnOp};
+pub use ir::{BinOp, Operand, UnOp, IR};
 pub use pcode_ir;
+pub use pcode_ir::{AddressSpaceId, PcodeOp, Varnode};
 pub use rsleigh_api::{Architecture, Decoder};
 
 /// Stack size used for lifting work: 64 MiB.
@@ -215,7 +215,7 @@ impl Block {
 pub fn lift_block(bytes: &[u8], start: u64) -> Block {
     let mut instructions = Vec::new();
     let mut ip = start;
-    let mut terminator = Terminator::Undecodable(start);
+    let terminator;
     loop {
         let index = match ip.checked_sub(start) {
             Some(i) => i as usize,
@@ -245,8 +245,12 @@ pub fn lift_block(bytes: &[u8], start: u64) -> Block {
         // incompatible integer/float types. Give each x86 instruction a 4 GiB
         // namespace while retaining its internal subtable offsets.
         let namespace = ip.wrapping_shl(32).wrapping_sub(ip.wrapping_shl(16));
-        let unique_outputs = insn.ops.iter().filter_map(pcode_ir::get_output)
-            .filter(|v|v.space == AddressSpaceId::Unique).map(|v|v.offset)
+        let unique_outputs = insn
+            .ops
+            .iter()
+            .filter_map(pcode_ir::get_output)
+            .filter(|v| v.space == AddressSpaceId::Unique)
+            .map(|v| v.offset)
             .collect::<std::collections::BTreeSet<_>>();
         for op in &mut insn.ops {
             // Indirect memory transfers may name a Unique pointer using a RAM
@@ -269,7 +273,11 @@ pub fn lift_block(bytes: &[u8], start: u64) -> Block {
         // immediate ST0 copy to the CallOther output.
         for i in 0..ops.len().saturating_sub(1) {
             let result = match &ops[i] {
-                IR::Userop { id: 99 | 102 | 103 | 105, dst: Some(dst), .. } => Some(dst.clone()),
+                IR::Userop {
+                    id: 99 | 102 | 103 | 105,
+                    dst: Some(dst),
+                    ..
+                } => Some(dst.clone()),
                 _ => None,
             };
             if let Some(result) = result {
@@ -292,10 +300,13 @@ pub fn lift_block(bytes: &[u8], start: u64) -> Block {
         // other blocks. Collapse that shape into a structured loop instead of
         // leaving both branches as unsupported ops.
         ops = collapse_micro_loop(&insn.ops, ops, ip, next);
-        let mnemonic=insn.disassembly.split_whitespace().next().unwrap_or("");
-        if ["STOS","SCAS","CMPS","LODS"].iter().any(|name|mnemonic.starts_with(name))
-            || mnemonic.starts_with("MOVS") && insn.disassembly.contains("ES:") {
-            snapshot_string_addresses(&mut ops,ip);
+        let mnemonic = insn.disassembly.split_whitespace().next().unwrap_or("");
+        if ["STOS", "SCAS", "CMPS", "LODS"]
+            .iter()
+            .any(|name| mnemonic.starts_with(name))
+            || mnemonic.starts_with("MOVS") && insn.disassembly.contains("ES:")
+        {
+            snapshot_string_addresses(&mut ops, ip);
         }
         let unlowered = count_unlowered(&ops);
         let mut term = None;
@@ -348,7 +359,9 @@ pub fn lift_block(bytes: &[u8], start: u64) -> Block {
                 // internal piece, which for `CALL [slot]` is one byte into the
                 // displacement.
                 PcodeOp::CallInd { .. } => term = Some(Terminator::CallInd { resume: next }),
-                PcodeOp::CallOther { func_id, .. } if classify_userop(*func_id) == Userop::Breakpoint => {
+                PcodeOp::CallOther { func_id, .. }
+                    if classify_userop(*func_id) == Userop::Breakpoint =>
+                {
                     term = Some(Terminator::Trap(next));
                 }
                 _ => {}
@@ -370,7 +383,12 @@ pub fn lift_block(bytes: &[u8], start: u64) -> Block {
             break;
         }
     }
-    Block { start, end: ip, instructions, terminator }
+    Block {
+        start,
+        end: ip,
+        instructions,
+        terminator,
+    }
 }
 
 /// The x86-32 address width. A `Const` branch destination of this size is a
@@ -436,7 +454,10 @@ fn collapse_micro_loop(raw: &[PcodeOp], lowered: Vec<IR>, start: u64, next: u64)
     }
     // Only edges that stay inside this instruction are understood. A constant
     // address somewhere else is an unknown microcode shape, not a block edge.
-    if branches.iter().any(|(_, target, _)| *target != start && *target != next) {
+    if branches
+        .iter()
+        .any(|(_, target, _)| *target != start && *target != next)
+    {
         return lowered;
     }
     if branches.len() != 2 {
@@ -522,28 +543,64 @@ fn repair_x86_flagged_memory_address(ops: &mut [PcodeOp]) {
     }
 }
 
-fn snapshot_string_addresses(ops:&mut Vec<IR>,instruction:u64) {
-    let mut used=std::collections::BTreeSet::new();
-    let rewrite=|operand:&mut Operand,used:&mut std::collections::BTreeSet<&'static str>| {
-        let register=match operand {Operand::Reg {name,..} if name.as_ref()=="ESI"=>"ESI",Operand::Reg {name,..} if name.as_ref()=="EDI"=>"EDI",_=>return};
+fn snapshot_string_addresses(ops: &mut Vec<IR>, instruction: u64) {
+    let mut used = std::collections::BTreeSet::new();
+    let rewrite = |operand: &mut Operand, used: &mut std::collections::BTreeSet<&'static str>| {
+        let register = match operand {
+            Operand::Reg { name, .. } if name.as_ref() == "ESI" => "ESI",
+            Operand::Reg { name, .. } if name.as_ref() == "EDI" => "EDI",
+            _ => return,
+        };
         used.insert(register);
-        *operand=Operand::Temp {offset:(instruction<<32)|if register=="ESI" {0x80000000} else {0x80000004},size:4};
+        *operand = Operand::Temp {
+            offset: (instruction << 32)
+                | if register == "ESI" {
+                    0x80000000
+                } else {
+                    0x80000004
+                },
+            size: 4,
+        };
     };
     for op in ops.iter_mut() {
         match op {
-            IR::Copy {src,..}|IR::Un {src,..}|IR::Convert {src,..}|IR::FloatUnary {src,..}|IR::Subpiece {src,..}=>rewrite(src,&mut used),
-            IR::Load {addr,..}=>rewrite(addr,&mut used),
-            IR::Store {addr,value,..}=>{rewrite(addr,&mut used);rewrite(value,&mut used);}
-            IR::Bin {operands,..}|IR::Float {operands,..}=>{rewrite(&mut operands.0,&mut used);rewrite(&mut operands.1,&mut used);}
-            IR::MicroLoop {body,..}=>snapshot_string_addresses(body,instruction),
-            _=>{}
+            IR::Copy { src, .. }
+            | IR::Un { src, .. }
+            | IR::Convert { src, .. }
+            | IR::FloatUnary { src, .. }
+            | IR::Subpiece { src, .. } => rewrite(src, &mut used),
+            IR::Load { addr, .. } => rewrite(addr, &mut used),
+            IR::Store { addr, value, .. } => {
+                rewrite(addr, &mut used);
+                rewrite(value, &mut used);
+            }
+            IR::Bin { operands, .. } | IR::Float { operands, .. } => {
+                rewrite(&mut operands.0, &mut used);
+                rewrite(&mut operands.1, &mut used);
+            }
+            IR::MicroLoop { body, .. } => snapshot_string_addresses(body, instruction),
+            _ => {}
         }
     }
-    let snapshots=used.into_iter().map(|name|IR::Copy {
-        dst:Operand::Temp {offset:(instruction<<32)|if name=="ESI" {0x80000000} else {0x80000004},size:4},
-        src:Operand::Reg {name:name.into(),size:4},
-    }).collect::<Vec<_>>();
-    ops.splice(0..0,snapshots);
+    let snapshots = used
+        .into_iter()
+        .map(|name| IR::Copy {
+            dst: Operand::Temp {
+                offset: (instruction << 32)
+                    | if name == "ESI" {
+                        0x80000000
+                    } else {
+                        0x80000004
+                    },
+                size: 4,
+            },
+            src: Operand::Reg {
+                name: name.into(),
+                size: 4,
+            },
+        })
+        .collect::<Vec<_>>();
+    ops.splice(0..0, snapshots);
 }
 
 /// Count unsupported ops, including those nested in reconstructed microcode
@@ -552,9 +609,9 @@ fn count_unlowered(ops: &[IR]) -> usize {
     ops.iter()
         .map(|op| match op {
             IR::Unsupported(_) => 1,
-            IR::MicroLoop { head, body, tail, .. } => {
-                count_unlowered(head) + count_unlowered(body) + count_unlowered(tail)
-            }
+            IR::MicroLoop {
+                head, body, tail, ..
+            } => count_unlowered(head) + count_unlowered(body) + count_unlowered(tail),
             _ => 0,
         })
         .sum()
@@ -579,12 +636,22 @@ impl IR {
             IR::Load { dst, addr, size } => format!("{} = *{}{{{size}}}", o(dst), o(addr)),
             IR::Store { addr, value, size } => format!("*{}{{{size}}} = {}", o(addr), o(value)),
             IR::Bin { op, dst, operands } => {
-                format!("{} = {op:?}({}, {})", o(dst), o(&operands.0), o(&operands.1))
+                format!(
+                    "{} = {op:?}({}, {})",
+                    o(dst),
+                    o(&operands.0),
+                    o(&operands.1)
+                )
             }
             IR::Float { op, dst, operands } => {
                 // `~` marks a real-number operation so a dumped block cannot be
                 // mistaken for integer arithmetic with a same-named mnemonic.
-                format!("{} = ~{op:?}({}, {})", o(dst), o(&operands.0), o(&operands.1))
+                format!(
+                    "{} = ~{op:?}({}, {})",
+                    o(dst),
+                    o(&operands.0),
+                    o(&operands.1)
+                )
             }
             IR::FloatUnary { op, dst, src } => format!("{} = ~{op:?}({})", o(dst), o(src)),
             IR::Un { op, dst, src } => format!("{} = {op:?}({})", o(dst), o(src)),
@@ -609,17 +676,25 @@ impl IR {
                     None => format!("{call}  ; userop {id}"),
                 }
             }
-            IR::MicroLoop { head, exit, body, repeat, tail } => {
+            IR::MicroLoop {
+                head,
+                exit,
+                body,
+                repeat,
+                tail,
+            } => {
                 let text = |ops: &[IR]| {
-                    ops.iter().map(|op| op.text()).collect::<Vec<_>>().join("; ")
+                    ops.iter()
+                        .map(|op| op.text())
+                        .collect::<Vec<_>>()
+                        .join("; ")
                 };
-                let exit = exit.as_ref().map_or_else(String::new, |c| {
-                    format!(", exit if {}", o(c))
-                });
-                let repeat = repeat.as_ref().map_or_else(
-                    || "repeat".to_string(),
-                    |c| format!("repeat if {}", o(c)),
-                );
+                let exit = exit
+                    .as_ref()
+                    .map_or_else(String::new, |c| format!(", exit if {}", o(c)));
+                let repeat = repeat
+                    .as_ref()
+                    .map_or_else(|| "repeat".to_string(), |c| format!("repeat if {}", o(c)));
                 format!(
                     "micro-loop {{ {}{exit}; {}; {repeat} }} tail {{ {} }}",
                     text(head),
@@ -663,8 +738,17 @@ pub fn scan(bytes: &[u8], base: u64) -> Coverage {
                 cov.instructions += 1;
                 for op in &insn.ops {
                     if let PcodeOp::CallOther { func_id, .. } = op {
-                        let mnemonic = insn.disassembly.split(' ').next().unwrap_or("?").to_string();
-                        *cov.userops.entry(*func_id).or_default().entry(mnemonic).or_insert(0) += 1;
+                        let mnemonic = insn
+                            .disassembly
+                            .split(' ')
+                            .next()
+                            .unwrap_or("?")
+                            .to_string();
+                        *cov.userops
+                            .entry(*func_id)
+                            .or_default()
+                            .entry(mnemonic)
+                            .or_insert(0) += 1;
                     }
                 }
                 index += insn.len as usize;
@@ -686,13 +770,15 @@ mod tests {
 
     #[test]
     fn instruction_temporaries_have_disjoint_namespaces() {
-        let lifted = block(&[0xd9,0xeb,0xa5,0xa5,0xdd,0x5d,0x8a,0xc3], 0x1000);
+        let lifted = block(&[0xd9, 0xeb, 0xa5, 0xa5, 0xdd, 0x5d, 0x8a, 0xc3], 0x1000);
         let mut count = 0;
         for instruction in &lifted.instructions {
             for op in &instruction.ops {
                 let destination = match op {
-                    IR::Copy { dst, .. } | IR::Load { dst, .. } |
-                    IR::Bin { dst, .. } | IR::Convert { dst, .. } => Some(dst),
+                    IR::Copy { dst, .. }
+                    | IR::Load { dst, .. }
+                    | IR::Bin { dst, .. }
+                    | IR::Convert { dst, .. } => Some(dst),
                     _ => None,
                 };
                 if let Some(Operand::Temp { offset, .. }) = destination {
@@ -709,7 +795,11 @@ mod tests {
     fn lift(bytes: &[u8], at: u64) -> Vec<IR> {
         let owned = bytes.to_vec();
         with_big_stack(move || {
-            lift_block(&owned, at).instructions.into_iter().flat_map(|i| i.ops).collect()
+            lift_block(&owned, at)
+                .instructions
+                .into_iter()
+                .flat_map(|i| i.ops)
+                .collect()
         })
     }
 
@@ -726,8 +816,14 @@ mod tests {
         assert_eq!(
             ops,
             vec![IR::Copy {
-                dst: Operand::Reg { name: "EAX".into(), size: 4 },
-                src: Operand::Const { value: 0x1122_3344, size: 4 },
+                dst: Operand::Reg {
+                    name: "EAX".into(),
+                    size: 4
+                },
+                src: Operand::Const {
+                    value: 0x1122_3344,
+                    size: 4
+                },
             }]
         );
     }
@@ -737,16 +833,29 @@ mod tests {
         // add eax, 5 (83 c0 05): EAX is read, result written, flags updated.
         let ops = lift(&[0x83, 0xc0, 0x05], 0x1000);
         let writes_eax = ops.iter().any(|o| match o {
-            IR::Bin { dst: Operand::Reg { name, .. }, op: BinOp::Add, .. } => &**name == "EAX",
+            IR::Bin {
+                dst: Operand::Reg { name, .. },
+                op: BinOp::Add,
+                ..
+            } => &**name == "EAX",
             _ => false,
         });
         // Sleigh writes flags directly as arithmetic results (e.g. CF is the
         // IntCarry multiplier output), not through an intermediate Copy.
         let writes = |o: &IR| -> Option<Box<str>> {
             match o {
-                IR::Copy { dst: Operand::Reg { name, .. }, .. }
-                | IR::Bin { dst: Operand::Reg { name, .. }, .. }
-                | IR::Un { dst: Operand::Reg { name, .. }, .. } => Some(name.clone()),
+                IR::Copy {
+                    dst: Operand::Reg { name, .. },
+                    ..
+                }
+                | IR::Bin {
+                    dst: Operand::Reg { name, .. },
+                    ..
+                }
+                | IR::Un {
+                    dst: Operand::Reg { name, .. },
+                    ..
+                } => Some(name.clone()),
                 _ => None,
             }
         };
@@ -755,9 +864,12 @@ mod tests {
             .filter_map(writes)
             .filter(|n| matches!(&**n, "ZF" | "SF" | "CF" | "OF" | "PF"))
             .collect();
-        assert_eq!(flag_writes.len(), 5, "ADD must define all five flags: {ops:?}");
+        assert_eq!(
+            flag_writes.len(),
+            5,
+            "ADD must define all five flags: {ops:?}"
+        );
         assert!(writes_eax, "EAX must be written: {ops:?}");
-
     }
 
     #[test]
@@ -795,18 +907,25 @@ mod tests {
             if format!("{op:?}").contains(reg) {
                 return true;
             }
-            let Operand::Temp { offset, .. } = &op else { continue };
+            let Operand::Temp { offset, .. } = &op else {
+                continue;
+            };
             if !seen.insert(*offset) {
                 continue;
             }
             for ir in ops {
-                let dst_is = |d: &Operand| matches!(d, Operand::Temp { offset: o, .. } if o == offset);
+                let dst_is =
+                    |d: &Operand| matches!(d, Operand::Temp { offset: o, .. } if o == offset);
                 match ir {
                     IR::Bin { dst, operands, .. } if dst_is(dst) => {
                         pending.push(operands.0.clone());
                         pending.push(operands.1.clone());
                     }
-                    IR::Un { dst, src, .. } | IR::Subpiece { dst, src, .. } | IR::Copy { dst, src } if dst_is(dst) => {
+                    IR::Un { dst, src, .. }
+                    | IR::Subpiece { dst, src, .. }
+                    | IR::Copy { dst, src }
+                        if dst_is(dst) =>
+                    {
                         pending.push(src.clone())
                     }
                     _ => {}
@@ -821,13 +940,21 @@ mod tests {
         // mov eax, fs:[0] (64 a1 00000000) -- the MSVC SEH prologue idiom.
         let ops = lift(&[0x64, 0xa1, 0x00, 0x00, 0x00, 0x00], 0x1000);
         let has_segment_base = ops.iter().any(|o| match o {
-            IR::Bin { op: BinOp::Add, operands, .. } => {
-                format!("{operands:?}").contains("FS_OFFSET")
-            }
+            IR::Bin {
+                op: BinOp::Add,
+                operands,
+                ..
+            } => format!("{operands:?}").contains("FS_OFFSET"),
             _ => false,
         });
-        assert!(has_segment_base, "fs: access must add FS_OFFSET, got {ops:?}");
-        assert!(ops.iter().any(|o| matches!(o, IR::Load { .. })), "and must load");
+        assert!(
+            has_segment_base,
+            "fs: access must add FS_OFFSET, got {ops:?}"
+        );
+        assert!(
+            ops.iter().any(|o| matches!(o, IR::Load { .. })),
+            "and must load"
+        );
     }
 
     #[test]
@@ -844,7 +971,11 @@ mod tests {
         let (addr, value) = ops
             .iter()
             .find_map(|o| match o {
-                IR::Store { addr, value, size: 4 } => Some((addr.clone(), value.clone())),
+                IR::Store {
+                    addr,
+                    value,
+                    size: 4,
+                } => Some((addr.clone(), value.clone())),
                 _ => None,
             })
             .expect("a Store");
@@ -864,7 +995,15 @@ mod tests {
         // x86 system page. Both are absolute displacements, and both are
         // exactly the places a Windows program addresses through fs:.
         for disp in [0x0000_0000u32, 0x7FFE_0000] {
-            let bytes = [0x64, 0x8b, 0x05, disp.to_le_bytes()[0], disp.to_le_bytes()[1], disp.to_le_bytes()[2], disp.to_le_bytes()[3]];
+            let bytes = [
+                0x64,
+                0x8b,
+                0x05,
+                disp.to_le_bytes()[0],
+                disp.to_le_bytes()[1],
+                disp.to_le_bytes()[2],
+                disp.to_le_bytes()[3],
+            ];
             let ops = lift(&bytes, 0x1000);
             let (addr, _) = ops
                 .iter()
@@ -896,7 +1035,10 @@ mod tests {
         // Either the address is literally the constant, or it is computed by
         // an op that adds zero to it (a zero DS base folds to a no-op).
         if let Operand::Const { value, .. } = &addr {
-            assert_eq!(*value, 0x41106c, "the literal address must survive: {ops:?}");
+            assert_eq!(
+                *value, 0x41106c,
+                "the literal address must survive: {ops:?}"
+            );
             return;
         }
         assert!(
@@ -909,10 +1051,19 @@ mod tests {
     fn call_through_iat_lowers_to_indirect_call() {
         // call dword ptr [0x41106c] (ff 15 6c104100)
         let block = block(&[0xff, 0x15, 0x6c, 0x10, 0x41, 0x00], 0x40ccd8);
-        let is_call_ind = block.instructions.iter().flat_map(|i| &i.ops).any(|o| matches!(o, IR::CallInd { .. }));
+        let is_call_ind = block
+            .instructions
+            .iter()
+            .flat_map(|i| &i.ops)
+            .any(|o| matches!(o, IR::CallInd { .. }));
         assert!(is_call_ind, "{:?}", block.instructions);
         // The return address is pushed, so ESP is adjusted by a Store.
-        let stores = block.instructions.iter().flat_map(|i| &i.ops).filter(|o| matches!(o, IR::Store { .. })).count();
+        let stores = block
+            .instructions
+            .iter()
+            .flat_map(|i| &i.ops)
+            .filter(|o| matches!(o, IR::Store { .. }))
+            .count();
         assert_eq!(stores, 1, "call must push exactly one return address");
     }
 
@@ -924,7 +1075,10 @@ mod tests {
             block.terminator,
             // jb rel8 sits at 0x1003, is 2 bytes, rel8 = +5 -> taken 0x100a;
             // falling through continues at the jump's own end address, 0x1005.
-            Terminator::Conditional { taken: Some(0x100a), not_taken: 0x1005 }
+            Terminator::Conditional {
+                taken: Some(0x100a),
+                not_taken: 0x1005
+            }
         );
     }
 
@@ -933,7 +1087,10 @@ mod tests {
         let block = block(&[0xc3], 0x1000);
         assert_eq!(block.terminator, Terminator::Return);
         let fills_eip = format!("{:?}", block.instructions);
-        assert!(fills_eip.contains("EIP") || fills_eip.contains("ESP"), "{fills_eip}");
+        assert!(
+            fills_eip.contains("EIP") || fills_eip.contains("ESP"),
+            "{fills_eip}"
+        );
     }
 
     #[test]
@@ -971,7 +1128,10 @@ mod tests {
     fn every_register_entry_is_unique() {
         let mut seen = std::collections::BTreeSet::new();
         for (off, size, name) in X86_32_REGISTERS {
-            assert!(seen.insert((*off, *size)), "{name} duplicates offset {off:#x}/{size}");
+            assert!(
+                seen.insert((*off, *size)),
+                "{name} duplicates offset {off:#x}/{size}"
+            );
             assert!(!name.is_empty());
             assert!(*size > 0);
         }
@@ -996,7 +1156,11 @@ mod tests {
             Terminator::Return => {}
             ref other => panic!("BSR must not terminate the block; got {other:?}"),
         }
-        assert_eq!(block.instructions.len(), 3, "BSR, XOR and RET must all be lifted");
+        assert_eq!(
+            block.instructions.len(),
+            3,
+            "BSR, XOR and RET must all be lifted"
+        );
         assert_eq!(block.end, 0x401007);
     }
 
@@ -1011,8 +1175,14 @@ mod tests {
         let bytes = [0x75, 0xfc, 0x90, 0x90];
         let block = with_big_stack(move || lift_block(&bytes, 0x401000));
         match block.terminator {
-            Terminator::Conditional { taken: Some(t), not_taken } => {
-                assert_eq!(t, 0x400ffe, "the branch target must be the resolved absolute address");
+            Terminator::Conditional {
+                taken: Some(t),
+                not_taken,
+            } => {
+                assert_eq!(
+                    t, 0x400ffe,
+                    "the branch target must be the resolved absolute address"
+                );
                 assert_eq!(not_taken, 0x401002, "fall-through is the next instruction");
             }
             ref other => panic!("JNZ must be a conditional terminator; got {other:?}"),
@@ -1041,7 +1211,11 @@ mod tests {
             })
             .expect("FMUL must lift to IR::Float, not Nop");
 
-        assert_eq!(mul.0, crate::ir::FloatOp::Mul, "the operation is a multiply");
+        assert_eq!(
+            mul.0,
+            crate::ir::FloatOp::Mul,
+            "the operation is a multiply"
+        );
         assert!(
             matches!(mul.1, Operand::Reg { ref name, .. } if &**name == "ST0"),
             "result goes to ST0, got {:?}",

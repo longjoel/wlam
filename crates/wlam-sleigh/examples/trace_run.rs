@@ -15,7 +15,10 @@ use std::sync::{Arc, Mutex};
 use wlam_harness::{load_image, run_entry_diagnosing, seed_register, Api, Host, IatPolicy};
 
 fn register(data: &[u8], name: &str) -> u32 {
-    let index = wlam_emit::GUEST_LOCALS.iter().position(|n| *n == name).expect("register exists");
+    let index = wlam_emit::GUEST_LOCALS
+        .iter()
+        .position(|n| *n == name)
+        .expect("register exists");
     let at = wlam_emit::snapshot_address(index) as usize;
     u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
 }
@@ -25,7 +28,9 @@ fn read_u32(data: &[u8], address: u32, words: u32) -> Vec<u32> {
     (0..words)
         .filter_map(|i| {
             let at = (address as usize).checked_add(i as usize * 4)?;
-            Some(u32::from_le_bytes(data.get(at..at + 4)?.try_into().unwrap()))
+            Some(u32::from_le_bytes(
+                data.get(at..at + 4)?.try_into().unwrap(),
+            ))
         })
         .collect()
 }
@@ -57,8 +62,8 @@ fn main() -> Result<(), String> {
     let mut config = wlam_harness::wasmi::Config::default();
     config.consume_fuel(true);
     let engine = wlam_harness::wasmi::Engine::new(&config);
-    let module = wlam_harness::wasmi::Module::new(&engine, &module_bytes)
-        .map_err(|e| e.to_string())?;
+    let module =
+        wlam_harness::wasmi::Module::new(&engine, &module_bytes).map_err(|e| e.to_string())?;
     let mut store = wlam_harness::wasmi::Store::new(&engine, ());
     store.set_fuel(2_000_000).map_err(|e| e.to_string())?;
     let mut linker = wlam_harness::wasmi::Linker::<()>::new(&engine);
@@ -75,7 +80,10 @@ fn main() -> Result<(), String> {
         let breakpoints = Arc::clone(&breakpoints);
         let func = wlam_harness::wasmi::Func::wrap(
             &mut store,
-            move |mut caller: wlam_harness::wasmi::Caller<'_, ()>, args_ptr: i32, _ret: i32| -> i32 {
+            move |mut caller: wlam_harness::wasmi::Caller<'_, ()>,
+                  args_ptr: i32,
+                  _ret: i32|
+                  -> i32 {
                 let memory = caller.get_export("memory").and_then(|e| e.into_memory());
                 let mut h = host.lock().unwrap_or_else(|e| e.into_inner());
                 match memory {
@@ -105,14 +113,18 @@ fn main() -> Result<(), String> {
                 }
             },
         );
-        linker.define(&module_name, &name, func).map_err(|e| e.to_string())?;
+        linker
+            .define(&module_name, &name, func)
+            .map_err(|e| e.to_string())?;
     }
     let instance = linker
         .instantiate(&mut store, &module)
         .map_err(|e| e.to_string())?
         .start(&mut store)
         .map_err(|e| e.to_string())?;
-    let memory = instance.get_memory(&store, "memory").ok_or("module has no guest memory")?;
+    let memory = instance
+        .get_memory(&store, "memory")
+        .ok_or("module has no guest memory")?;
     load_image(memory.data_mut(&mut store), &pe, IatPolicy::Poison).map_err(|e| e.to_string())?;
     let mut seed = Vec::new();
     seed_register(&mut seed, 4, 0x70000);
@@ -121,7 +133,10 @@ fn main() -> Result<(), String> {
     // `--call FUNCTION` runs one exported guest function instead of the entry
     // point, which isolates a function from the rest of the program.
     let call = std::env::args().collect::<Vec<_>>();
-    let named = call.iter().position(|a| a == "--call").and_then(|i| call.get(i + 1));
+    let named = call
+        .iter()
+        .position(|a| a == "--call")
+        .and_then(|i| call.get(i + 1));
     let outcome = match named {
         Some(function) => {
             for (addr, value) in &seed {
@@ -129,7 +144,9 @@ fn main() -> Result<(), String> {
                     .write(&mut store, *addr as usize, &value.to_le_bytes())
                     .map_err(|e| e.to_string())?;
             }
-            let func = instance.get_func(&store, function).ok_or("no such export")?;
+            let func = instance
+                .get_func(&store, function)
+                .ok_or("no such export")?;
             match func.call(&mut store, &[], &mut []) {
                 Ok(()) => Ok(()),
                 Err(e) => Err(wlam_harness::RunError::Trap(format!("{e:?}"))),
@@ -155,7 +172,10 @@ fn main() -> Result<(), String> {
     for (index, name) in wlam_emit::GUEST_LOCALS.iter().enumerate() {
         let at = wlam_emit::snapshot_address(index) as usize;
         if let Some(bytes) = data.get(at..at + 4) {
-            println!("REGISTER: {name}={:#010x}", u32::from_le_bytes(bytes.try_into().unwrap()));
+            println!(
+                "REGISTER: {name}={:#010x}",
+                u32::from_le_bytes(bytes.try_into().unwrap())
+            );
         }
     }
     Ok(())

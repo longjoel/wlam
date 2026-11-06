@@ -16,15 +16,18 @@ fn main() -> Result<(), String> {
     }
     let image = std::fs::read(&args[0]).map_err(|e| e.to_string())?;
     let pe = wlam_pe::Pe::parse(&image).map_err(|e| e.to_string())?;
-    let module_bytes =
-        std::fs::read(std::path::Path::new(&args[1]).join("guest.wasm")).map_err(|e| e.to_string())?;
+    let module_bytes = std::fs::read(std::path::Path::new(&args[1]).join("guest.wasm"))
+        .map_err(|e| e.to_string())?;
     let fuel: u64 = args.get(3).and_then(|f| f.parse().ok()).unwrap_or(100_000);
     let mut host = Host::new();
     wlam_host::kernel32(&mut host);
     let host = Arc::new(Mutex::new(host));
-    let (mut store, instance) = instantiate(&module_bytes, host.clone()).map_err(|e| e.to_string())?;
+    let (mut store, instance) =
+        instantiate(&module_bytes, host.clone()).map_err(|e| e.to_string())?;
     store.set_fuel(fuel).map_err(|e| e.to_string())?;
-    let memory = instance.get_memory(&store, "memory").ok_or("module has no guest memory")?;
+    let memory = instance
+        .get_memory(&store, "memory")
+        .ok_or("module has no guest memory")?;
     load_image(memory.data_mut(&mut store), &pe, IatPolicy::Poison).map_err(|e| e.to_string())?;
 
     // Entry state identical to `probe_image`, except that ESP points at a
@@ -40,13 +43,18 @@ fn main() -> Result<(), String> {
             .write(&mut store, *addr as usize, &value.to_le_bytes())
             .map_err(|e| e.to_string())?;
     }
-    let func = instance.get_func(&store, &args[2]).ok_or_else(|| format!("no export {}", args[2]))?;
+    let func = instance
+        .get_func(&store, &args[2])
+        .ok_or_else(|| format!("no export {}", args[2]))?;
     let result = func.call(&mut store, &[], &mut []);
     println!("RESULT: {result:?}");
     let data = memory.data(&store);
     for (index, name) in wlam_emit::GUEST_LOCALS.iter().enumerate() {
         let at = wlam_emit::snapshot_address(index) as usize;
-        println!("REGISTER: {name}={:#010x}", u32::from_le_bytes(data[at..at + 4].try_into().unwrap()));
+        println!(
+            "REGISTER: {name}={:#010x}",
+            u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
+        );
     }
     let host = host.lock().unwrap_or_else(|e| e.into_inner());
     for (api, count) in host.call_counts().iter().filter(|(_, c)| **c > 0) {

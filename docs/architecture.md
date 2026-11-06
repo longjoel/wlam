@@ -69,7 +69,7 @@ translation and far-pointer context emulation for SEH.
 | `wlam-sleigh` | x86 → P-code | discovery, ABI decisions |
 | `wlam-translate` | discovery, call resolution, translation orchestration | emitting bytes |
 | `wlam-emit` | P-code → wasm binary | parsing anything |
-| `wlam-host` | Win32 API implementation | interpreting guest code |
+| `wlam-host` | Win32 API and MSVCRT replacement implementation | interpreting guest code |
 | `wlam-harness` | differential native-vs-translated execution | being part of the product |
 | `wlam-cli` | `analyze` / `recompile` / `run` | business logic |
 

@@ -12,7 +12,11 @@ fn main() {
     let prog = with_big_stack(move || discover(&pe, 64));
     let starts: BTreeSet<u64> = prog.block_starts().into_iter().collect();
 
-    let missing: Vec<u64> = entries.iter().copied().filter(|a| !starts.contains(a)).collect();
+    let missing: Vec<u64> = entries
+        .iter()
+        .copied()
+        .filter(|a| !starts.contains(a))
+        .collect();
     println!(
         "prologue candidates: {}, covered: {}, missing: {}",
         entries.len(),
@@ -39,10 +43,13 @@ fn main() {
         *by_kind.entry(k).or_default() += 1;
     }
     println!("block ends: {by_kind:?}");
-    println!("unresolved indirect sites: {}", prog.unresolved_indirect().len());
+    println!(
+        "unresolved indirect sites: {}",
+        prog.unresolved_indirect().len()
+    );
     for s in prog.unresolved_indirect().iter().take(20) {
         // Show the block's last instruction to explain each one.
-        if let Some(b) = prog.blocks().find(|b| b.start == *s) {
+        if prog.blocks().any(|b| b.start == *s) {
             println!("  {s:#x}");
         }
     }

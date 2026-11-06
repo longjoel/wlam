@@ -44,7 +44,9 @@ fn registers_for(blocks: &BTreeMap<u64, wlam_emit::ir::Block>) -> Vec<String> {
 /// that was never checked. Both are now anchored to the source location.
 fn repo_root() -> std::path::PathBuf {
     let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    here.parent().and_then(|p| p.parent()).map_or_else(|| here.to_path_buf(), |p| p.to_path_buf())
+    here.parent()
+        .and_then(|p| p.parent())
+        .map_or_else(|| here.to_path_buf(), |p| p.to_path_buf())
 }
 
 /// Run `wasm-validate` over the emitted module.
@@ -131,7 +133,9 @@ fn main() {
     let mut blocks = BTreeMap::new();
     for b in prog.blocks() {
         let rva = (b.start - base) as u32;
-        let Some(idx) = pe.section_of(rva) else { continue };
+        let Some(idx) = pe.section_of(rva) else {
+            continue;
+        };
         let sec = &pe.sections[idx];
         let off = (rva - sec.virtual_address) as usize;
         if off >= sec.data.len() {
@@ -152,9 +156,16 @@ fn main() {
     let mut p = partition(&entries, &blocks, &regs);
     p.register_host_imports(&blocks, |slot| by_slot.get(&slot).cloned());
 
-    let gaps = p.host_imports.values().filter(|i| i.library == "wlam.unsupported")
-        .map(|i| i.name.as_str()).collect::<std::collections::BTreeSet<_>>();
-    println!("SCOPE: module validation only; {} unsupported-operation diagnostics trap if reached", gaps.len());
+    let gaps = p
+        .host_imports
+        .values()
+        .filter(|i| i.library == "wlam.unsupported")
+        .map(|i| i.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    println!(
+        "SCOPE: module validation only; {} unsupported-operation diagnostics trap if reached",
+        gaps.len()
+    );
     for gap in gaps.iter().take(5) {
         println!("GAP: {gap}");
     }

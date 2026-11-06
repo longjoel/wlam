@@ -3,11 +3,43 @@ use crate::objects::Handles;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 pub const WM_CREATE: u32 = 1;
 pub const WM_DESTROY: u32 = 2;
-pub const WM_PAINT: u32 = 15;
-pub const WM_QUIT: u32 = 18;
+pub const WM_MOVE: u32 = 3;
 pub const WM_SIZE: u32 = 5;
+pub const WM_SYSCOMMAND: u32 = 0x0112;
+pub const WM_ACTIVATE: u32 = 6;
+pub const WM_CLOSE: u32 = 16;
+pub const WM_QUIT: u32 = 18;
+pub const WM_SHOWWINDOW: u32 = 24;
+pub const WM_PAINT: u32 = 15;
 pub const WM_NCCREATE: u32 = 129;
 pub const WM_NCDESTROY: u32 = 130;
+/// System-menu commands delivered in the low word of `WM_SYSCOMMAND`.
+pub const SC_SIZE: u32 = 0xf000;
+pub const SC_MOVE: u32 = 0xf010;
+pub const SC_MINIMIZE: u32 = 0xf020;
+pub const SC_MAXIMIZE: u32 = 0xf030;
+pub const SC_CLOSE: u32 = 0xf060;
+pub const SC_RESTORE: u32 = 0xf120;
+/// `ShowWindow` commands. The page's window chrome sends the same values the
+/// guest would pass to `ShowWindow`, so both paths share one state machine.
+pub const SW_HIDE: u32 = 0;
+pub const SW_SHOWNORMAL: u32 = 1;
+pub const SW_SHOWMINIMIZED: u32 = 2;
+pub const SW_SHOWMAXIMIZED: u32 = 3;
+pub const SW_MAXIMIZE: u32 = 3;
+pub const SW_SHOWNOACTIVATE: u32 = 4;
+pub const SW_SHOW: u32 = 5;
+pub const SW_MINIMIZE: u32 = 6;
+pub const SW_SHOWMINNOACTIVE: u32 = 7;
+pub const SW_SHOWNA: u32 = 8;
+pub const SW_RESTORE: u32 = 9;
+pub const SW_SHOWDEFAULT: u32 = 10;
+/// `WM_SIZE` wParam values describing the transition.
+pub const SIZE_RESTORED: u32 = 0;
+pub const SIZE_MINIMIZED: u32 = 1;
+pub const SIZE_MAXIMIZED: u32 = 2;
+pub const SIZE_MAXSHOW: u32 = 3;
+pub const SIZE_MAXHIDE: u32 = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Message {
     pub window: u32,
@@ -48,6 +80,12 @@ pub struct Window {
     pub x: i32,
     pub y: i32,
     pub style: u32,
+    /// `SW_MINIMIZE`/`SC_MINIMIZE` left the window minimized. The page mirrors
+    /// this in CSS, but the state lives here so `DefWindowProcA` and
+    /// `GetWindowPlacement` report the same answer as a real window manager.
+    pub minimized: bool,
+    /// `SW_MAXIMIZE`/`SC_MAXIMIZE` expanded the window to the work area.
+    pub maximized: bool,
 }
 #[derive(Debug)]
 enum Pending {
@@ -122,6 +160,9 @@ impl Windows {
         self.classes.insert(name, procedure);
         Ok(())
     }
+    pub fn unregister(&mut self, name: &[u8]) -> bool {
+        self.classes.remove(name).is_some()
+    }
     pub fn get(&self, window: u32) -> Result<&Window, WindowError> {
         self.windows.get(window).ok_or(WindowError::InvalidHandle)
     }
@@ -150,16 +191,34 @@ impl Windows {
         Ok(())
     }
     pub fn is_visible(&self, mut handle: u32) -> bool {
-        if handle == 0 { return false; }
+        if handle == 0 {
+            return false;
+        }
         let mut depth = 0;
         while handle != 0 {
-            let Some(window) = self.windows.get(handle) else { return false; };
-            if !window.visible { return false; }
+            let Some(window) = self.windows.get(handle) else {
+                return false;
+            };
+            if !window.visible {
+                return false;
+            }
             handle = window.parent;
             depth += 1;
-            if depth > 64 { return false; }
+            if depth > 64 {
+                return false;
+            }
         }
         true
+    }
+    pub fn children(&self, parent: u32) -> Vec<u32> {
+        self.order
+            .iter()
+            .copied()
+            .filter(|handle| {
+                self.get(*handle)
+                    .is_ok_and(|window| window.parent == parent)
+            })
+            .collect()
     }
     pub fn top_child(&self, parent: u32) -> u32 {
         self.order
@@ -174,11 +233,15 @@ impl Windows {
             .unwrap_or(0)
     }
     pub fn foreground_window(&self) -> u32 {
-        self.order.iter().rev().find_map(|handle| {
-            self.windows.get(*handle).and_then(|window| {
-                (window.parent == 0 && self.is_visible(*handle)).then_some(*handle)
+        self.order
+            .iter()
+            .rev()
+            .find_map(|handle| {
+                self.windows.get(*handle).and_then(|window| {
+                    (window.parent == 0 && self.is_visible(*handle)).then_some(*handle)
+                })
             })
-        }).unwrap_or(0)
+            .unwrap_or(0)
     }
     pub fn related(&self, handle: u32, command: u32) -> u32 {
         let Some(window) = self.windows.get(handle) else {
@@ -283,9 +346,16 @@ impl Windows {
                 x: 0,
                 y: 0,
                 style: 0,
+                minimized: false,
+                maximized: false,
             })
             .ok_or(WindowError::Exhausted)?;
         self.order.push(window);
+        // Host-provided procedures (default proc and built-in controls) have no
+        // guest code to call; creation completes without WM_NCCREATE/WM_CREATE.
+        if procedure >= 0xffff_ff00 {
+            return Ok(Action::Return(window));
+        }
         self.invoke(
             Message {
                 window,
@@ -325,7 +395,7 @@ impl Windows {
                 procedure,
                 width,
                 height,
-                visible: true,
+                visible: style & 0x10000000 != 0,
                 invalid: true,
                 painting: false,
                 parent,
@@ -333,6 +403,8 @@ impl Windows {
                 x,
                 y,
                 style,
+                minimized: false,
+                maximized: false,
             })
             .ok_or(WindowError::Exhausted)?;
         self.order.push(window);
@@ -403,6 +475,13 @@ impl Windows {
     pub fn send(&mut self, message: Message) -> Result<Action, WindowError> {
         self.invoke(message, Pending::Return)
     }
+    /// Remove a window from every per-window structure.
+    pub fn remove(&mut self, window: u32) -> bool {
+        let removed = self.windows.remove(window).is_some();
+        self.order.retain(|handle| *handle != window);
+        self.queue.retain(|message| message.window != window);
+        removed
+    }
     pub fn destroy(&mut self, window: u32) -> Result<Action, WindowError> {
         self.invoke(
             Message {
@@ -417,6 +496,18 @@ impl Windows {
             },
         )
     }
+    pub fn set_enabled(&mut self, handle: u32, enabled: bool) -> Result<(), WindowError> {
+        let window = self
+            .windows
+            .get_mut(handle)
+            .ok_or(WindowError::InvalidHandle)?;
+        if enabled {
+            window.style &= !0x08000000;
+        } else {
+            window.style |= 0x08000000;
+        }
+        Ok(())
+    }
     pub fn show(&mut self, window: u32, visible: bool) -> Result<bool, WindowError> {
         let w = self
             .windows
@@ -424,6 +515,42 @@ impl Windows {
             .ok_or(WindowError::InvalidHandle)?;
         let previous = w.visible;
         w.visible = visible;
+        Ok(previous)
+    }
+    /// Apply a `ShowWindow` command. Mirrors the guest-visible state machine so
+    /// `IsIconic`, `IsZoomed`, `GetWindowPlacement` and the page's CSS agree.
+    /// Returns the previous visibility, like `ShowWindow` itself.
+    pub fn show_window(&mut self, window: u32, command: u32) -> Result<bool, WindowError> {
+        let w = self
+            .windows
+            .get_mut(window)
+            .ok_or(WindowError::InvalidHandle)?;
+        let previous = w.visible;
+        match command {
+            SW_HIDE => {
+                w.visible = false;
+            }
+            SW_MINIMIZE | SW_SHOWMINIMIZED | SW_SHOWMINNOACTIVE => {
+                w.minimized = true;
+                w.maximized = false;
+                w.visible = false;
+            }
+            SW_SHOWMAXIMIZED => {
+                w.minimized = false;
+                w.maximized = true;
+                w.visible = true;
+            }
+            SW_RESTORE => {
+                w.minimized = false;
+                w.maximized = false;
+                w.visible = true;
+            }
+            _ => {
+                // SW_SHOW, SW_SHOWNORMAL, SW_SHOWNOACTIVATE, SW_SHOWNA and
+                // SW_SHOWDEFAULT all request a normal, visible window.
+                w.visible = true;
+            }
+        }
         Ok(previous)
     }
     /// Move a valid window to the top of its sibling Z order.
@@ -434,6 +561,19 @@ impl Windows {
         self.order.retain(|handle| *handle != window);
         self.order.push(window);
         true
+    }
+    pub fn position_after(&mut self, window: u32, after: u32) -> Result<(), WindowError> {
+        self.get(window)?;
+        if after == window { return Ok(()); }
+        if !matches!(after, 0 | 1 | u32::MAX | 0xffff_fffe) { self.get(after)?; }
+        self.order.retain(|handle| *handle != window);
+        if after == 1 { self.order.insert(0, window); }
+        else if matches!(after, 0 | u32::MAX | 0xffff_fffe) { self.order.push(window); }
+        else {
+            let at = self.order.iter().position(|handle| *handle == after).ok_or(WindowError::InvalidHandle)?;
+            self.order.insert(at, window);
+        }
+        Ok(())
     }
     pub fn move_window(
         &mut self,
@@ -499,6 +639,12 @@ impl Windows {
         self.queue.push_back(message);
         Ok(())
     }
+    /// Queue a host-owned message whose target is not a real window. Multimedia
+    /// timer callbacks use a sentinel handle and are intercepted before
+    /// dispatch, so they must bypass window-handle validation.
+    pub fn post_system(&mut self, message: Message) {
+        self.queue.push_back(message);
+    }
     pub fn post_quit(&mut self, code: u32) {
         self.queue.push_back(Message {
             window: 0,
@@ -555,17 +701,13 @@ impl Windows {
                 || (filter_min == 0 && WM_PAINT <= filter_max)
                 || (filter_max == 0 && WM_PAINT >= filter_min)
                 || (filter_min..=filter_max).contains(&WM_PAINT);
-            (window_matches
-                && message_matches
-                && self.is_visible(*h)
-                && w.invalid
-                && !w.painting)
+            (window_matches && message_matches && self.is_visible(*h) && w.invalid && !w.painting)
                 .then_some(Message {
-                window: *h,
-                message: WM_PAINT,
-                wparam: 0,
-                lparam: 0,
-            })
+                    window: *h,
+                    message: WM_PAINT,
+                    wparam: 0,
+                    lparam: 0,
+                })
         })
     }
     pub fn default_result(message: u32) -> u32 {

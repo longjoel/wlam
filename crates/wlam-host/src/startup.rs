@@ -183,8 +183,6 @@ pub struct Process {
     /// recompiler does not invent a program name for an image that has none.
     command_line: &'static [u8],
     command_line_address: Option<u32>,
-    /// The environment block. This host inherits no variables.
-    environment: &'static [u8],
     environment_address: Option<u32>,
     next: u32,
 }
@@ -194,7 +192,6 @@ impl Default for Process {
         Process {
             command_line: b"",
             command_line_address: None,
-            environment: b"",
             environment_address: None,
             next: PROCESS_STRING_BASE,
         }

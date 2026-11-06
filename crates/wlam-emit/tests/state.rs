@@ -92,19 +92,42 @@ fn block_and_chained_snapshots_preserve_adjacent_doubles_and_integer() {
 #[test]
 fn float_comparisons_and_integer_conversions_produce_integer_temporaries() {
     use wlam_emit::ir::{ConvertOp, FloatOp};
-    let registers = vec!["ST0".to_string(), "ST1".to_string(), "EAX".to_string(), "ECX".to_string()];
+    let registers = vec![
+        "ST0".to_string(),
+        "ST1".to_string(),
+        "EAX".to_string(),
+        "ECX".to_string(),
+    ];
     let boolean = Operand::Temp { offset: 1, size: 1 };
     let integer = Operand::Temp { offset: 2, size: 4 };
-    let blocks = BTreeMap::from([(0x1000, Block {
-        start: 0x1000, end: 0x1001,
-        ops: vec![
-            IR::Float { op: FloatOp::Less, dst: boolean.clone(), operands: Box::new((reg("ST1", 10), reg("ST0", 10))) },
-            IR::Copy { dst: reg("EAX", 4), src: boolean },
-            IR::Convert { op: ConvertOp::FloatToInt, dst: integer.clone(), src: reg("ST0", 10) },
-            IR::Copy { dst: reg("ECX", 4), src: integer },
-        ],
-        terminator: Terminator::Return,
-    })]);
+    let blocks = BTreeMap::from([(
+        0x1000,
+        Block {
+            start: 0x1000,
+            end: 0x1001,
+            ops: vec![
+                IR::Float {
+                    op: FloatOp::Less,
+                    dst: boolean.clone(),
+                    operands: Box::new((reg("ST1", 10), reg("ST0", 10))),
+                },
+                IR::Copy {
+                    dst: reg("EAX", 4),
+                    src: boolean,
+                },
+                IR::Convert {
+                    op: ConvertOp::FloatToInt,
+                    dst: integer.clone(),
+                    src: reg("ST0", 10),
+                },
+                IR::Copy {
+                    dst: reg("ECX", 4),
+                    src: integer,
+                },
+            ],
+            terminator: Terminator::Return,
+        },
+    )]);
     let program = partition(&[0x1000], &blocks, &registers);
     let module = build_module_with_memory(&program, &blocks, 16).unwrap();
     let result = execute(&module, "entry", &registers);
@@ -116,74 +139,143 @@ fn float_comparisons_and_integer_conversions_produce_integer_temporaries() {
 fn floating_constants_are_reals_in_float_conversions() {
     use wlam_emit::ir::ConvertOp;
     let registers = vec!["ST0".to_string(), "ST1".to_string(), "EAX".to_string()];
-    let blocks = BTreeMap::from([(0x1000, Block {
-        start:0x1000,end:0x1001,
-        ops:vec![IR::Convert {
-            op:ConvertOp::FloatToFloat,dst:reg("ST0",10),
-            src:Operand::Const {value:std::f64::consts::PI.to_bits(),size:8},
-        }],
-        terminator:Terminator::Return,
-    })]);
+    let blocks = BTreeMap::from([(
+        0x1000,
+        Block {
+            start: 0x1000,
+            end: 0x1001,
+            ops: vec![IR::Convert {
+                op: ConvertOp::FloatToFloat,
+                dst: reg("ST0", 10),
+                src: Operand::Const {
+                    value: std::f64::consts::PI.to_bits(),
+                    size: 8,
+                },
+            }],
+            terminator: Terminator::Return,
+        },
+    )]);
     let program = partition(&[0x1000], &blocks, &registers);
     let module = build_module_with_memory(&program, &blocks, 16).unwrap();
-    assert_eq!(execute(&module, "entry", &registers)[0], std::f64::consts::PI.to_bits());
+    assert_eq!(
+        execute(&module, "entry", &registers)[0],
+        std::f64::consts::PI.to_bits()
+    );
 }
 
 #[test]
 fn flags_use_the_logical_width_of_a_reused_wide_temporary() {
     let registers = vec!["EAX".to_string()];
     let locals = LocalMap::new([("EAX".to_string(), 4)]);
-    for (kind, value) in [(wlam_emit::BinOp::Carry, 0xffff), (wlam_emit::BinOp::SBorrow, 0x8000)] {
+    for (kind, value) in [
+        (wlam_emit::BinOp::Carry, 0xffff),
+        (wlam_emit::BinOp::SBorrow, 0x8000),
+    ] {
         let temp = Operand::Temp { offset: 1, size: 2 };
         let ops = vec![
-            IR::Copy { dst:Operand::Temp {offset:1,size:8},src:Operand::Const {value:0,size:8} },
-            IR::Copy { dst:temp.clone(),src:Operand::Const {value,size:2} },
-            IR::Bin {op:kind,dst:reg("EAX",4),operands:Box::new((temp,Operand::Const {value:1,size:2}))},
+            IR::Copy {
+                dst: Operand::Temp { offset: 1, size: 8 },
+                src: Operand::Const { value: 0, size: 8 },
+            },
+            IR::Copy {
+                dst: temp.clone(),
+                src: Operand::Const { value, size: 2 },
+            },
+            IR::Bin {
+                op: kind,
+                dst: reg("EAX", 4),
+                operands: Box::new((temp, Operand::Const { value: 1, size: 2 })),
+            },
         ];
         let translated = translate_ops(&ops, locals.clone()).unwrap();
         let module = module_with_snapshot(&translated, &locals, &registers, &[]);
-        assert_eq!(execute(&module,"run",&registers)[0] as u32,1);
+        assert_eq!(execute(&module, "run", &registers)[0] as u32, 1);
     }
 }
 
 #[test]
 fn extended_memory_loads_compile_to_a_named_refusal() {
-    let registers=vec!["ST0".to_string(),"EIP".to_string()];
-    let blocks=BTreeMap::from([(0x1000,Block {
-        start:0x1000,end:0x1001,
-        ops:vec![IR::Load {dst:reg("ST0",10),addr:constant(0x100),size:10}],
-        terminator:Terminator::Return,
-    })]);
-    let mut program=partition(&[0x1000],&blocks,&registers);
-    program.register_host_imports(&blocks,|_|None);
-    let bytes=build_module_with_memory(&program,&blocks,16).unwrap();
-    let engine=Engine::default();let module=Module::new(&engine,&bytes[..]).unwrap();
-    let mut linker=Linker::new(&engine);let mut store=Store::new(&engine,0);
-    linker.func_wrap("wlam.unsupported","unsupported operand width 10 bytes",|mut caller:wasmi::Caller<'_,i32>,_:i32,_:i32|->i32 {
-        *caller.data_mut()+=1;0
-    }).unwrap();
-    let instance=linker.instantiate(&mut store,&module).unwrap().start(&mut store).unwrap();
-    assert!(instance.get_typed_func::<(),()>(&store,"entry").unwrap().call(&mut store,()).is_err());
-    assert_eq!(*store.data(),1);
+    let registers = vec!["ST0".to_string(), "EIP".to_string()];
+    let blocks = BTreeMap::from([(
+        0x1000,
+        Block {
+            start: 0x1000,
+            end: 0x1001,
+            ops: vec![IR::Load {
+                dst: reg("ST0", 10),
+                addr: constant(0x100),
+                size: 10,
+            }],
+            terminator: Terminator::Return,
+        },
+    )]);
+    let mut program = partition(&[0x1000], &blocks, &registers);
+    program.register_host_imports(&blocks, |_| None);
+    let bytes = build_module_with_memory(&program, &blocks, 16).unwrap();
+    let engine = Engine::default();
+    let module = Module::new(&engine, &bytes[..]).unwrap();
+    let mut linker = Linker::new(&engine);
+    let mut store = Store::new(&engine, 0);
+    linker
+        .func_wrap(
+            "wlam.unsupported",
+            "unsupported operand width 10 bytes",
+            |mut caller: wasmi::Caller<'_, i32>, _: i32, _: i32| -> i32 {
+                *caller.data_mut() += 1;
+                0
+            },
+        )
+        .unwrap();
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .unwrap()
+        .start(&mut store)
+        .unwrap();
+    assert!(instance
+        .get_typed_func::<(), ()>(&store, "entry")
+        .unwrap()
+        .call(&mut store, ())
+        .is_err());
+    assert_eq!(*store.data(), 1);
 }
 
 #[test]
 fn float_unary_operations_preserve_rounding_and_signed_zero() {
     use wlam_emit::ir::FloatUnaryOp as U;
-    let registers=vec!["ST0".to_string()];
-    for (kind,input,expected) in [
-        (U::Round,2.5f64,2.0f64),(U::Round,3.5,4.0),(U::Round,-2.5,-2.0),
-        (U::Floor,-1.25,-2.0),(U::Ceil,-1.25,-1.0),
-        (U::Neg,0.0,-0.0),(U::Abs,-0.0,0.0),(U::Sqrt,4.0,2.0),
+    let registers = vec!["ST0".to_string()];
+    for (kind, input, expected) in [
+        (U::Round, 2.5f64, 2.0f64),
+        (U::Round, 3.5, 4.0),
+        (U::Round, -2.5, -2.0),
+        (U::Floor, -1.25, -2.0),
+        (U::Ceil, -1.25, -1.0),
+        (U::Neg, 0.0, -0.0),
+        (U::Abs, -0.0, 0.0),
+        (U::Sqrt, 4.0, 2.0),
     ] {
-        let blocks=BTreeMap::from([(0x1000,Block {
-            start:0x1000,end:0x1001,
-            ops:vec![IR::FloatUnary {op:kind,dst:reg("ST0",10),src:Operand::Const {value:input.to_bits(),size:8}}],
-            terminator:Terminator::Return,
-        })]);
-        let program=partition(&[0x1000],&blocks,&registers);
-        let bytes=build_module_with_memory(&program,&blocks,16).unwrap();
-        assert_eq!(execute(&bytes,"entry",&registers)[0],expected.to_bits(),"{kind:?}({input})");
+        let blocks = BTreeMap::from([(
+            0x1000,
+            Block {
+                start: 0x1000,
+                end: 0x1001,
+                ops: vec![IR::FloatUnary {
+                    op: kind,
+                    dst: reg("ST0", 10),
+                    src: Operand::Const {
+                        value: input.to_bits(),
+                        size: 8,
+                    },
+                }],
+                terminator: Terminator::Return,
+            },
+        )]);
+        let program = partition(&[0x1000], &blocks, &registers);
+        let bytes = build_module_with_memory(&program, &blocks, 16).unwrap();
+        assert_eq!(
+            execute(&bytes, "entry", &registers)[0],
+            expected.to_bits(),
+            "{kind:?}({input})"
+        );
     }
 }
 
@@ -365,4 +457,62 @@ fn carry_and_signed_overflow_match_known_values_at_each_integer_width() {
             );
         }
     }
+}
+
+/// Sleigh reuses one unique-space offset at different widths inside a single
+/// instruction (an address scratch that later holds the 64-bit `IMUL`
+/// product). The emitter keys temps by offset *and* width, so the narrow write
+/// cannot force an i32 local that a later i64 operand then pushes into.
+#[test]
+fn a_temp_reused_at_two_widths_keeps_both_stores_independent() {
+    let registers = vec!["EAX".to_string()];
+    let narrow = Operand::Temp {
+        offset: 7,
+        size: 4,
+    };
+    let wide = Operand::Temp {
+        offset: 7,
+        size: 8,
+    };
+    let low = Operand::Temp {
+        offset: 9,
+        size: 4,
+    };
+    let blocks = BTreeMap::from([(
+        0x1000,
+        Block {
+            start: 0x1000,
+            end: 0x1001,
+            ops: vec![
+                IR::Copy {
+                    dst: narrow,
+                    src: Operand::Const {
+                        value: 0x1234,
+                        size: 4,
+                    },
+                },
+                IR::Copy {
+                    dst: wide.clone(),
+                    src: Operand::Const {
+                        value: 0x1_0000_0002,
+                        size: 8,
+                    },
+                },
+                IR::Subpiece {
+                    dst: low.clone(),
+                    src: wide,
+                    lsb: 0,
+                },
+                IR::Copy {
+                    dst: reg("EAX", 4),
+                    src: low,
+                },
+            ],
+            terminator: Terminator::Return,
+        },
+    )]);
+    let program = partition(&[0x1000], &blocks, &registers);
+    let module = build_module_with_memory(&program, &blocks, 16).unwrap();
+    // `execute` reads whole snapshot slots; EAX occupies the low 32 bits.
+    assert_eq!(execute(&module, "entry", &registers)[0] as u32, 2);
 }

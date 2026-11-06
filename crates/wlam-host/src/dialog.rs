@@ -177,6 +177,9 @@ impl DialogTemplate {
                 c.i16()?,
             )
         };
+        if count > 1024 {
+            return Err(TemplateError::TooManyControls);
+        }
         let menu = c.field()?;
         let class = c.field()?;
         let title = c.field()?;

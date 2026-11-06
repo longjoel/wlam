@@ -11,7 +11,10 @@ use std::sync::{Arc, Mutex};
 
 use wlam_emit::chain::{build_module_with_memory, partition, HostImport};
 use wlam_emit::ir as eir;
-use wlam_harness::{load_image, IatPolicy, instantiate, run_entry_diagnosing, seed_register, Host, OnRefuse, RunError};
+use wlam_harness::{
+    instantiate, load_image, run_entry_diagnosing, seed_register, Host, IatPolicy, OnRefuse,
+    RunError,
+};
 use wlam_host::kernel32;
 use wlam_pe::Pe;
 use wlam_sleigh::discover::discover;
@@ -37,7 +40,10 @@ fn build_uxn32() -> Option<Vec<u8>> {
                 base + i.iat_rva as u64,
                 HostImport {
                     library: i.library.clone(),
-                    name: i.name.clone().unwrap_or_else(|| format!("#{}", i.ordinal.unwrap_or(0))),
+                    name: i
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| format!("#{}", i.ordinal.unwrap_or(0))),
                 },
             )
         })
@@ -46,7 +52,9 @@ fn build_uxn32() -> Option<Vec<u8>> {
     let mut blocks: BTreeMap<u64, eir::Block> = BTreeMap::new();
     for b in prog.blocks() {
         let rva = (b.start - base) as u32;
-        let Some(idx) = pe.section_of(rva) else { continue };
+        let Some(idx) = pe.section_of(rva) else {
+            continue;
+        };
         let sec = &pe.sections[idx];
         let off = (rva - sec.virtual_address) as usize;
         if off >= sec.data.len() {
@@ -108,7 +116,10 @@ fn unimplemented_api_stops_the_run_and_names_itself() {
     match result {
         Err(RunError::Refused(d)) => {
             assert!(!d.api.name.is_empty(), "diagnostic must name the API: {d}");
-            assert!(!d.api.library.is_empty(), "diagnostic must name the DLL: {d}");
+            assert!(
+                !d.api.library.is_empty(),
+                "diagnostic must name the DLL: {d}"
+            );
         }
         Err(RunError::Trap(msg)) => {
             // A trap before any host call is a different bug (loader seeding).
@@ -178,7 +189,9 @@ fn real_image_reaches_version_and_heap_within_budget() {
     let h = host.lock().unwrap_or_else(|error| error.into_inner());
     for name in ["GetVersion", "HeapCreate"] {
         let api = wlam_harness::Api::new("KERNEL32.dll", name);
-        assert!(h.call_counts().get(&api).copied().unwrap_or(0) > 0,
-            "real startup never reached {name}: {outcome:?}");
+        assert!(
+            h.call_counts().get(&api).copied().unwrap_or(0) > 0,
+            "real startup never reached {name}: {outcome:?}"
+        );
     }
 }

@@ -10,8 +10,8 @@ mod shared;
 
 use std::collections::BTreeMap;
 
-use wlam_emit::ir as eir;
 use wlam_emit::chain::{build_module, partition};
+use wlam_emit::ir as eir;
 use wlam_sleigh::{lift_block, with_big_stack};
 
 fn blocks_from(code: &[u8], base: u64, starts: &[u64]) -> BTreeMap<u64, eir::Block> {
@@ -52,7 +52,10 @@ fn run(module: &[u8], regs: &[String], esp: u32) -> (u32, u32, String) {
              try{{i.exports.entry();}}catch(e){{console.log('TRAP '+e.message);process.exit(0)}}\
              console.log(d.getUint32(0x10000,true)+' '+d.getUint32(0x10004,true));",
             base = wlam_emit::REG_SNAPSHOT_BASE,
-            esp_idx = regs.iter().position(|r| r == "ESP").expect("ESP is a guest local"),
+            esp_idx = regs
+                .iter()
+                .position(|r| r == "ESP")
+                .expect("ESP is a guest local"),
         ))
         .output()
         .unwrap();
@@ -88,21 +91,39 @@ fn call_returns_to_the_instruction_after_it() {
     code.extend_from_slice(&[0xC7, 0x05, 0x04, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00]);
     // 0x100f: caller ret
     code.push(0xC3);
-    assert_eq!(base + code.len() as u64, callee, "callee must land at 0x1010");
+    assert_eq!(
+        base + code.len() as u64,
+        callee,
+        "callee must land at 0x1010"
+    );
     // 0x1010: callee store
     code.extend_from_slice(&[0xC7, 0x05, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00]);
     // 0x101a: callee ret
     code.push(0xC3);
 
-    let blocks = blocks_from(&code, base, &[base, base + 5, base + 0xf, callee, callee + 0xa]);
+    let blocks = blocks_from(
+        &code,
+        base,
+        &[base, base + 5, base + 0xf, callee, callee + 0xa],
+    );
     let regs = registers(&blocks);
     let prog = partition(&[base], &blocks, &regs);
-    assert_eq!(prog.functions.len(), 2, "caller and callee are separate functions");
+    assert_eq!(
+        prog.functions.len(),
+        2,
+        "caller and callee are separate functions"
+    );
     assert_eq!(prog.functions[0].entry, base);
     assert_eq!(prog.functions[1].entry, callee);
     // The caller must own its post-call block; the callee must not.
-    assert!(prog.functions[0].ids.contains_key(&(base + 5)), "caller owns 0x1005");
-    assert!(!prog.functions[1].ids.contains_key(&(base + 5)), "callee must not own 0x1005");
+    assert!(
+        prog.functions[0].ids.contains_key(&(base + 5)),
+        "caller owns 0x1005"
+    );
+    assert!(
+        !prog.functions[1].ids.contains_key(&(base + 5)),
+        "callee must not own 0x1005"
+    );
 
     let module = build_module(&prog, &blocks).expect("module");
     // A stack above the scratch area, so pushes have somewhere to land.
@@ -126,11 +147,19 @@ fn callee_returns_without_looping() {
     code.extend_from_slice(&[0xC7, 0x05, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00]);
     code.push(0xC3);
 
-    let blocks = blocks_from(&code, base, &[base, base + 5, base + 0xf, callee, callee + 0xa]);
+    let blocks = blocks_from(
+        &code,
+        base,
+        &[base, base + 5, base + 0xf, callee, callee + 0xa],
+    );
     let regs = registers(&blocks);
     let prog = partition(&[base], &blocks, &regs);
     let module = build_module(&prog, &blocks).expect("module");
     // The `timeout 10` in `run` turns an infinite loop into a parse failure.
     let (callee_wrote, caller_wrote, log) = run(&module, &regs, 0x4000);
-    assert_eq!((callee_wrote, caller_wrote), (1, 2), "must terminate: {log}");
+    assert_eq!(
+        (callee_wrote, caller_wrote),
+        (1, 2),
+        "must terminate: {log}"
+    );
 }

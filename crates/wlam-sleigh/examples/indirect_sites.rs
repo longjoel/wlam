@@ -59,7 +59,10 @@ fn main() -> Result<(), String> {
             eprintln!("skipping unparsable address {text}");
             continue;
         };
-        let Some(rva) = address.checked_sub(base).and_then(|v| u32::try_from(v).ok()) else {
+        let Some(rva) = address
+            .checked_sub(base)
+            .and_then(|v| u32::try_from(v).ok())
+        else {
             eprintln!("{address:#010x}: below the image base");
             continue;
         };
@@ -69,8 +72,14 @@ fn main() -> Result<(), String> {
         };
         let bytes = section.data[(rva - section.virtual_address) as usize..].to_vec();
         let lifted = wlam_sleigh::with_big_stack(move || wlam_sleigh::lift_block(&bytes, address));
-        println!("--- recovered table: {:?}", recover_tables_at(&pe, &[address]));
-        println!("--- {address:#010x}..{:#010x} term={:?}", lifted.end, lifted.terminator);
+        println!(
+            "--- recovered table: {:?}",
+            recover_tables_at(&pe, &[address])
+        );
+        println!(
+            "--- {address:#010x}..{:#010x} term={:?}",
+            lifted.end, lifted.terminator
+        );
         for insn in &lifted.instructions {
             println!("  {:#010x} {}", insn.address, insn.disassembly);
             for op in &insn.ops {

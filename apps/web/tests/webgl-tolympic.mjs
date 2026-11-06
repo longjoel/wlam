@@ -13,13 +13,15 @@ url.searchParams.set('manifest', process.env.WLAM_WEBGL_MANIFEST ?? '/target/tol
 async function waitStatus(expected) {
   await page.waitForFunction(value => document.querySelector('#status').textContent === value, expected);
 }
+const focusConsole = () => page.locator('#task-app').click();
+const consoleAction = async selector => { await focusConsole(); await page.click(selector); };
 
 try {
   await page.goto(url.href);
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
-  await page.waitForFunction(() => document.querySelector('#screen').getContext('webgl') !== null);
-  await page.click('#start');
+  await consoleAction('#start');
   await waitStatus('running');
+  await page.waitForFunction(() => document.querySelector('#screen')?.getContext('webgl') !== null);
   await page.waitForFunction(() => Number(document.querySelector('#screen').dataset.webglFrames) > 0, null, { timeout: 15000 });
   const initialFrameCount = await page.locator('#screen').evaluate(canvas => Number(canvas.dataset.webglFrames));
   await page.waitForTimeout(2000);
@@ -31,6 +33,7 @@ try {
 
   await page.locator('#screen').focus();
   await page.keyboard.press('Space');
+  await focusConsole();
   await page.locator('#guest-width').fill('600');
   await page.locator('#guest-height').fill('450');
   await page.click('#resize-guest');
@@ -50,10 +53,10 @@ try {
   await page.keyboard.press('b');
   await page.keyboard.press('d');
   await page.waitForTimeout(300);
-  await page.click('#stop');
+  await consoleAction('#stop');
   await waitStatus('Stopped');
 
-  await page.click('#start');
+  await consoleAction('#start');
   await waitStatus('running');
   const stoppedFrameCount = await page.locator('#screen').evaluate(canvas => Number(canvas.dataset.webglFrames));
   await page.waitForFunction(previous => Number(document.querySelector('#screen').dataset.webglFrames) > previous,

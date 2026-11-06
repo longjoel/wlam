@@ -24,13 +24,16 @@ try{
   });
   await page.route('**/guest.wasm',route=>route.fulfill({body:moduleBytes(trap),contentType:'application/wasm'}));
   await page.goto(process.env.WLAM_TEST_URL??'http://127.0.0.1:8765/apps/web/');
+  await page.click('#start-menu-button');
+  await page.click('#menu-runner');
+  const consoleAction=async selector=>{await page.locator('#task-app').click();await page.click(selector);};
   for(const isTrap of [false,true]){
     trap=isTrap;
-    await page.click('#start');
+    await consoleAction('#start');
     await page.waitForFunction(()=>document.querySelector('#status').textContent==='Failed'&&document.querySelector('#debug-report').textContent.includes('javascriptStack'));
     assert.equal(await page.locator('#debugger').getAttribute('open'),'');
     const downloadEvent=page.waitForEvent('download');
-    await page.click('#download-debug');
+    await consoleAction('#download-debug');
     const download=await downloadEvent;
     const report=JSON.parse(await readFile(await download.path(),'utf8'));
     assert.equal(report.version,1);assert.equal(report.kind,'failure');
